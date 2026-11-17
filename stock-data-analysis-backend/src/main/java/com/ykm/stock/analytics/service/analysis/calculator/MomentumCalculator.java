@@ -66,7 +66,75 @@ public class MomentumCalculator {
         } else {
             out.put("MA_EXTENSION_ATR", insufficient("ATR_MA_INPUT_REQUIRED")); out.put("ATR14", insufficient("ATR14_REQUIRED"));
         }
-        return new MomentumAnalysisDto(out, signal, List.of(), interpretations(out, bars));
+        List<IndicatorSeriesPointDto> series = buildIndicatorSeries(bars, closes, rsiSeries);
+        return new MomentumAnalysisDto(out, signal, List.of(), interpretations(out, bars), series);
+    }
+
+    private List<IndicatorSeriesPointDto> buildIndicatorSeries(
+            List<NormalizedBarDto> bars, List<BigDecimal> closes, List<BigDecimal> rsiSeries) {
+        int size = bars.size();
+        List<BigDecimal> e12 = closes.size() >= 12 ? emaSeries(closes, 12) : List.of();
+        List<BigDecimal> e26 = closes.size() >= 26 ? emaSeries(closes, 26) : List.of();
+        List<BigDecimal> macdValues = new ArrayList<>();
+        for (int i = 25; i < size; i++) {
+            macdValues.add(e12.get(i - 11).subtract(e26.get(i - 25), MC));
+        }
+        List<BigDecimal> macdSig = macdValues.size() >= 9 ? emaSeries(macdValues, 9) : List.of();
+
+        BigDecimal sum20 = BigDecimal.ZERO;
+        BigDecimal sum50 = BigDecimal.ZERO;
+        BigDecimal sum200 = BigDecimal.ZERO;
+        List<IndicatorSeriesPointDto> points = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            BigDecimal close = closes.get(i);
+            sum20 = sum20.add(close, MC);
+            sum50 = sum50.add(close, MC);
+            sum200 = sum200.add(close, MC);
+            if (i >= 20) sum20 = sum20.subtract(closes.get(i - 20), MC);
+            if (i >= 50) sum50 = sum50.subtract(closes.get(i - 50), MC);
+            if (i >= 200) sum200 = sum200.subtract(closes.get(i - 200), MC);
+
+            BigDecimal rawSma20 = i >= 19 ? sum20.divide(BigDecimal.valueOf(20), MC) : null;
+            BigDecimal sma20Val = scale4(rawSma20);
+            BigDecimal sma50Val = i >= 49 ? scale4(sum50.divide(BigDecimal.valueOf(50), MC)) : null;
+            BigDecimal sma200Val = i >= 199 ? scale4(sum200.divide(BigDecimal.valueOf(200), MC)) : null;
+
+            BigDecimal bbUpper = null;
+            BigDecimal bbLower = null;
+            if (rawSma20 != null) {
+                BigDecimal sqSum = BigDecimal.ZERO;
+                for (int j = i - 19; j <= i; j++) {
+                    BigDecimal diff = closes.get(j).subtract(rawSma20, MC);
+                    sqSum = sqSum.add(diff.multiply(diff, MC), MC);
+                }
+                BigDecimal twoStd = BigDecimal.valueOf(Math.sqrt(sqSum.divide(BigDecimal.valueOf(20), MC).doubleValue()))
+                        .multiply(BigDecimal.valueOf(2), MC);
+                bbUpper = scale4(rawSma20.add(twoStd, MC));
+                bbLower = scale4(rawSma20.subtract(twoStd, MC));
+            }
+
+            BigDecimal rsiVal = i >= RSI_PUBLIC_BARS - 1 && (i - 14) < rsiSeries.size()
+                    ? scale4(rsiSeries.get(i - 14)) : null;
+            BigDecimal macdVal = null;
+            BigDecimal sigVal = null;
+            BigDecimal histVal = null;
+            if (i >= MACD_PUBLIC_BARS - 1 && (i - 25) < macdValues.size() && (i - 33) < macdSig.size()) {
+                BigDecimal m = macdValues.get(i - 25);
+                BigDecimal s = macdSig.get(i - 33);
+                macdVal = scale4(m);
+                sigVal = scale4(s);
+                histVal = scale4(m.subtract(s, MC));
+            }
+
+            points.add(new IndicatorSeriesPointDto(
+                    bars.get(i).sessionDate(), sma20Val, sma50Val, sma200Val,
+                    bbUpper, bbLower, rsiVal, macdVal, sigVal, histVal));
+        }
+        return List.copyOf(points);
+    }
+
+    private BigDecimal scale4(BigDecimal value) {
+        return value == null ? null : value.setScale(4, RoundingMode.HALF_UP);
     }
 
     /** 判讀只使用上面已發布的數值；不以單期 MACD 相對位置宣稱交叉，也不把波動率當作方向。 */

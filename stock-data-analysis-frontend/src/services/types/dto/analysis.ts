@@ -1,7 +1,8 @@
 import { Financials, ValuationResult } from "./valuation";
 
 export type MetricStatus = "AVAILABLE" | "STALE" | "INSUFFICIENT_DATA" | "UNVERIFIED" | "NOT_APPLICABLE";
-export interface AnalysisReportRequest { figi: string; valuationDate?: string; }
+export type AnalysisHorizon = "POSITION" | "SWING";
+export interface AnalysisReportRequest { figi: string; valuationDate?: string; horizon?: AnalysisHorizon; }
 export interface AnalysisReason { code: string; component: string; message: string; params?: Record<string, unknown>; }
 export interface MetricResult<T> { status: MetricStatus; value: T | null; reasons: AnalysisReason[]; lastKnown?: T | null; }
 
@@ -32,8 +33,25 @@ export interface TradePlan {
 }
 export interface TradePlanResult { plans: TradePlan[]; currentPrice: number; priceDataThrough: string; currentPriceRR: MetricResult<RiskReward>; reasons: AnalysisReason[]; contextEvaluated: boolean; }
 export interface MomentumVolume { rsi14: MetricResult<number>; momentumSignal: MetricResult<number>; macd: MetricResult<number>; macdSignal: MetricResult<number>; volumeVs20Day: MetricResult<number>; volumeSignal: MetricResult<number>; drawdownFrom252High: MetricResult<number>; return20: MetricResult<number>; return60: MetricResult<number>; }
+export interface IndicatorSeriesPoint {
+  sessionDate: string;
+  sma20: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  bollingerUpper: number | null;
+  bollingerLower: number | null;
+  rsi14: number | null;
+  macd: number | null;
+  macdSignal: number | null;
+  macdHistogram: number | null;
+}
 export interface IndicatorInterpretation { code: string; params: Record<string, string | number>; status: MetricStatus; reasons: AnalysisReason[]; }
-export interface MomentumAnalysis { indicators: Record<string, MetricResult<number>>; interpretations?: Record<string, IndicatorInterpretation>; reasons: AnalysisReason[]; }
+export interface MomentumAnalysis {
+  indicators: Record<string, MetricResult<number>>;
+  interpretations?: Record<string, IndicatorInterpretation>;
+  series?: IndicatorSeriesPoint[];
+  reasons: AnalysisReason[];
+}
 export interface MarketContext {
   momentum: MomentumVolume; market: MetricResult<{ regime: string; fearGreedScore: MetricResult<number>; breadthScore: MetricResult<number> }>;
   tradeConstraint: { entryPermission: string; reasonCodes: string[] }; reasons: AnalysisReason[];

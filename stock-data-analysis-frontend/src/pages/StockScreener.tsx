@@ -66,7 +66,11 @@ export function StockScreenerPage() {
       <TableContainer sx={{ maxHeight: "65vh" }}>
         <Table size="small" stickyHeader aria-label="全市場股票篩選">
           <TableHead><TableRow>
-            {["股票", "名稱", "產業", "概念", "收盤日", "收盤價", "估值日", "P/E", "P/B", "P/S", "P/FCF", "EV/EBITDA", "狀態"].map(label => <TableCell key={label} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}
+            {([
+              ["股票", "left"], ["名稱", "left"], ["產業", "left"], ["概念", "left"],
+              ["收盤日", "left"], ["收盤價", "right"], ["估值日", "left"],
+              ["P/E", "right"], ["P/B", "right"], ["P/S", "right"], ["P/FCF", "right"], ["EV/EBITDA", "right"], ["狀態", "left"],
+            ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}
           </TableRow></TableHead>
           <TableBody>
             {(stocks.data?.items ?? []).map(row => <TableRow hover key={row.figi} onDoubleClick={() => navigate("/stockAnalysis/" + encodeURIComponent(row.figi))}>

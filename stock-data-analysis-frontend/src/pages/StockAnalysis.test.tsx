@@ -133,3 +133,88 @@ test("displays NOT_APPLICABLE peer and industry assumption references on histori
   expect(within(futuSection).getByText("P/B：49.18")).toBeInTheDocument();
   expect(within(futuSection).getByText("P/S：—")).toBeInTheDocument();
 });
+
+test("places interactive price workbench at the top and supports preset switching, wheel zoom, button zoom, and reset", () => {
+  const bars = Array.from({ length: 40 }, (_, i) => {
+    const day = String((i % 28) + 1).padStart(2, "0");
+    const month = i < 20 ? "09" : "10";
+    const price = 150 + i;
+    return {
+      sessionDate: `2026-${month}-${day}`,
+      open: price - 1, high: price + 2, low: price - 2, close: price,
+      volume: { status: "AVAILABLE", value: 12000000, reasons: [] },
+    };
+  });
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      priceDataThrough: "2026-10-20",
+      timeframes: [{ timeframe: "DAILY", bars, majorTrend: { status: "AVAILABLE", value: { state: "DOWNTREND" }, reasons: [] }, atr14: { status: "AVAILABLE", value: { atr: 9.85 }, reasons: [] } }],
+    },
+  };
+  report.marketContext = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      momentum: { volumeVs20Day: metric(1.2), return20: metric(-0.12), return60: metric(-0.18), drawdownFrom252High: metric(-0.34) },
+      momentumDetail: {
+        indicators: { SMA20: metric(195.64), SMA50: metric(201.1), SMA200: metric(204.02), RSI14: metric(22.72), MACD: metric(-15.38), MACD_HISTOGRAM: metric(-4.22), ATR14: metric(9.85) },
+        interpretations: {},
+        series: bars.map(b => ({ sessionDate: b.sessionDate, sma20: b.close - 2, sma50: b.close - 4, sma200: b.close + 10, bollingerUpper: b.close + 6, bollingerLower: b.close - 6, rsi14: 28, macd: -5, macdSignal: -3, macdHistogram: -2 })),
+      },
+    },
+  };
+  render(<StockAnalysisPage />);
+
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  const histRefSection = screen.getByRole("region", { name: "歷史市場估值參考" });
+  // 驗證股價與技術指標圖表位於估值參考區與歷史表之前（置頂呈現）
+  expect(chartSection.compareDocumentPosition(histRefSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  expect(within(chartSection).getByText(/共 40／40 根/)).toBeInTheDocument();
+
+  // 點擊「放大 ＋」按鈕可縮小可視日期視窗
+  fireEvent.click(within(chartSection).getByRole("button", { name: "放大日期區間" }));
+  expect(within(chartSection).getByText(/共 29／40 根/)).toBeInTheDocument();
+
+  // 在主圖觸發滑鼠滾輪向上（deltaY < 0）進一步放大日期區間
+  const mainSvg = within(chartSection).getByRole("img", { name: "每日收盤價" });
+  fireEvent.wheel(mainSvg, { deltaY: -120, clientX: 500 });
+  expect(within(chartSection).getByText(/共 23／40 根/)).toBeInTheDocument();
+
+  // 點擊「重設」恢復預設完整區間
+  fireEvent.click(within(chartSection).getByRole("button", { name: "重設圖表縮放" }));
+  expect(within(chartSection).getByText(/共 40／40 根/)).toBeInTheDocument();
+});
+
+test("hides blank UNAVAILABLE trade plan cards while surfacing active support/resistance ladder and allowing SWING horizon switch", async () => {
+  report.supportResistance = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      supports: [{ id: "sup-1", timeframe: "DAILY", role: "SUPPORT", lower: 151.53, upper: 154.25, center: 152.89, effectiveStrength: 19.78, strengthLabel: "LOW", state: "ACTIVE", distanceLowerPercent: -2.95, distanceUpperPercent: -1.21 }],
+      resistances: [{ id: "res-1", timeframe: "WEEKLY", role: "RESISTANCE", lower: 205.83, upper: 218.55, center: 212.19, effectiveStrength: 42.1, strengthLabel: "MEDIUM", state: "ACTIVE", distanceLowerPercent: 31.82, distanceUpperPercent: 39.97 }],
+    },
+  };
+  report.tradePlans = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      contextEvaluated: true,
+      plans: [{
+        planId: "gated-1", horizon: "POSITION", setupType: "PULLBACK", entryRange: null, stop: null, targets: [],
+        riskReward: { status: "NOT_APPLICABLE", value: null, reasons: [] }, status: "UNAVAILABLE",
+        reasons: [{ code: "PLAN_SUPPORT_STRENGTH_INSUFFICIENT", component: "TRADE_PLAN", message: "支撐有效強度 1.55，低於最低要求 30，暫不提供技術進出場價位。" }],
+      }],
+    },
+  };
+  render(<StockAnalysisPage />);
+  const levelsSection = screen.getByRole("region", { name: "關鍵價位與技術觀察方案" });
+  expect(within(levelsSection).getByText(/目前無自動啟用之右側進場方案/)).toBeInTheDocument();
+  expect(within(levelsSection).queryByText("進場區間：—")).not.toBeInTheDocument();
+  expect(within(levelsSection).getByText("151.53–154.25")).toBeInTheDocument();
+  expect(within(levelsSection).getByText("205.83–218.55")).toBeInTheDocument();
+
+  fireEvent.click(within(levelsSection).getByRole("button", { name: "短線波段（日線支撐）" }));
+  const calls = (useQuery as jest.Mock).mock.calls.filter(([options]) => options.queryKey[0] === "analysis-report");
+  (apiClient.post as jest.Mock).mockResolvedValue({ data: report });
+  await calls[calls.length - 1][0].queryFn();
+  expect(apiClient.post).toHaveBeenLastCalledWith("analysis/report", { figi: "AAPL-FIGI", horizon: "SWING" });
+});

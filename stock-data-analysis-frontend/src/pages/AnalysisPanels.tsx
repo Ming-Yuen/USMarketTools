@@ -69,12 +69,22 @@ export function ValuationReferencePanel({ title, description, reference, currenc
   </Paper>;
 }
 
-const COMMON_INDICATORS = ["RSI14", "MACD", "MACD_SIGNAL", "MACD_HISTOGRAM", "SMA20", "SMA50", "SMA200", "ATR14"];
+const COMMON_INDICATORS = ["SMA20", "SMA50", "SMA200", "RSI14", "MACD", "MACD_SIGNAL", "MACD_HISTOGRAM", "ATR14"];
 export function TechnicalIndicatorsPanel({ detail, dataThrough, momentum }: { detail?: MomentumAnalysis | null; dataThrough?: string | null; momentum?: MomentumVolume | null }) {
   const { t } = useTranslation();
   const entries = Object.entries(detail?.indicators ?? {});
+  const commonEntries = COMMON_INDICATORS
+    .map(code => entries.find(([k]) => k === code))
+    .filter((entry): entry is [string, MetricResult<number>] => Boolean(entry));
+  const extraEntries = entries
+    .filter(([code]) => !COMMON_INDICATORS.includes(code))
+    .sort(([a], [b]) => a.localeCompare(b));
   const renderRows = (rows: Array<[string, MetricResult<number>]>) => <Table size="small">
-    <TableHead><TableRow>{["indicator", "indicatorValue", "interpretation"].map((key) => <TableCell key={key}>{t(`analysisReport.${key}`)}</TableCell>)}</TableRow></TableHead>
+    <TableHead><TableRow>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{t("analysisReport.indicator")}</TableCell>
+      <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{t("analysisReport.indicatorValue")}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{t("analysisReport.interpretation")}</TableCell>
+    </TableRow></TableHead>
     <TableBody>{rows.map(([code, result]) => {
       const interpretation = detail?.interpretations?.[code];
       return <TableRow key={code}>
@@ -83,7 +93,7 @@ export function TechnicalIndicatorsPanel({ detail, dataThrough, momentum }: { de
           {interpretation?.params.period != null && <Typography variant="caption" display="block">{t("analysisReport.period")}: {interpretation.params.period}</Typography>}
           {interpretation?.params.requiredBars != null && <Typography variant="caption" display="block">{t("analysisReport.priceBars")}: {interpretation.params.availableBars ?? "—"} / {interpretation.params.requiredBars}</Typography>}
         </TableCell>
-        <TableCell>{result.status === "AVAILABLE" ? <>{number(result.value)} {interpretation?.params.unit ? t(`analysisReport.units.${interpretation.params.unit}`, { defaultValue: String(interpretation.params.unit) }) : ""}</> : readableState(t, result.status)}</TableCell>
+        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{result.status === "AVAILABLE" ? <>{number(result.value)} {interpretation?.params.unit ? t(`analysisReport.units.${interpretation.params.unit}`, { defaultValue: String(interpretation.params.unit) }) : ""}</> : readableState(t, result.status)}</TableCell>
         <TableCell><Typography variant="body2">{result.status === "AVAILABLE" && interpretation?.status === "AVAILABLE"
           ? t(`analysisReport.interpretations.${interpretation.code}`, { ...interpretation.params, defaultValue: t("analysisReport.interpretationUnavailable") })
           : result.status === "AVAILABLE" ? t("analysisReport.interpretationUnavailable")
@@ -92,16 +102,16 @@ export function TechnicalIndicatorsPanel({ detail, dataThrough, momentum }: { de
       </TableRow>;
     })}</TableBody>
   </Table>;
-  return <Paper variant="outlined" sx={{ p: 3, mt: 2 }}>
-    <Typography variant="h6" sx={{ fontWeight: 700 }}>{t("analysisReport.technicalIndicators")}</Typography>
+  return <Paper variant="outlined" sx={{ p: 2.5 }}>
+    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{t("analysisReport.technicalIndicators")}</Typography>
     <Typography variant="body2" color="text.secondary">{t("analysisReport.priceDataThrough")}: {dataThrough ?? "—"} · {t("analysisReport.indicatorTimeframe")}</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ my: 1 }}>{t("analysisReport.indicatorLimit")}</Typography>
-    <Divider sx={{ my: 2 }} />
+    <Divider sx={{ my: 1.5 }} />
     {entries.length ? <Box sx={{ overflowX: "auto" }}>
-      {renderRows(entries.filter(([code]) => COMMON_INDICATORS.includes(code)))}
+      {renderRows(commonEntries)}
       <Accordion disableGutters elevation={0}>
         <AccordionSummary expandIcon={<ExpandMore />}><Typography>{t("analysisReport.moreIndicators")}</Typography></AccordionSummary>
-        <AccordionDetails sx={{ px: 0 }}>{renderRows(entries.filter(([code]) => !COMMON_INDICATORS.includes(code)))}</AccordionDetails>
+        <AccordionDetails sx={{ px: 0 }}>{renderRows(extraEntries)}</AccordionDetails>
       </Accordion>
     </Box> : <Typography color="text.secondary">{t("analysisReport.indicatorsUnavailable")}</Typography>}
     {momentum && <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>

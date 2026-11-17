@@ -43,6 +43,17 @@ class MomentumCalculatorTests {
         assertThat(r.interpretations().get("HV20").params()).containsEntry("unit","FRACTION");
         assertThat(r.interpretations().get("ROC20").params()).containsEntry("unit","PERCENT");
         assertThat(r.interpretations().get("MA20_50_CROSS").code()).isEqualTo("MA_CROSS_NONE");
+        assertThat(r.series()).hasSize(260);
+        IndicatorSeriesPointDto first = r.series().getFirst();
+        assertThat(first.sma20()).isNull();
+        assertThat(first.rsi14()).isNull();
+        assertThat(first.macd()).isNull();
+        IndicatorSeriesPointDto last = r.series().getLast();
+        assertThat(last.sessionDate()).isEqualTo(LocalDate.of(2025, 1, 1).plusDays(259));
+        assertThat(last.sma200()).isEqualByComparingTo(r.indicators().get("SMA200").value().setScale(4, java.math.RoundingMode.HALF_UP));
+        assertThat(last.rsi14()).isEqualByComparingTo(r.indicators().get("RSI14").value().setScale(4, java.math.RoundingMode.HALF_UP));
+        assertThat(last.macd()).isEqualByComparingTo(r.indicators().get("MACD").value().setScale(4, java.math.RoundingMode.HALF_UP));
+        assertThat(last.macdSignal()).isEqualByComparingTo(r.indicators().get("MACD_SIGNAL").value().setScale(4, java.math.RoundingMode.HALF_UP));
     }
     // 不足 115 根的 RSI 不得附上正常／中性判讀，保留原始不足原因與最少 bar 數。
     @Test void insufficientAndInvalidIndicatorsKeepTheirActualStatusAndReasons(){

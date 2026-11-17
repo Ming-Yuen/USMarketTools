@@ -319,6 +319,30 @@ class ValuationReferencePhase4Tests {
         verify(latestValuations, never()).findActiveTrackedPeerSnapshots("I10_HIST");
     }
 
+    @Test
+    void defaultLatestRequestFallsBackToEffectiveLatestQuoteDateBeforeDailyQuoteJobRuns() {
+        LocalDate monday = LocalDate.of(2026, 11, 16);
+        Instant mondayClose = Instant.parse("2026-11-16T21:00:00Z");
+        Instant tuesdayMorning = Instant.parse("2026-11-17T00:30:00Z");
+        when(clock.now()).thenReturn(tuesdayMorning);
+        when(calendar.getLastClosedTradingDay(tuesdayMorning)).thenReturn(monday);
+        // STOCK_QUOTE_DAILY 尚未同步週一 2026-11-16，stock_status.quote_date 與已入庫行情停在週五 2026-11-13
+        status.setQuoteDate(LATEST_DAY);
+
+        StockFinancialPeriod period = buildPeriod(LocalDate.of(2025, 1, 1), LocalDate.of(2026, 9, 30),
+                new BigDecimal("8.00"), new BigDecimal("500"), new BigDecimal("1000"), new BigDecimal("200"), new BigDecimal("100"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(period));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(monday)))
+                .thenReturn(List.of(quote(LATEST_DAY, "160")));
+
+        ReportValuationBundle bundle = service.evaluateForReport(apple, monday, mondayClose, tuesdayMorning, "I10");
+
+        assertThat(bundle.valuation().valuationDate()).isEqualTo(LATEST_DAY);
+        assertThat(bundle.valuation().status()).isEqualTo("AVAILABLE");
+        assertThat(bundle.valuation().metrics().pe().value()).isEqualByComparingTo("20.0000");
+        assertThat(bundle.valuation().peerReference().status()).isNotEqualTo("NOT_APPLICABLE");
+    }
+
     private Object[] peerTuple(String issuerKey, String figi, String pe) {
         StockValuationLatest row = new StockValuationLatest();
         row.setFigi(figi);

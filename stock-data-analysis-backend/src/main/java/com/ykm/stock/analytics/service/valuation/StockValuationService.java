@@ -188,6 +188,13 @@ public class StockValuationService {
 
         StockStatus status = statuses.findById(figi).orElse(null);
         LocalDate effectiveLatest = effectiveLatestQuoteDate(status, lastClosed);
+        boolean defaultLatestRequest = supplementalCutoff != null && supplementalCutoff.isAfter(cutoff);
+        if (defaultLatestRequest && targetQuote == null && day.equals(lastClosed)
+                && effectiveLatest.isBefore(day) && quoteByDate.containsKey(effectiveLatest)) {
+            day = effectiveLatest;
+            cutoff = calendar.getSessionCloseAt(day);
+            targetQuote = quoteByDate.get(day);
+        }
         List<StockSplit> stockSplits = splits.findByFigiInOrderByExecutionDateAsc(List.of(figi));
         String cik = resolveCik(stock, day);
         boolean multiSecurityIssuer = cik != null && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
@@ -222,7 +229,7 @@ public class StockValuationService {
                 stock, status, quoteByDate, periods, stockSplits, closingSnap, cutoffObs,
                 multiSecurityIssuer, verifiedOneToOne, modelCtx, effectiveLatest, now, true);
 
-        boolean historicalDate = day.isBefore(lastClosed);
+        boolean historicalDate = day.isBefore(effectiveLatest);
         boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
         String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
                 : dayValuation.modelCode() != null ? dayValuation.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;

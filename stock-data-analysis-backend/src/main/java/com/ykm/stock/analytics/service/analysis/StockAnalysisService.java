@@ -91,7 +91,9 @@ public class StockAnalysisService {
             }
         }
         reasons.addAll(price.reasons());
-        return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), day,
+        LocalDate resolvedReportDate = request.valuationDate() == null && valuation != null && valuation.valuationDate() != null
+                ? valuation.valuationDate() : day;
+        return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),
                 structure, support, tradePlans, marketResult, observations, reasons);
     }

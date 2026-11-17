@@ -7,6 +7,7 @@ import {
 } from "../services/types/dto/analysis";
 import { ValuationReference, ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, readableReason, readableState } from "./AnalysisPanels";
+import { svgXFromClient } from "./ValuationPanels";
 
 type RangeCode = "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "5Y";
 type TimeframeCode = "DAILY" | "WEEKLY" | "MONTHLY";
@@ -268,8 +269,7 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY === 0) return;
       event.preventDefault();
-      const rect = svgEl.getBoundingClientRect();
-      const svgX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * W : padL + plotW * 0.8;
+      const { svgX } = svgXFromClient(svgEl, event.clientX, event.clientY, W);
       const ratio = (svgX - padL) / plotW;
       zoomByFactor(event.deltaY < 0 ? 0.78 : 1.28, ratio);
     };
@@ -438,18 +438,16 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
   };
 
   const handleMainMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const widthPx = rect.width || W;
+    const { svgX, scaleX } = svgXFromClient(event.currentTarget, event.clientX, event.clientY, W);
     if (panOriginRef.current) {
       const origin = panOriginRef.current;
       const span = origin.end - origin.start;
-      const dxSvg = ((event.clientX - origin.clientX) / widthPx) * W;
+      const dxSvg = (event.clientX - origin.clientX) / scaleX;
       const deltaBars = Math.round((dxSvg / plotW) * span);
       const nextStart = clampInt(origin.start - deltaBars, 0, totalBars - span);
       setCustomWindow([nextStart, nextStart + span]);
       return;
     }
-    const svgX = ((event.clientX - rect.left) / widthPx) * W;
     const rawIdx = Math.floor((svgX - padL) / stepX);
     setHoverIdx(rawIdx >= 0 && rawIdx < count ? rawIdx : null);
   };
@@ -488,9 +486,7 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
   const brushW = Math.max(8, brushX2 - brushX1);
 
   const handleBrushMouseDown = (event: React.MouseEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const widthPx = rect.width || W;
-    const svgX = ((event.clientX - rect.left) / widthPx) * W;
+    const { svgX } = svgXFromClient(event.currentTarget, event.clientX, event.clientY, W);
     const handleTol = 10;
     if (Math.abs(svgX - brushX1) <= handleTol) {
       brushDragRef.current = { mode: "LEFT", clientX: event.clientX, start: winStart, end: winEnd };
@@ -509,10 +505,9 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
 
   const handleBrushMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
     if (!brushDragRef.current) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const widthPx = rect.width || W;
+    const { scaleX } = svgXFromClient(event.currentTarget, event.clientX, event.clientY, W);
     const drag = brushDragRef.current;
-    const deltaBars = Math.round((((event.clientX - drag.clientX) / widthPx) * W / plotW) * totalBars);
+    const deltaBars = Math.round((((event.clientX - drag.clientX) / scaleX) / plotW) * totalBars);
     if (drag.mode === "MOVE") {
       const span = drag.end - drag.start;
       const nextStart = clampInt(drag.start + deltaBars, 0, totalBars - span);

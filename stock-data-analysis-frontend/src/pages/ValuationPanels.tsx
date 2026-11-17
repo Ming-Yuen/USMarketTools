@@ -9,6 +9,25 @@ import { formatNumber, metricLabel, reasonLabel, statusLabel } from "./AnalysisP
 
 const clampIdx = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+const SVG_W = 960;
+const SVG_PAD_L = 68;
+const SVG_PLOT_W = 868;
+
+/** 將瀏覽器可視座標精準換算為 SVG viewBox X 座標，修正寬螢幕 maxHeight 留白造成的偏移。 */
+export function svgXFromClient(svg: SVGSVGElement, clientX: number, clientY: number, viewBoxW: number): { svgX: number; scaleX: number } {
+  const ctm = typeof svg.getScreenCTM === "function" ? svg.getScreenCTM() : null;
+  if (ctm && Number.isFinite(ctm.a) && ctm.a > 0) {
+    if (typeof DOMPoint !== "undefined") {
+      const pt = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+      return { svgX: pt.x, scaleX: ctm.a };
+    }
+    return { svgX: (clientX - ctm.e) / ctm.a, scaleX: ctm.a };
+  }
+  const rect = svg.getBoundingClientRect();
+  const widthPx = rect.width || viewBoxW;
+  return { svgX: ((clientX - rect.left) / widthPx) * viewBoxW, scaleX: widthPx / viewBoxW };
+}
+
 export function SeriesChart({ title, points }: { title: string; points: Array<{ date: string; value: number | null }> }) {
   const ordered = useMemo(
     () => [...points].filter(point => Number.isFinite(Date.parse(point.date))).sort((a, b) => a.date.localeCompare(b.date)),
@@ -53,9 +72,8 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY === 0) return;
       event.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const svgX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * 750 : 500;
-      zoomBy(event.deltaY < 0 ? 0.78 : 1.28, (svgX - 70) / 650);
+      const { svgX } = svgXFromClient(el, event.clientX, event.clientY, SVG_W);
+      zoomBy(event.deltaY < 0 ? 0.78 : 1.28, (svgX - SVG_PAD_L) / SVG_PLOT_W);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -82,7 +100,7 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
   const values = renderValid.map(point => point.value as number);
   const minY = Math.min(...values), maxY = Math.max(...values), spanY = maxY - minY || Math.abs(maxY) * 0.01 || 1;
   const midY = (minY + maxY) / 2;
-  const x = (date: string) => 70 + (Date.parse(date) - minX) / (maxX - minX || 1) * 650;
+  const x = (date: string) => SVG_PAD_L + (Date.parse(date) - minX) / (maxX - minX || 1) * SVG_PLOT_W;
   const y = (value: number) => 175 - (value - minY) / spanY * 145;
   let connected = false;
   const path = renderOrdered.map(point => {
@@ -93,6 +111,7 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
   }).join(" ");
 
   const activePoint = hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : renderValid[renderValid.length - 1];
+  const hoveredPoint = hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : null;
 
   return <Box sx={{ width: "100%", overflowX: "auto", my: 1, userSelect: "none" }}>
     {total >= 6 && (
@@ -115,26 +134,24 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
         </Stack>
       </Stack>
     )}
-    <svg ref={svgRef} role="img" aria-label={title} viewBox="0 0 750 215"
-      style={{ width: "100%", minWidth: 360, maxHeight: 300, cursor: total >= 6 ? "crosshair" : "default" }}
+    <svg ref={svgRef} role="img" aria-label={title} viewBox={`0 0 ${SVG_W} 215`}
+      style={{ width: "100%", minWidth: 360, maxHeight: 280, display: "block", cursor: total >= 6 ? "crosshair" : "default" }}
       onMouseDown={event => {
         if (total < 6 || event.button !== 0) return;
         dragRef.current = { clientX: event.clientX, start: winStart, end: winEnd };
       }}
       onMouseMove={event => {
         if (total < 6) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const widthPx = rect.width || 750;
+        const { svgX, scaleX } = svgXFromClient(event.currentTarget, event.clientX, event.clientY, SVG_W);
         if (dragRef.current) {
           const d = dragRef.current;
           const span = d.end - d.start;
-          const dxSvg = ((event.clientX - d.clientX) / widthPx) * 750;
-          const delta = Math.round((dxSvg / 650) * span);
+          const dxSvg = (event.clientX - d.clientX) / scaleX;
+          const delta = Math.round((dxSvg / SVG_PLOT_W) * span);
           const nextStart = clampIdx(d.start - delta, 0, total - span);
           setWin([nextStart, nextStart + span]);
           return;
         }
-        const svgX = ((event.clientX - rect.left) / widthPx) * 750;
         let bestIdx = 0;
         let bestDist = Infinity;
         renderValid.forEach((pt, i) => {
@@ -146,22 +163,25 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
       onMouseUp={() => { dragRef.current = null; }}
       onMouseLeave={() => { dragRef.current = null; setHoverIdx(null); }}>
       <title>{title}</title>
-      <line x1="70" x2="720" y1="175" y2="175" stroke="#b6c0cf" />
-      <line x1="70" x2="720" y1="102.5" y2="102.5" stroke="#eef2f6" strokeDasharray="3,3" />
-      <line x1="70" x2="720" y1="30" y2="30" stroke="#e1e6ed" />
-      <text x="62" y="35" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(maxY)}</text>
-      <text x="62" y="106" textAnchor="end" fontSize="10" fill="#6b7280">{formatNumber(midY)}</text>
-      <text x="62" y="180" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(minY)}</text>
+      <line x1={SVG_PAD_L} x2={SVG_PAD_L + SVG_PLOT_W} y1="175" y2="175" stroke="#b6c0cf" />
+      <line x1={SVG_PAD_L} x2={SVG_PAD_L + SVG_PLOT_W} y1="102.5" y2="102.5" stroke="#eef2f6" strokeDasharray="3,3" />
+      <line x1={SVG_PAD_L} x2={SVG_PAD_L + SVG_PLOT_W} y1="30" y2="30" stroke="#e1e6ed" />
+      {hoveredPoint && (
+        <line x1={x(hoveredPoint.date)} x2={x(hoveredPoint.date)} y1="30" y2="175" stroke="#94a3b8" strokeDasharray="3,3" pointerEvents="none" />
+      )}
+      <text x={SVG_PAD_L - 8} y="35" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(maxY)}</text>
+      <text x={SVG_PAD_L - 8} y="106" textAnchor="end" fontSize="10" fill="#6b7280">{formatNumber(midY)}</text>
+      <text x={SVG_PAD_L - 8} y="180" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(minY)}</text>
       <path d={path} fill="none" stroke="#1976d2" strokeWidth="2" />
       {renderValid.length <= 90 && renderValid.map((point, idx) => <circle key={point.date} cx={x(point.date)} cy={y(point.value as number)}
-        r={hoverIdx === idx ? "4.2" : "2.5"} fill={hoverIdx === idx ? "#0d47a1" : "#1976d2"}>
+        r={hoverIdx === idx ? "4.5" : "2.5"} fill={hoverIdx === idx ? "#0d47a1" : "#1976d2"}>
         <title>{point.date + "：" + formatNumber(point.value)}</title>
       </circle>)}
-      <text x="70" y="205" fontSize="11" fill="currentColor">{renderValid[0].date}</text>
+      <text x={SVG_PAD_L} y="205" fontSize="11" fill="currentColor">{renderValid[0].date}</text>
       {renderValid.length >= 5 && (
-        <text x="395" y="205" textAnchor="middle" fontSize="11" fill="#6b7280">{renderValid[Math.floor(renderValid.length / 2)].date}</text>
+        <text x={SVG_PAD_L + SVG_PLOT_W / 2} y="205" textAnchor="middle" fontSize="11" fill="#6b7280">{renderValid[Math.floor(renderValid.length / 2)].date}</text>
       )}
-      <text x="720" y="205" textAnchor="end" fontSize="11" fill="currentColor">{renderValid[renderValid.length - 1].date}</text>
+      <text x={SVG_PAD_L + SVG_PLOT_W} y="205" textAnchor="end" fontSize="11" fill="currentColor">{renderValid[renderValid.length - 1].date}</text>
     </svg>
   </Box>;
 }

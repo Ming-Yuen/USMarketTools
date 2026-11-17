@@ -244,6 +244,25 @@ test("displays historical 5-year sample coverage, excluded loss months, same-day
   expect(within(peerPanel).getByText(/同日有效公司數：5（2026-11-05）/)).toBeInTheDocument();
 });
 
+test("tracks SeriesChart hover dot via SVG screen CTM without leftward drift under wide maxHeight letterboxing", () => {
+  const points = Array.from({ length: 10 }, (_, i) => ({
+    date: `2026-0${i + 1}-15`.replace("010", "10"),
+    value: 10 + i * 2,
+  }));
+  render(<SeriesChart title="字母框偏移測試" points={points} />);
+  const svg = screen.getByRole("img", { name: "字母框偏移測試" }) as unknown as SVGSVGElement;
+  // 模擬寬螢幕 maxHeight 造成 SVG 左側留白 e = 220px、真實縮放比例 a = 1.0，但 rect.width 達 1400px
+  svg.getBoundingClientRect = () => ({ left: 0, width: 1400, top: 0, height: 280, right: 1400, bottom: 280, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+  (svg as any).getScreenCTM = () => ({ a: 1, b: 0, c: 0, d: 1, e: 220, f: 0 });
+
+  // 滑鼠指向最後一點（SVG X = 68 + 868 = 936 -> clientX = 220 + 936 = 1156）
+  fireEvent.mouseMove(svg, { clientX: 1156, clientY: 120 });
+  const circles = Array.from(svg.querySelectorAll("circle"));
+  expect(circles[circles.length - 1]).toHaveAttribute("r", "4.5");
+  expect(circles[circles.length - 1]).toHaveAttribute("fill", "#0d47a1");
+  expect(circles[5]).toHaveAttribute("r", "2.5");
+});
+
 test("hides blank UNAVAILABLE trade plan cards while surfacing active support/resistance ladder and allowing SWING horizon switch", async () => {
   report.supportResistance = {
     status: "AVAILABLE", reasons: [],

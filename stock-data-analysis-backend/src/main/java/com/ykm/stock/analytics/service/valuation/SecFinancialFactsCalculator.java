@@ -101,25 +101,46 @@ public class SecFinancialFactsCalculator {
     private record Period(LocalDate start, LocalDate end) {}
     private record Point(SecFinancialFact fact, boolean conflict) {}
     public record PeriodSelection(List<ReportValues> reports, List<SecFinancialFact> facts) {}
+    public record PeriodWindow(LocalDate periodStart, LocalDate periodEnd, Integer fiscalYear, Integer fiscalQuarter) {}
+    public record PeriodAlignment(List<ReportValues> reports, List<SecFinancialFact> facts, List<PeriodWindow> windows) {}
     private record FiscalQuarter(int year, int quarter) {}
 
-    /** 先辨認交易日所屬的實際財季，再交回原有公式；財年數字取自當期申報，不取比較期的 fy。 */
-    public PeriodSelection selectPeriods(Collection<ReportValues> reports, List<SecFinancialFact> input, LocalDate day, Instant knownAt) {
+    /** 正規化整股所有報期：以 period_end 相差 <= 7 天且同期間類型（單季／年度）配對 Futu 與 SEC，統一至 SEC 實際期末日並推導財季起訖。 */
+    public PeriodAlignment alignReportPeriods(Collection<ReportValues> reports, List<SecFinancialFact> input, Instant knownAt) {
         LocalDate knownDay = knownAt.atZone(ZoneId.of("America/New_York")).toLocalDate();
         List<SecFinancialFact> known = input.stream().filter(fact -> fact.getObservedAt() != null && !fact.getObservedAt().isAfter(knownAt)
                 && fact.getFiled() != null && !fact.getFiled().isAfter(knownDay) && fact.getPeriodEnd() != null
                 && !fact.getPeriodEnd().isAfter(fact.getFiled())).toList();
+
         Map<FiscalQuarter, Set<LocalDate>> fiscalEnds = new HashMap<>();
+        Map<LocalDate, FiscalQuarter> secFiscalByEnd = new HashMap<>();
+        Map<LocalDate, LocalDate> secQuarterStartByEnd = new HashMap<>();
+        Map<LocalDate, LocalDate> secAnnualStartByEnd = new HashMap<>();
+        Set<LocalDate> secAnnualEnds = new HashSet<>();
+        Set<LocalDate> secBalanceEnds = new HashSet<>();
         Set<Period> quarters = new HashSet<>();
+
         for (SecFinancialFact fact : known) {
             if (!"us-gaap".equals(fact.getTaxonomy()) || !PERIODIC_REPORTS.contains(Objects.toString(fact.getForm(), ""))
                     || !(INCOME_PERIOD_TAGS.contains(fact.getTag()) || BALANCE_PERIOD_TAGS.contains(fact.getTag())
                     || CASH_FLOW_PERIOD_TAGS.contains(fact.getTag()))) continue;
             Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
-            if (quarter(period)) quarters.add(period);
+            if (quarter(period)) {
+                quarters.add(period);
+                secQuarterStartByEnd.putIfAbsent(period.end(), period.start());
+            } else if (annual(period)) {
+                secAnnualEnds.add(period.end());
+                secAnnualStartByEnd.putIfAbsent(period.end(), period.start());
+            } else if (period.start() == null && BALANCE_PERIOD_TAGS.contains(fact.getTag())) {
+                secBalanceEnds.add(period.end());
+            }
             if (fact.getReportFiscalYear() != null && fact.getReportFiscalPeriod() != null) {
-                int quarter = switch (fact.getReportFiscalPeriod()) { case "Q1" -> 1; case "Q2" -> 2; case "Q3" -> 3; case "FY" -> 4; default -> 0; };
-                if (quarter > 0) fiscalEnds.computeIfAbsent(new FiscalQuarter(fact.getReportFiscalYear(), quarter), ignored -> new HashSet<>()).add(period.end());
+                int q = switch (fact.getReportFiscalPeriod()) { case "Q1" -> 1; case "Q2" -> 2; case "Q3" -> 3; case "FY" -> 4; default -> 0; };
+                if (q > 0) {
+                    FiscalQuarter fq = new FiscalQuarter(fact.getReportFiscalYear(), q);
+                    fiscalEnds.computeIfAbsent(fq, ignored -> new HashSet<>()).add(period.end());
+                    secFiscalByEnd.putIfAbsent(period.end(), fq);
+                }
             }
         }
         // 全年起點與前三季累計可證明 Q4 的日期範圍；只用於報期配對，不相減 EPS。
@@ -134,27 +155,34 @@ public class SecFinancialFactsCalculator {
             if (!annual(period)) continue;
             for (LocalDate prior : nineMonthEnds.getOrDefault(period.start(), Set.of())) {
                 Period fourth = new Period(prior.plusDays(1), period.end());
-                if (quarter(fourth)) quarters.add(fourth);
+                if (quarter(fourth)) {
+                    quarters.add(fourth);
+                    secQuarterStartByEnd.putIfAbsent(fourth.end(), fourth.start());
+                }
             }
         }
+
         List<ReportValues> aligned = new ArrayList<>();
         Map<FiscalQuarter, Set<LocalDate>> reportEnds = new HashMap<>();
+        Map<LocalDate, FiscalQuarter> futuFiscalByEnd = new HashMap<>();
+        Set<LocalDate> allPeriodEnds = new HashSet<>();
+        allPeriodEnds.addAll(secQuarterStartByEnd.keySet());
+        allPeriodEnds.addAll(secAnnualEnds);
+        allPeriodEnds.addAll(secBalanceEnds);
+
         for (ReportValues report : reports) {
             if (report.periodEnd().isAfter(knownDay)) continue;
-            if (report.fiscalYear() == null) {
-                aligned.add(report);
-                continue;
-            }
             int quarter = report.periodType() == 7 ? 4 : report.periodType();
-            FiscalQuarter key = new FiscalQuarter(report.fiscalYear(), quarter);
-            Set<LocalDate> actual = fiscalEnds.getOrDefault(key, Set.of());
-            LocalDate end = actual.size() == 1 && ChronoUnit.DAYS.between(report.periodEnd(), actual.iterator().next()) <= 7
-                    && ChronoUnit.DAYS.between(actual.iterator().next(), report.periodEnd()) <= 7
-                    ? actual.iterator().next() : report.periodEnd();
-            ReportValues normalized = new ReportValues(report.figi(), report.statementType(), end, report.periodType(), report.fiscalYear(),
+            LocalDate resolvedEnd = resolveMatchingSecEnd(report, quarter, fiscalEnds, secQuarterStartByEnd.keySet(), secAnnualEnds, secBalanceEnds);
+            ReportValues normalized = new ReportValues(report.figi(), report.statementType(), resolvedEnd, report.periodType(), report.fiscalYear(),
                     report.currency(), report.accountingStandards(), report.values(), report.unknownNames(), report.pendingItems());
             aligned.add(normalized);
-            if (quarter >= 1 && quarter <= 4) reportEnds.computeIfAbsent(key, ignored -> new HashSet<>()).add(end);
+            allPeriodEnds.add(resolvedEnd);
+            if (report.fiscalYear() != null && quarter >= 1 && quarter <= 4) {
+                FiscalQuarter fq = new FiscalQuarter(report.fiscalYear(), quarter);
+                reportEnds.computeIfAbsent(fq, ignored -> new HashSet<>()).add(resolvedEnd);
+                futuFiscalByEnd.putIfAbsent(resolvedEnd, fq);
+            }
         }
         for (Map.Entry<FiscalQuarter, Set<LocalDate>> entry : reportEnds.entrySet()) {
             FiscalQuarter key = entry.getKey();
@@ -162,12 +190,72 @@ public class SecFinancialFactsCalculator {
             Set<LocalDate> starts = reportEnds.getOrDefault(previous, Set.of());
             if (entry.getValue().size() != 1 || starts.size() != 1) continue;
             Period period = new Period(starts.iterator().next().plusDays(1), entry.getValue().iterator().next());
-            if (quarter(period)) quarters.add(period);
+            if (quarter(period)) {
+                quarters.add(period);
+                secQuarterStartByEnd.putIfAbsent(period.end(), period.start());
+            }
         }
-        Set<LocalDate> targetEnds = quarters.stream().filter(period -> !day.isBefore(period.start()) && !day.isAfter(period.end()))
-                .map(Period::end).collect(Collectors.toSet());
-        return new PeriodSelection(aligned.stream().filter(report -> !report.periodEnd().isAfter(day) || targetEnds.contains(report.periodEnd())).toList(),
-                known.stream().filter(fact -> !fact.getPeriodEnd().isAfter(day) || targetEnds.contains(fact.getPeriodEnd())).toList());
+
+        List<LocalDate> sortedEnds = allPeriodEnds.stream().filter(end -> !end.isAfter(knownDay)).sorted().toList();
+        List<PeriodWindow> windows = new ArrayList<>();
+        LocalDate prevEnd = null;
+        for (LocalDate end : sortedEnds) {
+            FiscalQuarter label = futuFiscalByEnd.getOrDefault(end, secFiscalByEnd.get(end));
+            LocalDate start = secQuarterStartByEnd.get(end);
+            if (start == null && prevEnd != null) {
+                long gap = ChronoUnit.DAYS.between(prevEnd, end);
+                if (gap >= 75 && gap <= 200) {
+                    start = prevEnd.plusDays(1);
+                }
+            }
+            if (start == null) {
+                LocalDate annualStart = secAnnualStartByEnd.get(end);
+                if (annualStart != null && (prevEnd == null || !prevEnd.isAfter(annualStart))) {
+                    start = annualStart;
+                } else if (label != null) {
+                    start = end.minusDays(90);
+                }
+            }
+            windows.add(new PeriodWindow(start, end, label == null ? null : label.year(), label == null ? null : label.quarter()));
+            prevEnd = end;
+        }
+        return new PeriodAlignment(List.copyOf(aligned), known, List.copyOf(windows));
+    }
+
+    private LocalDate resolveMatchingSecEnd(ReportValues report, int quarter, Map<FiscalQuarter, Set<LocalDate>> fiscalEnds,
+                                            Set<LocalDate> secQuarterEnds, Set<LocalDate> secAnnualEnds, Set<LocalDate> secBalanceEnds) {
+        LocalDate futuEnd = report.periodEnd();
+        if (report.fiscalYear() != null && quarter >= 1 && quarter <= 4) {
+            Set<LocalDate> exactFiscal = fiscalEnds.getOrDefault(new FiscalQuarter(report.fiscalYear(), quarter), Set.of());
+            if (exactFiscal.size() == 1) {
+                LocalDate candidate = exactFiscal.iterator().next();
+                if (Math.abs(ChronoUnit.DAYS.between(futuEnd, candidate)) <= 7) return candidate;
+            }
+        }
+        Set<LocalDate> candidates = new HashSet<>();
+        if (report.periodType() == 7) {
+            candidates.addAll(secAnnualEnds);
+            if (report.statementType() == 2) candidates.addAll(secBalanceEnds);
+        } else {
+            candidates.addAll(secQuarterEnds);
+            if (report.periodType() == 4) candidates.addAll(secAnnualEnds);
+            if (report.statementType() == 2) candidates.addAll(secBalanceEnds);
+        }
+        List<LocalDate> nearby = candidates.stream()
+                .filter(secEnd -> Math.abs(ChronoUnit.DAYS.between(futuEnd, secEnd)) <= 7)
+                .sorted().toList();
+        return nearby.size() == 1 ? nearby.getFirst() : futuEnd;
+    }
+
+    /** 先辨認交易日所屬的實際財季，再交回原有公式；財年數字取自當期申報，不取比較期的 fy。 */
+    public PeriodSelection selectPeriods(Collection<ReportValues> reports, List<SecFinancialFact> input, LocalDate day, Instant knownAt) {
+        PeriodAlignment alignment = alignReportPeriods(reports, input, knownAt);
+        Set<LocalDate> targetEnds = alignment.windows().stream()
+                .filter(window -> window.periodStart() != null && !day.isBefore(window.periodStart()) && !day.isAfter(window.periodEnd()))
+                .map(PeriodWindow::periodEnd).collect(Collectors.toSet());
+        return new PeriodSelection(
+                alignment.reports().stream().filter(report -> !report.periodEnd().isAfter(day) || targetEnds.contains(report.periodEnd())).toList(),
+                alignment.facts().stream().filter(fact -> !fact.getPeriodEnd().isAfter(day) || targetEnds.contains(fact.getPeriodEnd())).toList());
     }
 
     public Flows calculate(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt) {
@@ -296,7 +384,7 @@ public class SecFinancialFactsCalculator {
                 && (annualPeriod ? annual(new Period(fact.getPeriodStart(), fact.getPeriodEnd()))
                         : quarter(new Period(fact.getPeriodStart(), fact.getPeriodEnd())))).toList();
 
-        // ① 拆股後提交且與 valuationDay 無拆股間距的直接申報 SEC 稀釋 EPS
+        // ① 拆股後提交之直接申報 SEC 稀釋 EPS，或拆股前原申報（期末至申報日間無拆股）按已知拆股因子對齊後一致
         LocalDate latestSplitUpToDay = splits.stream().map(StockSplit::getExecutionDate)
                 .filter(exec -> exec.isAfter(periodEnd) && !exec.isAfter(valuationDay))
                 .max(LocalDate::compareTo).orElse(null);
@@ -309,6 +397,21 @@ public class SecFinancialFactsCalculator {
         if (!directEps.isEmpty()) {
             BigDecimal secPostSplitEps = directEps.getFirst().getValue();
             if (reportedEps.subtract(secPostSplitEps).abs().compareTo(new BigDecimal("0.02")) <= 0) return true;
+        }
+        List<SecFinancialFact> unambiguousEps = matchingPeriod.stream()
+                .filter(fact -> ("EarningsPerShareDiluted".equals(fact.getTag()) || "EarningsPerShareBasicAndDiluted".equals(fact.getTag()))
+                        && (currency + "/shares").equals(fact.getUnit()) && fact.getValue() != null
+                        && splits.stream().noneMatch(s -> s.getExecutionDate().isAfter(fact.getPeriodEnd())
+                                && !s.getExecutionDate().isAfter(fact.getFiled())))
+                .sorted(Comparator.comparing(SecFinancialFact::getFiled).reversed()).toList();
+        if (!unambiguousEps.isEmpty()) {
+            SecFinancialFact baseFact = unambiguousEps.getFirst();
+            BigDecimal factor = StockSplitCalculator.shareFactor(splits, baseFact.getFiled(), valuationDay);
+            if (factor.signum() > 0) {
+                BigDecimal adjustedSecEps = baseFact.getValue().divide(factor, MathContext.DECIMAL128);
+                BigDecimal tol = adjustedSecEps.abs().multiply(new BigDecimal("0.03")).max(new BigDecimal("0.02"));
+                if (reportedEps.subtract(adjustedSecEps).abs().compareTo(tol) <= 0) return true;
+            }
         }
 
         // ② 同報期盈利分子除以拆股對齊後之「加權平均稀釋股數」交叉驗證（絕不用期末股本猜測）
@@ -391,11 +494,13 @@ public class SecFinancialFactsCalculator {
                     null, null, null, fcfNote);
         }
         Flow eps = dilutedEps(eligible, this::trailing);
+        Flow netIncome = netIncomeCommon(eligible, this::trailing);
         Flow equity = commonEquity(eligible);
         Flow depreciation = depreciationAndAmortization(eligible, this::trailing);
         Map<FinancialConcept, Flow> inputs = new EnumMap<>(FinancialConcept.class);
-        inputs.put(FinancialConcept.OPERATING_CASH_FLOW, cfo);
-        inputs.put(FinancialConcept.CAPITAL_EXPENDITURE, capex);
+        inputs.put(FinancialConcept.NET_INCOME_COMMON, requireReportEnd(netIncome, incomeEnd, "SEC_FINANCIAL_INPUT_MISSING"));
+        inputs.put(FinancialConcept.OPERATING_CASH_FLOW, requireReportEnd(cfo, cashFlowEnd, "SEC_FINANCIAL_INPUT_MISSING"));
+        inputs.put(FinancialConcept.CAPITAL_EXPENDITURE, requireReportEnd(capex, cashFlowEnd, "SEC_FINANCIAL_INPUT_MISSING"));
         inputs.put(FinancialConcept.CURRENT_FINANCE_LEASES, leasePart(eligible, "FinanceLeaseLiability", "Current", "Noncurrent"));
         inputs.put(FinancialConcept.LONG_TERM_FINANCE_LEASES, leasePart(eligible, "FinanceLeaseLiability", "Noncurrent", "Current"));
         inputs.put(FinancialConcept.TOTAL_FINANCE_LEASES, balance(eligible, "FinanceLeaseLiability"));
@@ -413,6 +518,9 @@ public class SecFinancialFactsCalculator {
         inputs.put(FinancialConcept.TOTAL_EQUITY, balance(eligible, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"));
         inputs.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED,
                 balance(eligible, "AccumulatedOtherComprehensiveIncomeLossNetOfTax"));
+        if (preferredEnd != null) {
+            inputs.put(FinancialConcept.CURRENT_DEBT_AND_LEASES, resolveSecDebt(sameBalancePeriod, preferredEnd));
+        }
 
         Flow profit = trailing(eligible, "OperatingIncomeLoss");
         inputs.put(FinancialConcept.OPERATING_PROFIT, profit);

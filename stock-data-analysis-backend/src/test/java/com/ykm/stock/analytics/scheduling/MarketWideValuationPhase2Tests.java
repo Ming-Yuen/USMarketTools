@@ -1,36 +1,37 @@
 package com.ykm.stock.analytics.scheduling;
 
 import com.ykm.common.common_lib.service.DateTimeService;
-import com.ykm.stock.analytics.client.SecEdgarFeedArchive;
-import com.ykm.stock.analytics.client.SecFinancialStatementArchive;
 import com.ykm.stock.analytics.enums.ActiveStatus;
-import com.ykm.stock.analytics.enums.FinancialConcept;
+import com.ykm.stock.analytics.enums.ValuationReason;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
 import com.ykm.stock.analytics.model.entity.StockQuote;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
-import com.ykm.stock.analytics.model.entity.StockValuationDaily;
+import com.ykm.stock.analytics.model.entity.StockValuationLatest;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
-import com.ykm.stock.analytics.repository.jpa.FinancialReportItemMappingRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
+import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
 import com.ykm.stock.analytics.repository.jpa.StockSplitRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
-import com.ykm.stock.analytics.repository.jpa.StockValuationDailyRepository;
+import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import com.ykm.stock.analytics.support.NoOpTransactionManager;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,13 +45,17 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -68,27 +73,33 @@ class MarketWideValuationPhase2Tests {
     private final StockQuoteRepository quotes = mock(StockQuoteRepository.class);
     private final StockSplitRepository splits = mock(StockSplitRepository.class);
     private final FinancialReportRepository reports = mock(FinancialReportRepository.class);
-    private final FinancialReportItemMappingRepository mappings = mock(FinancialReportItemMappingRepository.class);
-    private final StockValuationDailyRepository valuations = mock(StockValuationDailyRepository.class);
-    private final DateTimeService clock = mock(DateTimeService.class);
-    private final MarketStatusService calendar = mock(MarketStatusService.class);
-    private final StockShareObservationRepository shareObservations = mock(StockShareObservationRepository.class);
-    private final FutuService futu = mock(FutuService.class);
-    private final EntityManager entityManager = mock(EntityManager.class);
     private final SecFinancialFactRepository secFacts = mock(SecFinancialFactRepository.class);
+    private final StockShareObservationRepository shareObservations = mock(StockShareObservationRepository.class);
     private final StockIndustryHistoryRepository industries = mock(StockIndustryHistoryRepository.class);
     private final IndustryValuationConfigRepository industryConfigs = mock(IndustryValuationConfigRepository.class);
-    private final List<StockValuationDaily> savedValuations = new ArrayList<>();
+    private final StockFinancialPeriodRepository periodRepo = mock(StockFinancialPeriodRepository.class);
+    private final StockValuationLatestRepository latestRepo = mock(StockValuationLatestRepository.class);
+    private final DateTimeService clock = mock(DateTimeService.class);
+    private final MarketStatusService calendar = mock(MarketStatusService.class);
+    private final FutuService futu = mock(FutuService.class);
+    private final EntityManager entityManager = mock(EntityManager.class);
+
+    private final Map<String, List<StockFinancialPeriod>> storedPeriods = new LinkedHashMap<>();
+    private final Map<String, StockValuationLatest> storedLatest = new LinkedHashMap<>();
     private final List<StockShareObservation> savedObservations = new ArrayList<>();
 
+    private StockValuationService valuationService;
     private StockValuationDailyTask task;
 
     @BeforeEach
     void setUp() {
-        task = new StockValuationDailyTask(stocks, statuses, quotes, splits, reports, mappings, valuations,
-                new TransactionTemplate(new NoOpTransactionManager()), clock, calendar, shareObservations, futu,
-                entityManager, secFacts, industries, mock(SecFinancialStatementArchive.class),
-                mock(SecEdgarFeedArchive.class), new SecIssuerHistory(""), industryConfigs);
+        TransactionTemplate tx = new TransactionTemplate(new NoOpTransactionManager());
+        valuationService = new StockValuationService(
+                stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
+                industries, industryConfigs, periodRepo, latestRepo, calendar, clock,
+                new SecIssuerHistory(""), tx, entityManager);
+        task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager);
+
         when(clock.now()).thenReturn(NOW);
         when(clock.nowLocalDateTime()).thenReturn(LocalDateTime.of(2026, 11, 13, 16, 0));
         when(calendar.isTradingDay(any())).thenReturn(true);
@@ -98,17 +109,50 @@ class MarketWideValuationPhase2Tests {
         when(calendar.getSessionOpenAt(LAST_CLOSED)).thenReturn(CLOSE.minusSeconds(6 * 3600));
         when(calendar.getSessionCloseAt(HIST_DAY)).thenReturn(HIST_CLOSE);
         when(calendar.getSessionOpenAt(HIST_DAY)).thenReturn(HIST_CLOSE.minusSeconds(6 * 3600));
+
         doAnswer(invocation -> {
             Object arg = invocation.getArgument(0);
-            if (arg instanceof StockValuationDaily row) savedValuations.add(row);
-            if (arg instanceof StockShareObservation obs) savedObservations.add(obs);
+            if (arg instanceof StockFinancialPeriod p) {
+                storedPeriods.computeIfAbsent(p.getFigi(), k -> new ArrayList<>()).add(p);
+            } else if (arg instanceof StockValuationLatest l) {
+                storedLatest.put(l.getFigi(), l);
+            } else if (arg instanceof StockShareObservation obs) {
+                savedObservations.add(obs);
+            }
             return null;
         }).when(entityManager).persist(any());
+
         doAnswer(invocation -> {
-            StockValuationDaily row = invocation.getArgument(0);
-            savedValuations.add(row);
-            return row;
-        }).when(entityManager).merge(any(StockValuationDaily.class));
+            Object arg = invocation.getArgument(0);
+            if (arg instanceof StockValuationLatest l) storedLatest.put(l.getFigi(), l);
+            return arg;
+        }).when(entityManager).merge(any());
+
+        doAnswer(invocation -> {
+            Collection<String> figis = invocation.getArgument(0);
+            for (String f : figis) storedPeriods.remove(f);
+            return null;
+        }).when(periodRepo).deleteByFigiIn(anyCollection());
+
+        when(periodRepo.findByFigiOrderByPeriodEndAsc(anyString()))
+                .thenAnswer(inv -> List.copyOf(storedPeriods.getOrDefault((String) inv.getArgument(0), List.of())));
+        when(periodRepo.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection()))
+                .thenAnswer(inv -> {
+                    Collection<String> figis = inv.getArgument(0);
+                    List<StockFinancialPeriod> all = new ArrayList<>();
+                    for (String f : figis) all.addAll(storedPeriods.getOrDefault(f, List.of()));
+                    return all;
+                });
+        when(periodRepo.findExistingFigis(anyCollection()))
+                .thenAnswer(inv -> {
+                    Collection<String> figis = inv.getArgument(0);
+                    return figis.stream().filter(storedPeriods::containsKey).collect(java.util.stream.Collectors.toSet());
+                });
+        when(latestRepo.findById(anyString())).thenAnswer(inv -> Optional.ofNullable(storedLatest.get((String) inv.getArgument(0))));
+        when(latestRepo.findByFigiIn(anyCollection())).thenAnswer(inv -> {
+            Collection<String> figis = inv.getArgument(0);
+            return figis.stream().map(storedLatest::get).filter(java.util.Objects::nonNull).toList();
+        });
     }
 
     @Test
@@ -116,39 +160,41 @@ class MarketWideValuationPhase2Tests {
         ActiveStockWithStatus meta = target("BBG000MM2P62", "META", "0001326801", "Meta Platforms, Inc. Class A Common Stock", "7370");
         meta.status().setSplitFromDate(null);
         meta.status().setSplitDate(null);
-        when(stocks.findValuationStocksForDate(ActiveStatus.ACTIVE, HIST_DAY)).thenReturn(List.of(meta));
-        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(meta.status()));
-        when(quotes.findStoredQuotes(anyCollection(), eq(HIST_DAY))).thenReturn(List.of(quote("BBG000MM2P62", HIST_DAY, "500")));
+        stubStocksAndStatuses(List.of(meta));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("BBG000MM2P62"), any(), any()))
+                .thenReturn(List.of(quote("BBG000MM2P62", HIST_DAY, "500")));
+
         StockShareObservation obs = new StockShareObservation();
         obs.setFigi("BBG000MM2P62");
         obs.setObservedAt(HIST_CLOSE.minusSeconds(3600));
         obs.setIssuedShares(2700000000L);
         obs.setOutstandingShares(2500000000L);
         obs.setSource("FUTU");
-        when(shareObservations.findLatestAt(anyCollection(), eq(HIST_CLOSE))).thenReturn(List.of(obs));
-        when(reports.findValuationReports(anyCollection(), eq(HIST_DAY), eq(NOW))).thenReturn(
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(obs));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("BBG000MM2P62"), eq("FUTU"), any()))
+                .thenReturn(Optional.of(obs));
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(
                 operatingAnnualReports("BBG000MM2P62", "US_GAAP", "2025-12-31", "20", "125000000000", "250000000000", "50000000000", "60000000000", "15000000000", "20000000000", "40000000000"));
 
-        task.execute(context(HIST_DAY));
+        List<ValuationResultDto> evaluated = valuationService.recalculate("BBG000MM2P62", HIST_DAY, HIST_DAY);
 
-        assertThat(savedValuations).singleElement().satisfies(row -> {
-            assertThat(row.getPe()).isEqualByComparingTo("25");
+        assertThat(evaluated).singleElement().satisfies(row -> {
+            assertThat(row.metrics().pe().value()).isEqualByComparingTo("25");
             // MarketCap = 500 * 2.5B (outstandingShares, not 2.7B issuedShares) = 1.25T; PB = 1.25T / 125B = 10
-            assertThat(row.getPb()).isEqualByComparingTo("10");
-            assertThat(row.getPs()).isEqualByComparingTo("5");
-            assertThat(row.getPfcf()).isEqualByComparingTo("25");
-            assertThat(row.getEvEbitda()).isNotNull();
+            assertThat(row.metrics().pb().value()).isEqualByComparingTo("10");
+            assertThat(row.metrics().ps().value()).isEqualByComparingTo("5");
+            assertThat(row.metrics().pfcf().value()).isEqualByComparingTo("25");
+            assertThat(row.metrics().evEbitda().value()).isNotNull();
         });
     }
 
     @Test
     void multiSecurityOneToOneGooglComputesHistoricalValuationWhileNonOneToOneBrkBMarksUnverifiedHistorically() {
-        // 1) GOOGL + GOOG（1:1 經濟權，等值股數 12.294B 與 SEC 申報 12.294B 誤差 0% <= 2%）
         ActiveStockWithStatus googl = target("GOOGL_FIGI", "GOOGL", "0001652044", "Alphabet Inc. Class A", "7370");
         ActiveStockWithStatus brkB = target("BRKB_FIGI", "BRK.B", "0001067983", "Berkshire Hathaway Inc. Class B", "6331");
+        stubStocksAndStatuses(List.of(googl, brkB));
         when(stocks.findMultiSecurityIssuers(anyCollection(), eq(ActiveStatus.ACTIVE)))
                 .thenReturn(Set.of("0001652044", "0001067983"));
-        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(googl.status(), brkB.status()));
 
         StockShareObservation googlLatest = new StockShareObservation();
         googlLatest.setFigi("GOOGL_FIGI");
@@ -172,49 +218,50 @@ class MarketWideValuationPhase2Tests {
         brkLatest.setSnapshotQuoteTime(CLOSE);
         brkLatest.setSource("FUTU");
 
-        SecFinancialFact googlSecShares = secShareFact("0001652044", "2026-03-31", "2026-04-25", "12300000000");
-        when(secFacts.findLatestIssuerShareFacts(anyCollection(), eq(NOW))).thenReturn(List.of(googlSecShares));
-        when(secFacts.findValuationFlows(anyCollection(), anyCollection(), any(), eq(NOW))).thenReturn(List.of(googlSecShares));
-        when(shareObservations.findLatestAt(anyCollection(), eq(NOW))).thenReturn(List.of(googlLatest, brkLatest));
-
-        // A. 最新收市日：GOOGL 與 BRK.B 均採用富途對應等值總市值算出最新估值，BRK.B 保險業 P/FCF 與 EV/EBITDA 為 NOT_APPLICABLE
-        when(stocks.findValuationStocksForDate(ActiveStatus.ACTIVE, LAST_CLOSED)).thenReturn(List.of(googl, brkB));
-        when(quotes.findStoredQuotes(anyCollection(), eq(LAST_CLOSED)))
-                .thenReturn(List.of(quote("GOOGL_FIGI", LAST_CLOSED, "200"), quote("BRKB_FIGI", LAST_CLOSED, "500")));
+        SecFinancialFact googlSecShares = secShareFact("0001652044", "2025-12-31", "2026-02-05", "12300000000");
+        when(secFacts.findLatestIssuerShareFacts(eq(List.of("0001652044")), any())).thenReturn(List.of(googlSecShares));
+        when(secFacts.findLatestIssuerShareFacts(eq(List.of("0001067983")), any())).thenReturn(List.of());
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(List.of(googlSecShares));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(googlLatest, brkLatest));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("GOOGL_FIGI"), eq("FUTU"), eq(NOW)))
+                .thenReturn(Optional.of(googlLatest));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("BRKB_FIGI"), eq("FUTU"), eq(NOW)))
+                .thenReturn(Optional.of(brkLatest));
         when(shareObservations.findLatestClosingSnapshotAt(anyCollection(), any(), eq(CLOSE), eq(NOW)))
                 .thenReturn(List.of(googlLatest, brkLatest));
+
         List<FinancialReport> allReports = new ArrayList<>();
         allReports.addAll(operatingAnnualReports("GOOGL_FIGI", "US_GAAP", "2025-12-31", "10", "300000000000", "350000000000", "70000000000", "100000000000", "20000000000", "15000000000", "90000000000"));
         allReports.addAll(operatingAnnualReports("BRKB_FIGI", "US_GAAP", "2025-12-31", "25", "531129898500", "370000000000", "30000000000", "40000000000", "10000000000", "120000000000", "45000000000"));
-        when(reports.findValuationReports(anyCollection(), any(), eq(NOW))).thenReturn(allReports);
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(allReports);
+        when(quotes.findStoredQuotes(anyCollection(), eq(LAST_CLOSED)))
+                .thenReturn(List.of(quote("GOOGL_FIGI", LAST_CLOSED, "200"), quote("BRKB_FIGI", LAST_CLOSED, "500")));
 
-        task.execute(context(LAST_CLOSED));
+        // A. 最新收市快照：GOOGL 與 BRK.B 均採用富途對應等值總市值算出最新估值
+        valuationService.rebuildAndRefreshLatest(List.of("GOOGL_FIGI", "BRKB_FIGI"));
 
-        StockValuationDaily googlLatestRow = savedValuations.stream().filter(r -> "GOOGL_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        StockValuationDaily brkLatestRow = savedValuations.stream().filter(r -> "BRKB_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
+        StockValuationLatest googlLatestRow = storedLatest.get("GOOGL_FIGI");
+        StockValuationLatest brkLatestRow = storedLatest.get("BRKB_FIGI");
         assertThat(googlLatestRow.getPe()).isEqualByComparingTo("20");
         assertThat(googlLatestRow.getPb()).isNotNull();
         assertThat(brkLatestRow.getPe()).isEqualByComparingTo("20");
         assertThat(brkLatestRow.getPb()).isEqualByComparingTo("2");
-        assertThat(brkLatestRow.getPfcfReason()).isEqualTo("PFCF_NOT_APPLICABLE_TO_INDUSTRY");
-        assertThat(brkLatestRow.getEvEbitdaReason()).isEqualTo("EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY");
+        assertThat(brkLatestRow.getPfcfReason()).isEqualTo(ValuationReason.PFCF_NOT_APPLICABLE_TO_INDUSTRY);
+        assertThat(brkLatestRow.getEvEbitdaReason()).isEqualTo(ValuationReason.EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY);
 
-        // B. 歷史交易日：GOOGL 通過 <=2% 驗證並採用 SEC 申報總股數；BRK.B 未通過 1:1 驗證，市值倍數標為 SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED（但保留同股類單位之 P/E）
-        savedValuations.clear();
-        when(stocks.findValuationStocksForDate(ActiveStatus.ACTIVE, HIST_DAY)).thenReturn(List.of(googl, brkB));
-        when(quotes.findStoredQuotes(anyCollection(), eq(HIST_DAY)))
-                .thenReturn(List.of(quote("GOOGL_FIGI", HIST_DAY, "180"), quote("BRKB_FIGI", HIST_DAY, "450")));
-        when(shareObservations.findLatestAt(anyCollection(), eq(HIST_CLOSE))).thenReturn(List.of());
+        // B. 歷史交易日即時估值：GOOGL 通過 <=2% 驗證；BRK.B 未通過 1:1 驗證標為 SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED（但保留同股類單位 P/E）
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("GOOGL_FIGI"), eq(HIST_DAY), eq(HIST_DAY)))
+                .thenReturn(List.of(quote("GOOGL_FIGI", HIST_DAY, "180")));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("BRKB_FIGI"), eq(HIST_DAY), eq(HIST_DAY)))
+                .thenReturn(List.of(quote("BRKB_FIGI", HIST_DAY, "450")));
 
-        task.execute(context(HIST_DAY));
-
-        StockValuationDaily googlHistRow = savedValuations.stream().filter(r -> "GOOGL_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        StockValuationDaily brkHistRow = savedValuations.stream().filter(r -> "BRKB_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        assertThat(googlHistRow.getPb()).isNotNull();
-        assertThat(googlHistRow.getPs()).isNotNull();
-        assertThat(brkHistRow.getPe()).isEqualByComparingTo("18");
-        assertThat(brkHistRow.getPb()).isNull();
-        assertThat(brkHistRow.getPbReason()).isEqualTo("SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED");
+        ValuationResultDto googlHist = valuationService.history("GOOGL_FIGI", HIST_DAY, HIST_DAY, "DAILY").getFirst();
+        ValuationResultDto brkHist = valuationService.history("BRKB_FIGI", HIST_DAY, HIST_DAY, "DAILY").getFirst();
+        assertThat(googlHist.metrics().pb().value()).isNotNull();
+        assertThat(googlHist.metrics().ps().value()).isNotNull();
+        assertThat(brkHist.metrics().pe().value()).isEqualByComparingTo("18");
+        assertThat(brkHist.metrics().pb().value()).isNull();
+        assertThat(brkHist.metrics().pb().reasonCode()).isEqualTo("SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED");
     }
 
     @Test
@@ -222,10 +269,7 @@ class MarketWideValuationPhase2Tests {
         ActiveStockWithStatus jpm = target("JPM_FIGI", "JPM", "0000019617", "JPMorgan Chase & Co.", "6021");
         ActiveStockWithStatus gold = target("GOLD_FIGI", "GOLD", null, "Barrick Mining Corp", "1040");
         ActiveStockWithStatus tsm = target("TSM_FIGI", "TSM", null, "TSMC", "3674");
-        when(stocks.findValuationStocksForDate(ActiveStatus.ACTIVE, HIST_DAY)).thenReturn(List.of(jpm, gold, tsm));
-        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(jpm.status(), gold.status(), tsm.status()));
-        when(quotes.findStoredQuotes(anyCollection(), eq(HIST_DAY))).thenReturn(List.of(
-                quote("JPM_FIGI", HIST_DAY, "200"), quote("GOLD_FIGI", HIST_DAY, "20"), quote("TSM_FIGI", HIST_DAY, "180")));
+        stubStocksAndStatuses(List.of(jpm, gold, tsm));
 
         StockIndustry bankInd = new StockIndustry();
         bankInd.setCode("I100");
@@ -233,20 +277,21 @@ class MarketWideValuationPhase2Tests {
         StockIndustryHistory jpmHist = new StockIndustryHistory();
         jpmHist.setFigi("JPM_FIGI");
         jpmHist.setIndustry(bankInd);
-        when(industries.findByFigisAt(anyCollection(), eq(HIST_CLOSE))).thenReturn(List.of(jpmHist));
+        when(industries.findByFigisAt(anyCollection(), any())).thenReturn(List.of(jpmHist));
         IndustryValuationConfig bankCfg = new IndustryValuationConfig();
         bankCfg.setIndustryCode("I100");
         bankCfg.setModelCode("BANK");
         bankCfg.setPrimaryMetric("PB");
-        when(industryConfigs.findByIndustryCodesAt(anyCollection(), eq(HIST_CLOSE))).thenReturn(List.of(bankCfg));
+        when(industryConfigs.findByIndustryCodesAt(anyCollection(), any())).thenReturn(List.of(bankCfg));
 
         StockShareObservation jpmObs = simpleObs("JPM_FIGI", 2800000000L);
         StockShareObservation goldObs = simpleObs("GOLD_FIGI", 1750000000L);
         StockShareObservation tsmObs = simpleObs("TSM_FIGI", 5186000000L);
-        when(shareObservations.findLatestAt(anyCollection(), eq(HIST_CLOSE))).thenReturn(List.of(jpmObs, goldObs, tsmObs));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(jpmObs, goldObs, tsmObs));
+        when(quotes.findStoredQuotes(anyCollection(), eq(LAST_CLOSED))).thenReturn(List.of(
+                quote("JPM_FIGI", LAST_CLOSED, "200"), quote("GOLD_FIGI", LAST_CLOSED, "20"), quote("TSM_FIGI", LAST_CLOSED, "180")));
 
         List<FinancialReport> batchReports = new ArrayList<>();
-        // JPM：含 20B 優先股，普通股權益 = 340B - 20B = 320B
         FinancialReport jpmInc = new FinancialReport();
         jpmInc.setFigi("JPM_FIGI");
         jpmInc.setStatementType(1);
@@ -272,45 +317,37 @@ class MarketWideValuationPhase2Tests {
         batchReports.add(jpmInc);
         batchReports.add(jpmBal);
 
-        // GOLD：NonUS_GAAP（IFRS）同幣別 USD，EV 納入全部租賃負債
         batchReports.addAll(operatingAnnualReports("GOLD_FIGI", "NonUS_GAAP", "2025-12-31", "1.25", "25000000000", "14000000000", "2000000000", "4000000000", "1500000000", "5500000000", "4000000000"));
-
-        // TSM：財報幣別 TWD 與股價幣別 USD 不一致 -> REPORTING_CURRENCY_MISMATCH
         List<FinancialReport> tsmReports = operatingAnnualReports("TSM_FIGI", "NonUS_GAAP", "2025-12-31", "45", "4000000000000", "2800000000000", "800000000000", "1200000000000", "500000000000", "900000000000", "2000000000000");
         tsmReports.forEach(r -> r.setCurrency("TWD"));
         batchReports.addAll(tsmReports);
 
-        when(reports.findValuationReports(anyCollection(), eq(HIST_DAY), eq(NOW))).thenReturn(batchReports);
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
 
-        task.execute(context(HIST_DAY));
+        valuationService.rebuildAndRefreshLatest(List.of("JPM_FIGI", "GOLD_FIGI", "TSM_FIGI"));
 
-        StockValuationDaily jpmRow = savedValuations.stream().filter(r -> "JPM_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
+        StockValuationLatest jpmRow = storedLatest.get("JPM_FIGI");
         assertThat(jpmRow.getPe()).isEqualByComparingTo("12.5");
-        // MarketCap = 200 * 2.8B = 560B; CommonEquity = 340B - 20B = 320B -> PB = 1.75
         assertThat(jpmRow.getPb()).isEqualByComparingTo("1.75");
-        assertThat(jpmRow.getPfcfReason()).isEqualTo("PFCF_NOT_APPLICABLE_TO_INDUSTRY");
-        assertThat(jpmRow.getEvEbitdaReason()).isEqualTo("EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY");
+        assertThat(jpmRow.getPfcfReason()).isEqualTo(ValuationReason.PFCF_NOT_APPLICABLE_TO_INDUSTRY);
+        assertThat(jpmRow.getEvEbitdaReason()).isEqualTo(ValuationReason.EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY);
 
-        StockValuationDaily goldRow = savedValuations.stream().filter(r -> "GOLD_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        // MarketCap = 20 * 1.75B = 35B; IFRS Debt = 5.5B - Cash 4B => EV = 36.5B; EBITDA = 4B + 1.5B = 5.5B
+        StockValuationLatest goldRow = storedLatest.get("GOLD_FIGI");
         assertThat(goldRow.getPe()).isEqualByComparingTo("16");
         assertThat(goldRow.getEvEbitda()).isNotNull();
 
-        StockValuationDaily tsmRow = savedValuations.stream().filter(r -> "TSM_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
+        StockValuationLatest tsmRow = storedLatest.get("TSM_FIGI");
         assertThat(tsmRow.getPe()).isNull();
-        assertThat(tsmRow.getPeReason()).isEqualTo("REPORTING_CURRENCY_MISMATCH");
-        assertThat(tsmRow.getPbReason()).isEqualTo("REPORTING_CURRENCY_MISMATCH");
+        assertThat(tsmRow.getPeReason()).isEqualTo(ValuationReason.REPORTING_CURRENCY_MISMATCH);
+        assertThat(tsmRow.getPbReason()).isEqualTo(ValuationReason.REPORTING_CURRENCY_MISMATCH);
     }
 
     @Test
     void shareObservationSyncSkipsDuplicateInsertWhenSharesUnchangedAndClosingSnapshotAlreadyExists() {
         ActiveStockWithStatus aapl = target("AAPL_FIGI", "AAPL", "0000320193", "Apple Inc.", "3571");
-        aapl.status().setValuationDate(LAST_CLOSED);
+        stubStocksAndStatuses(List.of(aapl));
         when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(aapl));
-        when(quotes.findFirstQuoteDates(anyCollection())).thenReturn(List.<Object[]>of(new Object[]{"AAPL_FIGI", LocalDate.of(2016, 1, 4)}));
-        aapl.status().setValuationDate(LAST_CLOSED.minusDays(1));
         when(quotes.findStoredQuotes(anyCollection(), eq(LAST_CLOSED))).thenReturn(List.of(quote("AAPL_FIGI", LAST_CLOSED, "220")));
-        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(aapl.status()));
 
         FutuService.ObservationSession obsSession = mock(FutuService.ObservationSession.class);
         when(futu.openObservationSession()).thenReturn(obsSession);
@@ -333,29 +370,25 @@ class MarketWideValuationPhase2Tests {
 
         when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(existing));
         when(shareObservations.findLatestClosingSnapshotAt(anyCollection(), any(), eq(CLOSE), any())).thenReturn(List.of(existing));
-        when(reports.findValuationReports(anyCollection(), eq(LAST_CLOSED), eq(NOW))).thenReturn(List.of());
 
         JobExecutionContext incrementalCtx = mock(JobExecutionContext.class);
         when(incrementalCtx.getMergedJobDataMap()).thenReturn(new JobDataMap());
         task.execute(incrementalCtx);
 
-        // 股數未變動且已有當日收市快照 -> 不重複寫入 StockShareObservation
         assertThat(savedObservations).isEmpty();
     }
 
     @Test
-    void nvdaPostSplitCrossingQuarterEpsPassesViaDilutedWeightedSharesAndExelDebtFreeOperatingLeaseSucceeds() {
+    void nvdaPreAndPostSplitValuationsUseSameFinancialPeriodRowViaEpsShareBasisDateAndExelDebtFreeSucceeds() {
+        LocalDate preSplitDay = LocalDate.of(2024, 5, 31);
         LocalDate postSplitDay = LocalDate.of(2024, 6, 14);
         Instant postSplitClose = Instant.parse("2024-06-14T20:00:00Z");
+        when(calendar.getSessionCloseAt(preSplitDay)).thenReturn(Instant.parse("2024-05-31T20:00:00Z"));
         when(calendar.getSessionCloseAt(postSplitDay)).thenReturn(postSplitClose);
-        when(calendar.getSessionOpenAt(postSplitDay)).thenReturn(postSplitClose.minusSeconds(6 * 3600));
 
         ActiveStockWithStatus nvda = target("NVDA_FIGI", "NVDA", "0001045810", "NVIDIA Corp", "3674");
         ActiveStockWithStatus exel = target("EXEL_FIGI", "EXEL", "0000939767", "Exelixis Inc", "2836");
-        when(stocks.findValuationStocksForDate(ActiveStatus.ACTIVE, postSplitDay)).thenReturn(List.of(nvda, exel));
-        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(nvda.status(), exel.status()));
-        when(quotes.findStoredQuotes(anyCollection(), eq(postSplitDay))).thenReturn(List.of(
-                quote("NVDA_FIGI", postSplitDay, "131.88"), quote("EXEL_FIGI", postSplitDay, "22.50")));
+        stubStocksAndStatuses(List.of(nvda, exel));
 
         StockSplit split = new StockSplit();
         split.setSourceEventId("NVDA:2024-06-10");
@@ -363,21 +396,17 @@ class MarketWideValuationPhase2Tests {
         split.setExecutionDate(LocalDate.of(2024, 6, 10));
         split.setSplitFrom(BigDecimal.ONE);
         split.setSplitTo(BigDecimal.TEN);
-        when(splits.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of(split));
+        when(splits.findByFigiInOrderByExecutionDateAsc(eq(List.of("NVDA_FIGI")))).thenReturn(List.of(split));
+        when(splits.findByFigiInOrderByExecutionDateAsc(eq(List.of("EXEL_FIGI")))).thenReturn(List.of());
+        when(splits.findByFigiInOrderByExecutionDateAsc(eq(List.of("NVDA_FIGI", "EXEL_FIGI")))).thenReturn(List.of(split));
 
-        StockShareObservation nvdaObs = new StockShareObservation();
-        nvdaObs.setFigi("NVDA_FIGI");
-        nvdaObs.setObservedAt(postSplitClose.minusSeconds(300));
-        nvdaObs.setIssuedShares(24600000000L);
-        nvdaObs.setOutstandingShares(24600000000L);
-        nvdaObs.setSource("FUTU");
-        StockShareObservation exelObs = new StockShareObservation();
-        exelObs.setFigi("EXEL_FIGI");
-        exelObs.setObservedAt(postSplitClose.minusSeconds(300));
-        exelObs.setIssuedShares(280000000L);
-        exelObs.setOutstandingShares(280000000L);
-        exelObs.setSource("FUTU");
-        when(shareObservations.findLatestAt(anyCollection(), eq(postSplitClose))).thenReturn(List.of(nvdaObs, exelObs));
+        StockShareObservation nvdaObs = simpleObs("NVDA_FIGI", 24600000000L);
+        StockShareObservation exelObs = simpleObs("EXEL_FIGI", 280000000L);
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(nvdaObs, exelObs));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("NVDA_FIGI"), eq("FUTU"), any()))
+                .thenReturn(Optional.of(nvdaObs));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("EXEL_FIGI"), eq("FUTU"), any()))
+                .thenReturn(Optional.of(exelObs));
 
         List<FinancialReport> nvdaAndExelReports = new ArrayList<>();
         String[][] nvdaQuarters = {
@@ -422,9 +451,24 @@ class MarketWideValuationPhase2Tests {
             wShares.setForm("10-Q");
             wShares.setValue(new BigDecimal(secRanges[i][3]));
             secList.add(wShares);
+
+            // 亦加入損益週期錨點讓非曆年 1 天誤差自動正規化至 SEC 實際期末
+            SecFinancialFact niAnchor = new SecFinancialFact();
+            niAnchor.setCik("0001045810");
+            niAnchor.setTaxonomy("us-gaap");
+            niAnchor.setTag("NetIncomeLoss");
+            niAnchor.setUnit("USD");
+            niAnchor.setPeriodStart(LocalDate.parse(secRanges[i][0]));
+            niAnchor.setPeriodEnd(LocalDate.parse(secRanges[i][1]));
+            niAnchor.setFiled(LocalDate.parse(secRanges[i][2]));
+            niAnchor.setAvailableFromDate(LocalDate.parse(secRanges[i][2]).plusDays(1));
+            niAnchor.setObservedAt(postSplitClose.minusSeconds(600));
+            niAnchor.setAccession("0001045810-24-00000" + (i + 1));
+            niAnchor.setForm("10-Q");
+            niAnchor.setValue(new BigDecimal(nvdaQuarters[i][4]));
+            secList.add(niAnchor);
         }
 
-        // EXEL：無短期借款、長債與租賃總額 162,201,000 等於租賃項 162,201,000（純借款 = 0）
         FinancialReport exelInc = new FinancialReport();
         exelInc.setFigi("EXEL_FIGI");
         exelInc.setStatementType(1);
@@ -466,28 +510,53 @@ class MarketWideValuationPhase2Tests {
                 new FinancialReport.Item(8072L, "Free Cash Flow", new BigDecimal("200000000"), null, null)));
         nvdaAndExelReports.addAll(List.of(exelInc, exelBal, exelCf));
 
-        when(reports.findValuationReports(anyCollection(), eq(postSplitDay), eq(NOW))).thenReturn(nvdaAndExelReports);
-        when(secFacts.findValuationFlows(anyCollection(), anyCollection(), eq(postSplitDay), eq(NOW))).thenReturn(secList);
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(nvdaAndExelReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(secList);
 
-        task.execute(context(postSplitDay));
+        valuationService.rebuildFinancialPeriods(List.of("NVDA_FIGI", "EXEL_FIGI"));
 
-        StockValuationDaily nvdaRow = savedValuations.stream().filter(r -> "NVDA_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        // NVDA TTM EPS = 0.25 + 0.37 + 0.49 + 0.60 = 1.71；131.88 / 1.71 = 77.1228
-        assertThat(nvdaRow.getPe()).isEqualByComparingTo("77.1228");
-        assertThat(nvdaRow.getPeReason()).isNull();
+        // 驗證 NVDA 2024-04-27 已正規化至 SEC 實際期末 2024-04-28，無重複季度
+        List<StockFinancialPeriod> nvdaPeriods = storedPeriods.get("NVDA_FIGI");
+        assertThat(nvdaPeriods).extracting(StockFinancialPeriod::getPeriodEnd)
+                .containsExactly(LocalDate.of(2023, 7, 30), LocalDate.of(2023, 10, 29), LocalDate.of(2024, 1, 28), LocalDate.of(2024, 4, 28));
 
-        StockValuationDaily exelRow = savedValuations.stream().filter(r -> "EXEL_FIGI".equals(r.getFigi())).findFirst().orElseThrow();
-        assertThat(exelRow.getPe()).isEqualByComparingTo("30");
-        assertThat(exelRow.getEvEbitda()).isNotNull();
-        assertThat(exelRow.getEvEbitdaReason()).isNull();
+        // 同一筆財季分母列同時支援拆股前（$1096.33 ÷ $17.10 = 64.1129）與拆股後（$131.88 ÷ $1.71 = 77.1228）即時估值！
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("NVDA_FIGI"), eq(preSplitDay), eq(postSplitDay)))
+                .thenReturn(List.of(quote("NVDA_FIGI", preSplitDay, "1096.33"), quote("NVDA_FIGI", postSplitDay, "131.88")));
+        List<ValuationResultDto> nvdaHist = valuationService.history("NVDA_FIGI", preSplitDay, postSplitDay, "DAILY");
+        assertThat(nvdaHist).hasSize(2);
+        assertThat(nvdaHist.get(0).metrics().pe().value()).isEqualByComparingTo("64.1129");
+        assertThat(nvdaHist.get(1).metrics().pe().value()).isEqualByComparingTo("77.1228");
+
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("EXEL_FIGI"), eq(postSplitDay), eq(postSplitDay)))
+                .thenReturn(List.of(quote("EXEL_FIGI", postSplitDay, "22.50")));
+        ValuationResultDto exelHist = valuationService.history("EXEL_FIGI", postSplitDay, postSplitDay, "DAILY").getFirst();
+        assertThat(exelHist.metrics().pe().value()).isEqualByComparingTo("30");
+        assertThat(exelHist.metrics().evEbitda().value()).isNotNull();
+        assertThat(exelHist.metrics().evEbitda().reasonCode()).isNull();
     }
 
-    private JobExecutionContext context(LocalDate valuationDate) {
-        JobDataMap map = new JobDataMap();
-        map.put("valuationDate", valuationDate.toString());
-        JobExecutionContext ctx = mock(JobExecutionContext.class);
-        when(ctx.getMergedJobDataMap()).thenReturn(map);
-        return ctx;
+    private void stubStocksAndStatuses(List<ActiveStockWithStatus> items) {
+        Map<String, Stock> sMap = new LinkedHashMap<>();
+        Map<String, StockStatus> stMap = new LinkedHashMap<>();
+        for (ActiveStockWithStatus item : items) {
+            sMap.put(item.stock().getFigi(), item.stock());
+            stMap.put(item.status().getFigi(), item.status());
+            when(stocks.findById(item.stock().getFigi())).thenReturn(Optional.of(item.stock()));
+            when(statuses.findById(item.status().getFigi())).thenReturn(Optional.of(item.status()));
+        }
+        when(stocks.findAllById(anyCollection())).thenAnswer(inv -> {
+            Collection<String> ids = inv.getArgument(0);
+            return ids.stream().map(sMap::get).filter(java.util.Objects::nonNull).toList();
+        });
+        when(statuses.findAllById(anyCollection())).thenAnswer(inv -> {
+            Collection<String> ids = inv.getArgument(0);
+            return ids.stream().map(stMap::get).filter(java.util.Objects::nonNull).toList();
+        });
+        when(statuses.findAllByIdForUpdate(anyCollection())).thenAnswer(inv -> {
+            Collection<String> ids = inv.getArgument(0);
+            return ids.stream().map(stMap::get).filter(java.util.Objects::nonNull).toList();
+        });
     }
 
     private ActiveStockWithStatus target(String figi, String symbol, String cik, String longName, String sic) {
@@ -499,10 +568,12 @@ class MarketWideValuationPhase2Tests {
         stock.setSic(sic);
         stock.setCurrency("USD");
         stock.setStockType("Common Stock");
+        stock.setActiveStatus(ActiveStatus.ACTIVE);
         stock.setTracked(true);
         StockStatus status = new StockStatus();
         status.setFigi(figi);
         status.setQuoteDate(LAST_CLOSED);
+        status.setFinancialReportDate(LocalDate.of(2025, 12, 31));
         status.setSplitFromDate(LocalDate.of(2014, 1, 1));
         status.setSplitDate(LAST_CLOSED);
         return new ActiveStockWithStatus(stock, status);

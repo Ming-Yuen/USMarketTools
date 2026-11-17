@@ -18,13 +18,14 @@ import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import jakarta.persistence.EntityManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -35,15 +36,16 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component(TaskCode.SEC_FINANCIAL_FACTS_DAILY_SYNC)
 @DisallowConcurrentExecution
-@RequiredArgsConstructor
 @Slf4j
 public class SecFinancialFactsDailySyncJob implements Job {
     private static final LocalDate BACKFILL_START = LocalDate.of(2014, 1, 1);
@@ -58,6 +60,36 @@ public class SecFinancialFactsDailySyncJob implements Job {
     private final EntityManager entityManager;
     private final DateTimeService clock;
     private final SecIssuerHistory issuerHistory;
+    private final StockValuationService stockValuationService;
+
+    public SecFinancialFactsDailySyncJob(StockRepository stocks, SecFinancialFactRepository facts,
+                                         StockStatusRepository statuses, SecCompanyFactsArchive archives,
+                                         SecSubmissionsArchive submissionsArchive, SecFinancialFactConverter converter,
+                                         TransactionTemplate transactions, EntityManager entityManager,
+                                         DateTimeService clock, SecIssuerHistory issuerHistory) {
+        this(stocks, facts, statuses, archives, submissionsArchive, converter,
+                transactions, entityManager, clock, issuerHistory, null);
+    }
+
+    @Autowired
+    public SecFinancialFactsDailySyncJob(StockRepository stocks, SecFinancialFactRepository facts,
+                                         StockStatusRepository statuses, SecCompanyFactsArchive archives,
+                                         SecSubmissionsArchive submissionsArchive, SecFinancialFactConverter converter,
+                                         TransactionTemplate transactions, EntityManager entityManager,
+                                         DateTimeService clock, SecIssuerHistory issuerHistory,
+                                         StockValuationService stockValuationService) {
+        this.stocks = stocks;
+        this.facts = facts;
+        this.statuses = statuses;
+        this.archives = archives;
+        this.submissionsArchive = submissionsArchive;
+        this.converter = converter;
+        this.transactions = transactions;
+        this.entityManager = entityManager;
+        this.clock = clock;
+        this.issuerHistory = issuerHistory;
+        this.stockValuationService = stockValuationService;
+    }
 
     @Override
     public void execute(JobExecutionContext context) throws JobExecutionException {
@@ -71,10 +103,17 @@ public class SecFinancialFactsDailySyncJob implements Job {
         int empty = 0;
         int changedCount = 0;
         List<String> missingEntries = new ArrayList<>();
+        Set<String> modifiedFigis = new LinkedHashSet<>();
         Map<String, List<ActiveStockWithStatus>> issuers = candidates.stream()
                 .collect(Collectors.groupingBy(row -> row.stock().getCik(), LinkedHashMap::new, Collectors.toList()));
-        for (String cik : List.copyOf(issuers.keySet())) {
-            for (String predecessor : issuerHistory.predecessors(cik)) issuers.putIfAbsent(predecessor, List.of());
+        Map<String, List<String>> predecessorDependents = new HashMap<>();
+        for (Map.Entry<String, List<ActiveStockWithStatus>> entry : List.copyOf(issuers.entrySet())) {
+            String currentCik = entry.getKey();
+            List<String> dependentFigis = entry.getValue().stream().map(r -> r.stock().getFigi()).toList();
+            for (String predecessor : issuerHistory.predecessors(currentCik)) {
+                issuers.putIfAbsent(predecessor, List.of());
+                predecessorDependents.computeIfAbsent(predecessor, ignored -> new ArrayList<>()).addAll(dependentFigis);
+            }
         }
 
         try (SecCompanyFactsArchive.Snapshot archive = archives.prepare();
@@ -93,11 +132,19 @@ public class SecFinancialFactsDailySyncJob implements Job {
                     List<SecFinancialFact> downloaded = converter.convert(cik, company, observedAt, BACKFILL_START, filingMetadata);
                     if (downloaded.isEmpty()) {
                         empty++;
-                        syncSicOnlyIfChanged(issuerStocks, resolvedSic);
+                        if (syncSicOnlyIfChanged(issuerStocks, resolvedSic)) {
+                            modifiedFigis.addAll(figis);
+                        }
                         continue;
                     }
-                    Integer modified = transactions.execute(transaction -> saveCompany(cik, issuerStocks, downloaded, resolvedSic));
-                    changedCount += modified == null ? 0 : modified;
+                    SaveOutcome outcome = transactions.execute(transaction -> saveCompany(cik, issuerStocks, downloaded, resolvedSic));
+                    if (outcome != null && outcome.factChanges() > 0) {
+                        changedCount += outcome.factChanges();
+                    }
+                    if (outcome != null && outcome.valuationNeedsRebuild()) {
+                        modifiedFigis.addAll(figis);
+                        modifiedFigis.addAll(predecessorDependents.getOrDefault(cik, List.of()));
+                    }
                 } catch (SecCompanyFactsArchive.EntryMissingException ex) {
                     missingEntries.add(cik);
                 } catch (RuntimeException ex) {
@@ -106,30 +153,36 @@ public class SecFinancialFactsDailySyncJob implements Job {
                             cik, figis, ex.getClass().getSimpleName(), ex.getMessage());
                 }
             }
+            if (!modifiedFigis.isEmpty() && stockValuationService != null) {
+                stockValuationService.rebuildAndRefreshLatest(modifiedFigis);
+            }
             if (!missingEntries.isEmpty()) {
                 log.warn("SEC Company Facts ZIP missing entries | count={} ciks={}",
                         missingEntries.size(), missingEntries.stream().limit(30).toList());
             }
-            log.info("SEC financial facts completed | ciks={} missingEntries={} noFacts={} changed={} failed={} archive={}",
-                    issuers.size(), missingEntries.size(), empty, changedCount, failed, archive.version());
+            log.info("SEC financial facts completed | ciks={} missingEntries={} noFacts={} changed={} rebuiltStocks={} failed={} archive={}",
+                    issuers.size(), missingEntries.size(), empty, changedCount, modifiedFigis.size(), failed, archive.version());
         }
         if (failed > 0) throw new JobExecutionException("SEC_FINANCIAL_FACTS_PARTIAL_FAILURE:" + failed + "/" + issuers.size());
     }
 
-    private void syncSicOnlyIfChanged(List<ActiveStockWithStatus> issuerStocks, String resolvedSic) {
-        if (resolvedSic == null || issuerStocks.isEmpty()) return;
+    private record SaveOutcome(int factChanges, boolean valuationNeedsRebuild) {}
+
+    private boolean syncSicOnlyIfChanged(List<ActiveStockWithStatus> issuerStocks, String resolvedSic) {
+        if (resolvedSic == null || issuerStocks.isEmpty()) return false;
         List<String> needsSicUpdate = issuerStocks.stream()
                 .filter(row -> !Objects.equals(resolvedSic, row.stock().getSic()))
                 .map(row -> row.stock().getFigi()).toList();
-        if (needsSicUpdate.isEmpty()) return;
+        if (needsSicUpdate.isEmpty()) return false;
         transactions.executeWithoutResult(tx -> {
             List<Stock> managed = stocks.findAllById(needsSicUpdate);
             for (Stock stock : managed) stock.setSic(resolvedSic);
             stocks.saveAllAndFlush(managed);
         });
+        return true;
     }
 
-    private int saveCompany(String cik, List<ActiveStockWithStatus> issuerStocks, List<SecFinancialFact> downloaded, String resolvedSic) {
+    private SaveOutcome saveCompany(String cik, List<ActiveStockWithStatus> issuerStocks, List<SecFinancialFact> downloaded, String resolvedSic) {
         List<String> figis = issuerStocks.stream().map(row -> row.stock().getFigi()).toList();
         Map<FactKey, SecFinancialFact> existing = new HashMap<>();
         for (SecFinancialFact fact : facts.findByCikAndPeriodEndGreaterThanEqual(cik, BACKFILL_START)) {
@@ -164,7 +217,7 @@ public class SecFinancialFactsDailySyncJob implements Job {
                 .anyMatch(row -> row.status().getSecFinancialFactsDate() == null || latest.isAfter(row.status().getSecFinancialFactsDate()));
 
         if (inserts.isEmpty() && updates.isEmpty() && !sicNeedsUpdate && !watermarkNeedsUpdate) {
-            return 0;
+            return new SaveOutcome(0, false);
         }
 
         List<StockStatus> locked = figis.isEmpty() ? List.of() : statuses.findAllByIdForUpdate(figis);
@@ -193,6 +246,7 @@ public class SecFinancialFactsDailySyncJob implements Job {
             }
         }
         entityManager.flush();
-        return inserts.size() + updates.size();
+        int factChanges = inserts.size() + updates.size();
+        return new SaveOutcome(factChanges, factChanges > 0 || sicNeedsUpdate);
     }
 }

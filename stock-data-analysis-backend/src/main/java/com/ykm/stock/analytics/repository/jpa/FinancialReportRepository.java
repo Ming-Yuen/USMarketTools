@@ -25,4 +25,8 @@ public interface FinancialReportRepository extends JpaRepository<FinancialReport
                                               @Param("knownAt") Instant knownAt);
 
     List<FinancialReport> findByFigiAndPeriodEndBetween(String figi, LocalDate from, LocalDate through);
+
+    List<FinancialReport> findByFigiOrderByPeriodEndAsc(String figi);
+
+    List<FinancialReport> findByFigiInOrderByFigiAscPeriodEndAsc(Collection<String> figis);
 }

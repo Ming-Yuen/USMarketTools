@@ -1,6 +1,5 @@
 package com.ykm.stock.analytics.service.valuation;
 
-import com.ykm.stock.analytics.client.SecFinancialStatementArchive;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.enums.FinancialConcept;
 import com.ykm.stock.analytics.service.valuation.FinancialReportValuationCalculator.ReportValues;

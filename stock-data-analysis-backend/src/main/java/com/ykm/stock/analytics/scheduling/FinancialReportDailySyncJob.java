@@ -21,14 +21,15 @@ import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.JobScheduleReconciler;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import jakarta.persistence.EntityManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.CronTrigger;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -57,7 +58,6 @@ import static com.ykm.stock.analytics.converter.futu.FutuQuoteConverter.usMarket
 
 @Component(TaskCode.FINANCIAL_REPORT_DAILY_SYNC)
 @DisallowConcurrentExecution
-@RequiredArgsConstructor
 @Slf4j
 public class FinancialReportDailySyncJob implements Job {
     private static final LocalDate BACKFILL_START = LocalDate.of(2014, 1, 1);
@@ -80,6 +80,37 @@ public class FinancialReportDailySyncJob implements Job {
     private final FutuQuoteConverter converter;
     private final TransactionTemplate transactions;
     private final DateTimeService dateTimeService;
+    private final StockValuationService stockValuationService;
+
+    public FinancialReportDailySyncJob(StockRepository stocks, FutuService futu, StockStatusRepository statuses,
+                                       FinancialReportRepository reports, MarketEventRepository marketEvents,
+                                       SecFinancialFactRepository secFacts, SecSubmissionsArchive submissionsArchive,
+                                       EntityManager entityManager, FutuQuoteConverter converter,
+                                       TransactionTemplate transactions, DateTimeService dateTimeService) {
+        this(stocks, futu, statuses, reports, marketEvents, secFacts, submissionsArchive,
+                entityManager, converter, transactions, dateTimeService, null);
+    }
+
+    @Autowired
+    public FinancialReportDailySyncJob(StockRepository stocks, FutuService futu, StockStatusRepository statuses,
+                                       FinancialReportRepository reports, MarketEventRepository marketEvents,
+                                       SecFinancialFactRepository secFacts, SecSubmissionsArchive submissionsArchive,
+                                       EntityManager entityManager, FutuQuoteConverter converter,
+                                       TransactionTemplate transactions, DateTimeService dateTimeService,
+                                       StockValuationService stockValuationService) {
+        this.stocks = stocks;
+        this.futu = futu;
+        this.statuses = statuses;
+        this.reports = reports;
+        this.marketEvents = marketEvents;
+        this.secFacts = secFacts;
+        this.submissionsArchive = submissionsArchive;
+        this.entityManager = entityManager;
+        this.converter = converter;
+        this.transactions = transactions;
+        this.dateTimeService = dateTimeService;
+        this.stockValuationService = stockValuationService;
+    }
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -97,6 +128,7 @@ public class FinancialReportDailySyncJob implements Job {
         int reportsSaved = 0;
         int stocksWithoutReports = 0;
         int unsupportedStocks = 0;
+        Set<String> modifiedFigis = new LinkedHashSet<>();
         try (FutuService.ObservationSession session = futu.openObservationSession()) {
             Set<String> supportedSymbols = session.supportedUsFinancialReportStocks();
             for (ActiveStockWithStatus candidate : candidates) {
@@ -117,14 +149,23 @@ public class FinancialReportDailySyncJob implements Job {
                         stocksWithoutReports++;
                         continue;
                     }
-                    transactions.executeWithoutResult(transaction -> replaceReportsAndAdvanceWatermark(stock.getFigi(), downloadedReports));
+                    Boolean modified = transactions.execute(transaction -> replaceReportsAndAdvanceWatermark(stock.getFigi(), downloadedReports));
+                    if (Boolean.TRUE.equals(modified)) {
+                        modifiedFigis.add(stock.getFigi());
+                    }
                     reportsSaved += downloadedReports.size();
                 } catch (RuntimeException ex) {
+                    if (!modifiedFigis.isEmpty() && stockValuationService != null) {
+                        stockValuationService.rebuildAndRefreshLatest(modifiedFigis);
+                    }
                     throw new IllegalStateException("FINANCIAL_REPORT_SYNC_FAILED:" + stock.getFigi() + ":" + stock.getSymbol(), ex);
                 }
             }
-            log.info("Financial reports saved | universe={} targets={} unsupported={} empty={} reports={}",
-                    universe.size(), candidates.size(), unsupportedStocks, stocksWithoutReports, reportsSaved);
+            if (!modifiedFigis.isEmpty() && stockValuationService != null) {
+                stockValuationService.rebuildAndRefreshLatest(modifiedFigis);
+            }
+            log.info("Financial reports saved | universe={} targets={} unsupported={} empty={} reports={} rebuiltStocks={}",
+                    universe.size(), candidates.size(), unsupportedStocks, stocksWithoutReports, reportsSaved, modifiedFigis.size());
         }
     }
 
@@ -219,7 +260,7 @@ public class FinancialReportDailySyncJob implements Job {
         return statementReports;
     }
 
-    private void replaceReportsAndAdvanceWatermark(String figi, List<DownloadedReport> downloadedReports) {
+    private boolean replaceReportsAndAdvanceWatermark(String figi, List<DownloadedReport> downloadedReports) {
         List<StockStatus> lockedStatuses = statuses.findAllByIdForUpdate(List.of(figi));
         if (lockedStatuses.isEmpty()) throw new IllegalStateException("FINANCIAL_REPORT_STOCK_STATUS_MISSING:" + figi);
         StockStatus currentStatus = lockedStatuses.getFirst();
@@ -255,6 +296,7 @@ public class FinancialReportDailySyncJob implements Job {
         changed.forEach(entityManager::persist);
         LocalDate currentWatermark = currentStatus.getFinancialReportDate();
         if (currentWatermark == null || latestPeriodEnd.isAfter(currentWatermark)) currentStatus.setFinancialReportDate(latestPeriodEnd);
+        return !changed.isEmpty() || !replaced.isEmpty();
     }
 
     private boolean samePayload(FinancialReport first, FinancialReport second) {

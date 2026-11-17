@@ -1,11 +1,9 @@
 package com.ykm.stock.analytics.service.valuation;
 
 import com.ykm.stock.analytics.enums.FinancialConcept;
-import com.ykm.stock.analytics.enums.FinancialItemMappingStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
-import com.ykm.stock.analytics.model.entity.FinancialReportItemMapping;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -38,20 +36,17 @@ class FinancialReportValuationCalculatorTests {
     private final FinancialReportValuationCalculator calculator = new FinancialReportValuationCalculator();
 
     @Test
-    void rawNamesAndStatementsStaySeparateAndPendingIsNotANewName() {
-        List<FinancialReportItemMapping> mappings = List.of(mapping(1, "Diluted EPS", FinancialConcept.DILUTED_EPS),
-                state(1, "Known pending", FinancialItemMappingStatus.PENDING), state(1, "Known skipped", FinancialItemMappingStatus.SKIPPED));
+    void rawNamesAndStatementsStaySeparateAndUnknownSubItemsAreIgnoredQuietly() {
         FinancialReport first = report("A", 1, 2025, 7, "2025-12-30", "USD", item("Diluted EPS", "5"),
                 item("Known pending", "10"), item("Known skipped", "20"));
         FinancialReport second = report("B", 2, 2025, 7, "2025-12-30", "USD", item("Diluted EPS", "7"), item("new name", null));
 
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(first, second), mappings);
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(first, second));
 
         assertThat(rows.getFirst().value(FinancialConcept.DILUTED_EPS).value()).isEqualByComparingTo("5");
-        assertThat(rows.getFirst().pendingNames()).containsExactly("Known pending");
         assertThat(rows.getFirst().unknownNames()).isEmpty();
-        assertThat(rows.getLast().unknownNames()).containsExactly("Diluted EPS", "new name");
-        assertThat(rows.getLast().unknownNames()).isNotEmpty();
+        assertThat(rows.getLast().values()).doesNotContainKey(FinancialConcept.DILUTED_EPS);
+        assertThat(rows.getLast().unknownNames()).isEmpty();
         assertThat(rows.getFirst().values()).doesNotContainKey(FinancialConcept.NET_PROFIT);
     }
 
@@ -90,12 +85,15 @@ class FinancialReportValuationCalculatorTests {
 
     @Test
     void equivalentAliasesAreNotAddedAndConflictsDoNotSelectAnArbitraryValue() {
-        List<FinancialReportItemMapping> mappings = List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS),
-                mapping(1, "Alias", FinancialConcept.DILUTED_EPS), mapping(1, "Third", FinancialConcept.DILUTED_EPS));
-        FinancialReport same = report("A", 1, 2025, 7, "2025-12-30", "USD", item("EPS", "5"), item("Alias", "5.00"));
-        FinancialReport conflict = report("B", 1, 2025, 7, "2025-12-30", "USD", item("EPS", "5"), item("Alias", "6"), item("Third", "5"));
+        FinancialReport same = report("A", 1, 2025, 7, "2025-12-30", "USD",
+                new FinancialReport.Item(8048L, "Diluted EPS", decimal("5"), null, null),
+                new FinancialReport.Item(9051L, "Diluted EPS", decimal("5.00"), null, null));
+        FinancialReport conflict = report("B", 1, 2025, 7, "2025-12-30", "USD",
+                new FinancialReport.Item(8048L, "Diluted EPS", decimal("5"), null, null),
+                new FinancialReport.Item(9051L, "Diluted EPS", decimal("6"), null, null),
+                new FinancialReport.Item(10052L, "Diluted EPS", decimal("5"), null, null));
 
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(same, conflict), mappings);
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(same, conflict));
 
         assertThat(rows.getFirst().value(FinancialConcept.DILUTED_EPS).value()).isEqualByComparingTo("5");
         assertThat(rows.getLast().value(FinancialConcept.DILUTED_EPS).status()).isEqualTo(MetricStatus.UNVERIFIED);
@@ -104,11 +102,11 @@ class FinancialReportValuationCalculatorTests {
 
     @Test
     void nullIsNotZeroAndKnownAliasCanSupplyTheSameConcept() {
-        List<FinancialReportItemMapping> mappings = List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS), mapping(1, "Alias", FinancialConcept.DILUTED_EPS));
-        FinancialReport empty = report("A", 1, 2025, 7, "2025-12-30", "USD", item("EPS", null));
-        FinancialReport alias = report("B", 1, 2025, 7, "2025-12-30", "USD", item("EPS", null), item("Alias", "0"));
+        FinancialReport empty = report("A", 1, 2025, 7, "2025-12-30", "USD", item("Diluted EPS", null));
+        FinancialReport alias = report("B", 1, 2025, 7, "2025-12-30", "USD",
+                item("Diluted EPS", null), new FinancialReport.Item(9051L, "Diluted EPS", decimal("0"), null, null));
 
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(empty, alias), mappings);
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(empty, alias));
 
         assertThat(rows.getFirst().value(FinancialConcept.DILUTED_EPS).value()).isNull();
         assertThat(rows.getLast().value(FinancialConcept.DILUTED_EPS).value()).isEqualByComparingTo("0");
@@ -118,8 +116,8 @@ class FinancialReportValuationCalculatorTests {
     @Test
     void reportedAnnualEpsWinsOverQuarterSumAndQuarterOnlyTtmRemainsUsable() {
         List<FinancialReport> reports = epsQuarters();
-        reports.add(report("A", 1, 2025, 7, "2025-09-26", "USD", item("EPS", "7.46")));
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports, List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS)));
+        reports.add(report("A", 1, 2025, 7, "2025-09-26", "USD", item("Diluted EPS", "7.46")));
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports);
 
         MetricResult<BigDecimal> annual = calculator.trailingTwelveMonths(rows, "A", 1, FinancialConcept.DILUTED_EPS, LocalDate.parse("2025-09-26"), "USD");
 
@@ -132,20 +130,20 @@ class FinancialReportValuationCalculatorTests {
 
     @Test
     void recentQuarterTtmUsesFourConsecutiveReportedDilutedEps() {
-        List<FinancialReport> reports = List.of(report("A", 1, 2025, 4, "2025-12-30", "USD", item("EPS", "4.63")),
-                report("A", 1, 2025, 7, "2025-12-30", "USD", item("EPS", "20.02")),
-                report("A", 1, 2026, 1, "2026-03-30", "USD", item("EPS", "5.94")),
-                report("A", 1, 2026, 2, "2026-06-29", "USD", item("EPS", "7.70")),
-                report("A", 1, 2026, 3, "2026-09-29", "USD", item("EPS", "5.57")));
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports, List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS)));
+        List<FinancialReport> reports = List.of(report("A", 1, 2025, 4, "2025-12-30", "USD", item("Diluted EPS", "4.63")),
+                report("A", 1, 2025, 7, "2025-12-30", "USD", item("Diluted EPS", "20.02")),
+                report("A", 1, 2026, 1, "2026-03-30", "USD", item("Diluted EPS", "5.94")),
+                report("A", 1, 2026, 2, "2026-06-29", "USD", item("Diluted EPS", "7.70")),
+                report("A", 1, 2026, 3, "2026-09-29", "USD", item("Diluted EPS", "5.57")));
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports);
         assertThat(calculator.trailingTwelveMonths(rows, "A", 1, FinancialConcept.DILUTED_EPS,
                 LocalDate.parse("2026-09-29"), "USD").value()).isEqualByComparingTo("23.84");
     }
 
     @Test
     void annualMissingValueDoesNotSilentlyFallBackAndBalancesAreNotTtmFlows() {
-        FinancialReport annual = report("A", 1, 2025, 7, "2025-09-26", "USD", item("EPS", null));
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(annual), List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS)));
+        FinancialReport annual = report("A", 1, 2025, 7, "2025-09-26", "USD", item("Diluted EPS", null));
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(annual));
         assertReason(calculator.trailingTwelveMonths(rows, "A", 1, FinancialConcept.DILUTED_EPS,
                 LocalDate.parse("2025-09-26"), "USD"), "FINANCIAL_INPUT_MISSING");
         assertReason(calculator.trailingTwelveMonths(rows, "A", 1, FinancialConcept.STOCKHOLDERS_EQUITY,
@@ -156,7 +154,7 @@ class FinancialReportValuationCalculatorTests {
     void fourConsecutiveSingleQuarterCashFlowsSumAcrossFiscalYears() {
         List<FinancialReport> reports = List.of(flow(2025, 2, "2025-06-29", "20"), flow(2025, 3, "2025-09-29", "30"),
                 flow(2025, 4, "2025-12-30", "40"), flow(2026, 1, "2026-03-30", "10"));
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports, List.of(mapping(3, "CFO", FinancialConcept.OPERATING_CASH_FLOW)));
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(reports);
 
         assertThat(calculator.trailingTwelveMonths(rows, "A", 3, FinancialConcept.OPERATING_CASH_FLOW,
                 LocalDate.parse("2026-03-30"), "USD").value()).isEqualByComparingTo("100");
@@ -166,12 +164,12 @@ class FinancialReportValuationCalculatorTests {
 
     @Test
     void unknownNamesAreWarningsWhileCurrencyMismatchStillBlocksTtm() {
-        FinancialReport annual = report("A", 3, 2025, 7, "2025-12-30", "EUR", item("CFO", "100"));
-        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(annual), List.of(mapping(3, "CFO", FinancialConcept.OPERATING_CASH_FLOW)));
+        FinancialReport annual = report("A", 3, 2025, 7, "2025-12-30", "EUR", item("Operating Cash Flow", "100"));
+        List<FinancialReportValuationCalculator.ReportValues> rows = calculator.extract(List.of(annual));
         assertReason(calculator.trailingTwelveMonths(rows, "A", 3, FinancialConcept.OPERATING_CASH_FLOW,
                 LocalDate.parse("2025-12-30"), "USD"), "REPORTING_CURRENCY_MISMATCH");
-        annual.setItems(List.of(item("CFO", "100"), item("new name", null)));
-        rows = calculator.extract(List.of(annual), List.of(mapping(3, "CFO", FinancialConcept.OPERATING_CASH_FLOW)));
+        annual.setItems(List.of(item("Operating Cash Flow", "100"), item("new name", null)));
+        rows = calculator.extract(List.of(annual));
         assertThat(calculator.trailingTwelveMonths(rows, "A", 3, FinancialConcept.OPERATING_CASH_FLOW, LocalDate.parse("2025-12-30"), "EUR").value()).isEqualByComparingTo("100");
     }
 
@@ -261,10 +259,10 @@ class FinancialReportValuationCalculatorTests {
     }
 
     private List<FinancialReport> epsQuarters() {
-        return new ArrayList<>(List.of(report("A", 1, 2025, 1, "2024-12-27", "USD", item("EPS", "2.40")),
-                report("A", 1, 2025, 2, "2025-03-28", "USD", item("EPS", "1.65")),
-                report("A", 1, 2025, 3, "2025-06-27", "USD", item("EPS", "1.57")),
-                report("A", 1, 2025, 4, "2025-09-26", "USD", item("EPS", "1.85"))));
+        return new ArrayList<>(List.of(report("A", 1, 2025, 1, "2024-12-27", "USD", item("Diluted EPS", "2.40")),
+                report("A", 1, 2025, 2, "2025-03-28", "USD", item("Diluted EPS", "1.65")),
+                report("A", 1, 2025, 3, "2025-06-27", "USD", item("Diluted EPS", "1.57")),
+                report("A", 1, 2025, 4, "2025-09-26", "USD", item("Diluted EPS", "1.85"))));
     }
 
     @Test
@@ -423,15 +421,10 @@ class FinancialReportValuationCalculatorTests {
                 FinancialConcept.CURRENT_DEBT_AND_LEASES, "100", FinancialConcept.LONG_TERM_DEBT_AND_LEASES, "150",
                 FinancialConcept.CURRENT_CAPITAL_LEASES, "0", FinancialConcept.LONG_TERM_CAPITAL_LEASES, "0",
                 FinancialConcept.CASH_AND_EQUIVALENTS, "50");
-        List<FinancialReportItemMapping> catalog = new ArrayList<>();
         List<FinancialReport.Item> items = new ArrayList<>();
-        inputs.forEach((concept, value) -> {
-            catalog.add(mapping(2, concept.name(), concept));
-            items.add(item(concept.name(), value));
-        });
-        catalog.add(state(2, "Convertible preferred securities", FinancialItemMappingStatus.PENDING));
+        inputs.forEach((concept, value) -> items.add(item(concept.name(), value)));
         items.add(new FinancialReport.Item(8077, "Convertible preferred securities", decimal(amount), null, null));
-        return calculator.extract(List.of(report("A", 2, 2026, 3, "2026-09-29", "USD", items.toArray(FinancialReport.Item[]::new))), catalog).getFirst();
+        return calculator.extract(List.of(report("A", 2, 2026, 3, "2026-09-29", "USD", items.toArray(FinancialReport.Item[]::new)))).getFirst();
     }
 
     @Test
@@ -502,9 +495,7 @@ class FinancialReportValuationCalculatorTests {
                 new FinancialReport.Item(8044, "Capital Expenditure", decimal("-221900000"), null, null),
                 new FinancialReport.Item(8046, "Net PPE Purchase and Sale", decimal("-63000000"), null, null),
                 new FinancialReport.Item(8072, "Free Cash Flow", decimal("1442100000"), null, null));
-        List<FinancialReportValuationCalculator.ReportValues> financials = calculator.extract(List.of(cash), List.of(
-                mapping(3, "Operating Cash Flow", FinancialConcept.OPERATING_CASH_FLOW), mapping(3, "Capital Expenditure", FinancialConcept.CAPITAL_EXPENDITURE),
-                mapping(3, "Net PPE Purchase and Sale", FinancialConcept.NET_PPE_CASH_FLOW), mapping(3, "Free Cash Flow", FinancialConcept.FREE_CASH_FLOW)));
+        List<FinancialReportValuationCalculator.ReportValues> financials = calculator.extract(List.of(cash));
         BigDecimal fcf = calculator.trailingTwelveMonths(financials, "A", 3, FinancialConcept.FREE_CASH_FLOW, cash.getPeriodEnd(), "USD").value();
         assertThat(fcf).isEqualByComparingTo(decimal("1744800000").subtract(decimal("80800000")).subtract(decimal("221900000")));
         FinancialReportValuationCalculator.MarketMultiples result = calculator.calculate(new FinancialReportValuationCalculator.ValuationInputs(
@@ -529,15 +520,11 @@ class FinancialReportValuationCalculatorTests {
     }
 
     private FinancialReportValuationCalculator.ReportValues extractedBalance(java.util.Map<FinancialConcept, String> inputs, String standard) {
-        List<FinancialReportItemMapping> catalog = new ArrayList<>();
         List<FinancialReport.Item> items = new ArrayList<>();
-        inputs.forEach((concept, value) -> {
-            catalog.add(mapping(2, concept.name(), concept));
-            items.add(item(concept.name(), value));
-        });
+        inputs.forEach((concept, value) -> items.add(item(concept.name(), value)));
         FinancialReport balance = report("A", 2, 2025, 7, "2025-12-30", "USD", items.toArray(FinancialReport.Item[]::new));
         balance.setAccountingStandards(standard);
-        return calculator.extract(List.of(balance), catalog).getFirst();
+        return calculator.extract(List.of(balance)).getFirst();
     }
 
     private FinancialReportValuationCalculator.ReportValues values(int type, java.util.Map<FinancialConcept, String> inputs) {
@@ -547,7 +534,7 @@ class FinancialReportValuationCalculatorTests {
     }
 
     private FinancialReport flow(int year, int quarter, String date, String value) {
-        return report("A", 3, year, quarter, date, "USD", item("CFO", value));
+        return report("A", 3, year, quarter, date, "USD", item("Operating Cash Flow", value));
     }
 
     private FinancialReport report(String figi, int type, int year, int periodType, String date, String currency, FinancialReport.Item... items) {
@@ -563,21 +550,7 @@ class FinancialReportValuationCalculatorTests {
         return report;
     }
 
-    private FinancialReportItemMapping mapping(int type, String name, FinancialConcept concept) {
-        FinancialReportItemMapping mapping = state(type, name, FinancialItemMappingStatus.MAPPED);
-        mapping.setFinancialConcept(concept);
-        return mapping;
-    }
-
-    private FinancialReportItemMapping state(int type, String name, FinancialItemMappingStatus status) {
-        FinancialReportItemMapping mapping = new FinancialReportItemMapping();
-        mapping.setStatementType(type);
-        mapping.setItemName(name);
-        mapping.setMappingStatus(status);
-        return mapping;
-    }
-
-    private FinancialReport.Item item(String name, String value) { return new FinancialReport.Item(1, name, decimal(value), null, null); }
+    private FinancialReport.Item item(String name, String value) { return new FinancialReport.Item(0, name, decimal(value), null, null); }
     private BigDecimal decimal(String value) { return value == null ? null : new BigDecimal(value); }
     private void assertReason(MetricResult<BigDecimal> result, String code) {
         assertThat(result.value()).isNull();

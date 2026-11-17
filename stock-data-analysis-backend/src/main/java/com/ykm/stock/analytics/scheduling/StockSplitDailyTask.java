@@ -17,12 +17,13 @@ import com.ykm.stock.analytics.service.JobScheduleReconciler;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.MassiveService;
-import lombok.RequiredArgsConstructor;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.CronTrigger;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -34,13 +35,14 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /** 平日以 Massive /stocks/v1/splits 批量增量同步拆股；僅對 splitDate 為空的新股或週六對帳時呼叫富途 requestRehab。 */
-@RequiredArgsConstructor
 @DisallowConcurrentExecution
 @Component(TaskCode.STOCK_SPLIT_DAILY)
 @Slf4j
@@ -57,9 +59,36 @@ public class StockSplitDailyTask implements Job {
     private final TransactionTemplate transactionTemplate;
     private final DateTimeService dateTimeService;
     private final MarketStatusService marketStatusService;
+    private final StockValuationService stockValuationService;
 
     @Value("${split.history-start-date:2014-01-01}")
     private LocalDate historyStartDate = LocalDate.of(2014, 1, 1);
+
+    public StockSplitDailyTask(StockRepository stocks, MassiveService massiveService, FutuService futu,
+                               StockSplitRepository splitRepository, StockStatusRepository statusRepository,
+                               FutuQuoteConverter converter, TransactionTemplate transactionTemplate,
+                               DateTimeService dateTimeService, MarketStatusService marketStatusService) {
+        this(stocks, massiveService, futu, splitRepository, statusRepository, converter,
+                transactionTemplate, dateTimeService, marketStatusService, null);
+    }
+
+    @Autowired
+    public StockSplitDailyTask(StockRepository stocks, MassiveService massiveService, FutuService futu,
+                               StockSplitRepository splitRepository, StockStatusRepository statusRepository,
+                               FutuQuoteConverter converter, TransactionTemplate transactionTemplate,
+                               DateTimeService dateTimeService, MarketStatusService marketStatusService,
+                               StockValuationService stockValuationService) {
+        this.stocks = stocks;
+        this.massiveService = massiveService;
+        this.futu = futu;
+        this.splitRepository = splitRepository;
+        this.statusRepository = statusRepository;
+        this.converter = converter;
+        this.transactionTemplate = transactionTemplate;
+        this.dateTimeService = dateTimeService;
+        this.marketStatusService = marketStatusService;
+        this.stockValuationService = stockValuationService;
+    }
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -99,17 +128,21 @@ public class StockSplitDailyTask implements Job {
             }
         }
 
+        Set<String> modifiedSplitFigis = new LinkedHashSet<>();
         if (!massiveTargets.isEmpty()) {
-            failures += syncIncrementalFromMassive(massiveTargets, initialStatuses, through);
+            failures += syncIncrementalFromMassive(massiveTargets, initialStatuses, through, modifiedSplitFigis);
         }
         if (!futuTargets.isEmpty()) {
-            failures += syncFullHistoryFromFutu(futuTargets, through);
+            failures += syncFullHistoryFromFutu(futuTargets, through, modifiedSplitFigis);
         }
-        log.info("Split sync finished | weeklyReconcile={} through={} massiveStocks={} futuStocks={} exceptions={}",
-                weeklyReconcile, through, massiveTargets.size(), futuTargets.size(), failures);
+        if (!modifiedSplitFigis.isEmpty() && stockValuationService != null) {
+            stockValuationService.rebuildAndRefreshLatest(modifiedSplitFigis);
+        }
+        log.info("Split sync finished | weeklyReconcile={} through={} massiveStocks={} futuStocks={} rebuiltValuations={} exceptions={}",
+                weeklyReconcile, through, massiveTargets.size(), futuTargets.size(), modifiedSplitFigis.size(), failures);
     }
 
-    private int syncIncrementalFromMassive(List<Stock> targets, Map<String, StockStatus> initialStatuses, LocalDate through) {
+    private int syncIncrementalFromMassive(List<Stock> targets, Map<String, StockStatus> initialStatuses, LocalDate through, Set<String> modifiedSplitFigis) {
         LocalDate minFrom = through;
         for (Stock stock : targets) {
             LocalDate stockFrom = incrementalFrom(initialStatuses.get(stock.getFigi()));
@@ -137,7 +170,9 @@ public class StockSplitDailyTask implements Job {
                     }
                     continue;
                 }
-                saveIncrementalSplits(stock, converted, stockFrom, through);
+                if (saveIncrementalSplits(stock, converted, stockFrom, through)) {
+                    modifiedSplitFigis.add(stock.getFigi());
+                }
             } catch (RuntimeException failure) {
                 recordFailure(stock, failure);
                 failures++;
@@ -188,8 +223,8 @@ public class StockSplitDailyTask implements Job {
         return List.copyOf(events.values());
     }
 
-    private void saveIncrementalSplits(Stock stock, List<StockSplit> downloaded, LocalDate from, LocalDate through) {
-        transactionTemplate.executeWithoutResult(tx -> {
+    private boolean saveIncrementalSplits(Stock stock, List<StockSplit> downloaded, LocalDate from, LocalDate through) {
+        Boolean changedAny = transactionTemplate.execute(tx -> {
             StockStatus status = lockedStatus(stock.getFigi());
             Map<LocalDate, List<StockSplit>> stored = splitRepository.findByFigiAndExecutionDateBetween(stock.getFigi(), from, through)
                     .stream().collect(Collectors.groupingBy(StockSplit::getExecutionDate));
@@ -211,23 +246,32 @@ public class StockSplitDailyTask implements Job {
             status.setSplitDate(through);
             status.setSplitMessage(null);
             statusRepository.save(status);
+            return !changed.isEmpty() || !replaced.isEmpty();
         });
+        return Boolean.TRUE.equals(changedAny);
     }
 
-    private int syncFullHistoryFromFutu(List<Stock> targets, LocalDate through) {
+    private int syncFullHistoryFromFutu(List<Stock> targets, LocalDate through, Set<String> modifiedSplitFigis) {
         int failures = 0;
         try (FutuService.ObservationSession session = futu.openObservationSession()) {
             for (Stock stock : targets) {
                 try {
                     List<QotCommon.Rehab> source = session.rehab(stock.getSymbol());
                     List<StockSplit> splits = convertSplits(stock, source, historyStartDate, through);
-                    saveSplits(stock, splits, historyStartDate, through);
+                    if (saveSplits(stock, splits, historyStartDate, through)) {
+                        modifiedSplitFigis.add(stock.getFigi());
+                    }
                 } catch (RuntimeException failure) {
                     recordFailure(stock, failure);
                     failures++;
                     String reason = String.valueOf(failure.getMessage());
                     if (reason.startsWith("FUTU_DISCONNECTED") || reason.endsWith("_TIMEOUT") || reason.endsWith("_SEND_FAILED")
-                            || reason.endsWith("_REPLY_MISMATCH") || reason.endsWith("_INTERRUPTED")) throw failure;
+                            || reason.endsWith("_REPLY_MISMATCH") || reason.endsWith("_INTERRUPTED")) {
+                        if (!modifiedSplitFigis.isEmpty() && stockValuationService != null) {
+                            stockValuationService.rebuildAndRefreshLatest(modifiedSplitFigis);
+                        }
+                        throw failure;
+                    }
                 }
             }
         }
@@ -248,8 +292,8 @@ public class StockSplitDailyTask implements Job {
         return List.copyOf(events.values());
     }
 
-    private void saveSplits(Stock stock, List<StockSplit> downloaded, LocalDate from, LocalDate through) {
-        transactionTemplate.executeWithoutResult(tx -> {
+    private boolean saveSplits(Stock stock, List<StockSplit> downloaded, LocalDate from, LocalDate through) {
+        Boolean changedAny = transactionTemplate.execute(tx -> {
             StockStatus status = lockedStatus(stock.getFigi());
             Map<LocalDate, List<StockSplit>> stored = splitRepository.findByFigiAndExecutionDateBetween(stock.getFigi(), from, through)
                     .stream().collect(Collectors.groupingBy(StockSplit::getExecutionDate));
@@ -279,7 +323,9 @@ public class StockSplitDailyTask implements Job {
             statusRepository.save(status);
             log.info("Split stock saved | symbol={} figi={} events={} changed={} missingDates={}",
                     stock.getSymbol(), stock.getFigi(), downloaded.size(), changed.size(), stored.size());
+            return !changed.isEmpty() || !replaced.isEmpty();
         });
+        return Boolean.TRUE.equals(changedAny);
     }
 
     private void recordFailure(Stock stock, RuntimeException failure) {

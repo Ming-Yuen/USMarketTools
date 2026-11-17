@@ -1,19 +1,55 @@
 package com.ykm.stock.analytics.service;
 
-import com.ykm.stock.analytics.service.market.MarketStatusService;
-
-import com.ykm.stock.analytics.model.dto.stockInsight.analysis.*;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReportRequest;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AtrPointDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisTimeframe;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedBarDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceAdjustment;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceBasisDescriptor;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceRelation;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceStructureDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.RetestState;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SessionScope;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ShareUnit;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StockAnalysisReportDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StructureTrendDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistanceDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TimeframeStructureDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanStatus;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TrendState;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
-import com.ykm.stock.analytics.model.entity.StockValuationDaily;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
-import com.ykm.stock.analytics.repository.jpa.StockValuationDailyRepository;
-import com.ykm.stock.analytics.repository.jpa.StockEarningsForecastRepository;
-import com.ykm.stock.analytics.service.analysis.*;
+import com.ykm.stock.analytics.service.analysis.MarketContextService;
+import com.ykm.stock.analytics.service.analysis.PriceStructureService;
+import com.ykm.stock.analytics.service.analysis.QuoteNormalizationService;
+import com.ykm.stock.analytics.service.analysis.StockAnalysisService;
+import com.ykm.stock.analytics.service.analysis.StockObservationService;
+import com.ykm.stock.analytics.service.analysis.SupportResistanceService;
+import com.ykm.stock.analytics.service.analysis.TradePlanService;
 import com.ykm.stock.analytics.service.analysis.calculator.ExecutionCostCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.TradePlanCalculator;
+import com.ykm.stock.analytics.service.market.MarketStatusService;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
+import com.ykm.stock.analytics.service.valuation.StockValuationService.ReportValuationBundle;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
@@ -26,12 +62,20 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class StockAnalysisReadOnlyTests {
     private static final LocalDate DAY = LocalDate.parse("2025-05-02");
     private static final Instant CLOSE = Instant.parse("2025-05-02T20:00:00Z");
+
     private final StockRepository stocks = mock(StockRepository.class);
     private final StockIndustryHistoryRepository industries = mock(StockIndustryHistoryRepository.class);
     private final MarketStatusService calendar = mock(MarketStatusService.class);
@@ -41,35 +85,39 @@ class StockAnalysisReadOnlyTests {
     private final TradePlanService plans = mock(TradePlanService.class);
     private final MarketContextService market = mock(MarketContextService.class);
     private final StockObservationService stockObservations = mock(StockObservationService.class);
-    private final StockAnalysisService service = new StockAnalysisService(stocks, industries, calendar, prices, structures, levels, plans, market, stockObservations);
+    private final StockValuationService stockValuations = mock(StockValuationService.class);
+    private final StockAnalysisService service = new StockAnalysisService(
+            stocks, industries, calendar, prices, structures, levels, plans, market, stockObservations, stockValuations);
+
+    private Stock testStock;
 
     @BeforeEach
     void setup() {
-        Stock stock = new Stock();
-        stock.setFigi("TEST_FIGI");
-        stock.setSymbol("TEST");
-        stock.setLongName("Test issuer");
-        when(stocks.findById("TEST_FIGI")).thenReturn(Optional.of(stock));
+        testStock = new Stock();
+        testStock.setFigi("TEST_FIGI");
+        testStock.setSymbol("TEST");
+        testStock.setLongName("Test issuer");
+        when(stocks.findById("TEST_FIGI")).thenReturn(Optional.of(testStock));
         when(calendar.isTradingDay(DAY)).thenReturn(true);
         when(calendar.getSessionCloseAt(DAY)).thenReturn(CLOSE);
         when(calendar.getLastClosedTradingDay(any())).thenReturn(DAY);
         when(prices.normalize(any(), any(), any())).thenReturn(MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                 AnalysisReasonDto.of("PRICE_MISSING", "PRICE", "No stored price")));
         when(stockObservations.read(eq("TEST_FIGI"), any())).thenReturn(new FutuObservationsDto(null, List.of()));
+        when(stockValuations.evaluateForReport(any(), any(), any(), any(), any()))
+                .thenReturn(new ReportValuationBundle(null, null, List.of()));
     }
 
-    // Before: report assembly could ingest/recalculate behind a read API. After: missing stored valuation stays missing with a reason.
     @Test
     void missingValuationDoesNotTriggerHiddenCalculationOrWrite() {
         StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, AnalysisHorizon.POSITION));
         assertThat(report.valuation()).isNull();
+        assertThat(report.financials()).isNull();
         assertThat(report.reasons()).extracting(AnalysisReasonDto::code).contains("VALUATION_NOT_CALCULATED", "PRICE_MISSING");
         verify(stocks, never()).save(any());
         verifyNoInteractions(structures, levels, plans, market);
     }
 
-    // Before: default latest report hid observations downloaded after the close.
-    // After: financial valuation still uses the completed session, while supplemental Futu/forecasts use the actual read time.
     @Test
     void defaultDateKeepsFinancialCloseButReadsLatestSupplementalObservations() {
         Instant before = Instant.now();
@@ -81,44 +129,48 @@ class StockAnalysisReadOnlyTests {
                 && !context.observationCutoff().isBefore(before) && !context.observationCutoff().isAfter(after)), eq(DAY.minusYears(5)), eq(DAY));
     }
 
-    // Before: relaxing latest observations could accidentally leak today's forecasts into a dated report.
-    // After: explicitly selected historical dates keep a historical observation cutoff.
     @Test
     void explicitlyDatedReportKeepsSupplementalObservationsAtHistoricalClose() {
         service.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, null));
         verify(stockObservations).read("TEST_FIGI", CLOSE);
-        verify(stockObservations).monthlyValuations("TEST_FIGI", DAY.minusYears(5), DAY, CLOSE);
+        verify(stockValuations).evaluateForReport(same(testStock), eq(DAY), eq(CLOSE), eq(CLOSE), eq(null));
         verify(prices).normalize(argThat(context -> context.analysisAsOf().equals(CLOSE)
                 && context.observationCutoff().equals(CLOSE)), eq(DAY.minusYears(5)), eq(DAY));
     }
 
     @Test
-    void reportUsesTheIndustryClassificationKnownAtTheAnalysisCutoff() {
+    void reportUsesTheIndustryClassificationKnownAtTheAnalysisCutoffAndReturnsFinancials() {
         StockIndustry industry = new StockIndustry();
         industry.setCode("I1");
         StockIndustryHistory history = new StockIndustryHistory();
         history.setIndustry(industry);
         when(industries.findAt("TEST_FIGI", CLOSE)).thenReturn(Optional.of(history));
-        when(stockObservations.valuation("TEST_FIGI", DAY, CLOSE, "I1")).thenReturn(new ValuationResultDto(
-                "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", "I1", "PARTIAL", "VALUATION_INPUTS_INCOMPLETE", null, null, null, null, null, null, null, null));
+        FinancialsDto.FinancialValue rev = FinancialsDto.FinancialValue.available(new BigDecimal("1000"), "Futu TTM", LocalDate.of(2024, 4, 1), LocalDate.of(2025, 3, 31), CLOSE);
+        FinancialsDto financials = new FinancialsDto(LocalDate.of(2025, 3, 31), CLOSE, "USD",
+                rev, rev, rev, rev, rev, rev, rev, rev, rev, rev, rev, rev, rev, rev);
+        ValuationResultDto valDto = new ValuationResultDto(
+                "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", "I1", "PARTIAL", "VALUATION_INPUTS_INCOMPLETE",
+                null, null, null, null, null, null, null, null);
+        when(stockValuations.evaluateForReport(same(testStock), eq(DAY), eq(CLOSE), eq(CLOSE), eq("I1")))
+                .thenReturn(new ReportValuationBundle(valDto, financials, List.of()));
 
         StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, null));
 
         assertThat(report.valuation().industryCode()).isEqualTo("I1");
         assertThat(report.valuation().source()).isEqualTo("FINANCIAL_REPORT_AS_OBSERVED");
+        assertThat(report.financials()).isNotNull();
+        assertThat(report.financials().revenueTtm().value()).isEqualByComparingTo("1000");
     }
 
-    // Before: a future/unclosed date might reuse today's inputs. After: invalid requested dates are rejected before any valuation read.
     @Test
     void nonTradingDateCannotBeSilentlyReplaced() {
         LocalDate weekend = LocalDate.parse("2025-05-03");
         when(calendar.isTradingDay(weekend)).thenReturn(false);
         assertThatThrownBy(() -> service.analyze(new AnalysisReportRequest("TEST_FIGI", weekend, null)))
                 .isInstanceOf(ResponseStatusException.class);
-        verifyNoInteractions(prices, stockObservations);
+        verifyNoInteractions(prices, stockObservations, stockValuations);
     }
 
-    /** 已入庫倍數與合資格技術輸入經正式 reader／plan 組裝；測試數字不是實際股票買賣建議。 */
     @Test
     void storedFinancialMultiplesAndTechnicalEntryStopTargetsAreReturnedTogether() {
         StockAnalysisReportDto report = assembledReport(true, true);
@@ -158,20 +210,22 @@ class StockAnalysisReadOnlyTests {
     }
 
     private StockAnalysisReportDto assembledReport(boolean hasValuation, boolean hasResistance) {
-        StockValuationDailyRepository savedValuations = mock(StockValuationDailyRepository.class);
-        StockEarningsForecastRepository forecasts = mock(StockEarningsForecastRepository.class);
-        StockValuationDaily valuation = new StockValuationDaily();
-        valuation.setFigi("TEST_FIGI");
-        valuation.setValuationDate(DAY);
-        valuation.setValuationCutoff(CLOSE);
-        valuation.setClosePrice(new BigDecimal("98"));
-        valuation.setPe(new BigDecimal("20"));
-        when(savedValuations.findByFigiAndValuationDateAndValuationCutoffLessThanEqual("TEST_FIGI", DAY, CLOSE))
-                .thenReturn(hasValuation ? Optional.of(valuation) : Optional.empty());
-        StockObservationService stored = new StockObservationService(savedValuations, forecasts);
+        ValuationResultDto valuation = new ValuationResultDto(
+                "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", null, "AVAILABLE", null,
+                new ValuationResultDto.Metrics(
+                        ValuationResultDto.value(new BigDecimal("20"), null),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "EV_COMPONENTS_UNRESOLVED")),
+                new BigDecimal("98"), "USD", CLOSE, null, null, null, null);
+        StockValuationService localValuation = mock(StockValuationService.class);
+        when(localValuation.evaluateForReport(any(), eq(DAY), eq(CLOSE), eq(CLOSE), any()))
+                .thenReturn(hasValuation ? new ReportValuationBundle(valuation, null, List.of()) : new ReportValuationBundle(null, null, List.of()));
         ExecutionCostCalculator costs = new ExecutionCostCalculator();
         TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
-        StockAnalysisService reportService = new StockAnalysisService(stocks, industries, calendar, prices, structures, levels, realPlans, market, stored);
+        StockAnalysisService reportService = new StockAnalysisService(
+                stocks, industries, calendar, prices, structures, levels, realPlans, market, stockObservations, localValuation);
         Instant confirmedAt = CLOSE.minusSeconds(86400);
         when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
         NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),
@@ -191,11 +245,7 @@ class StockAnalysisReadOnlyTests {
         when(structures.analyze(any(), same(price))).thenReturn(MetricResult.available(structure));
         when(levels.analyze(any(), same(price), same(structure))).thenReturn(MetricResult.available(zones));
         when(market.evaluate(any(), same(price), same(structure))).thenReturn(MetricResult.available(background));
-        StockAnalysisReportDto report = reportService.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, AnalysisHorizon.SWING));
-        verify(savedValuations).findByFigiAndValuationDateAndValuationCutoffLessThanEqual("TEST_FIGI", DAY, CLOSE);
-        verify(savedValuations, never()).save(any());
-        verify(savedValuations, never()).saveAll(any());
-        return report;
+        return reportService.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, AnalysisHorizon.SWING));
     }
 
     private LevelZoneDto zone(String id, String low, String high, ZoneRole role, Instant confirmedAt) {

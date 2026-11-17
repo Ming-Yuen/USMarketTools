@@ -250,18 +250,12 @@ public class StockService {
                   order by s.symbol, s.figi limit :limit offset :offset
                 )
                 select s.*, ss.quote_date, q.close_price, v.valuation_date, v.pe, v.pb, v.ps, v.pfcf, v.ev_ebitda,
-                       case when v.figi is null then 'NOT_CALCULATED'
-                            when v.pe is null and v.pb is null and v.ps is null and v.pfcf is null and v.ev_ebitda is null then 'INSUFFICIENT_DATA'
-                            else 'AVAILABLE' end as valuation_status,
-                       case when v.figi is null then 'VALUATION_NOT_CALCULATED'
-                            when v.pe is null and v.pb is null and v.ps is null and v.pfcf is null and v.ev_ebitda is null then 'VALUATION_INPUTS_INCOMPLETE' end as reason_code
+                       case when v.figi is null then 'NOT_CALCULATED' else v.status end as valuation_status,
+                       case when v.figi is null then 'VALUATION_NOT_CALCULATED' else v.reason_code end as reason_code
                 from selected s
                 left join stock_status ss on ss.figi = s.figi
                 left join stock_quote q on q.figi = s.figi and q.quote_date = ss.quote_date
-                left join lateral (
-                  select r.figi, r.valuation_date, r.pe, case when r.pb > 0 then r.pb end as pb, r.ps, r.pfcf, r.ev_ebitda from stock_valuation_daily r
-                    where r.figi = s.figi order by r.valuation_date desc limit 1
-                ) v on true
+                left join stock_valuation_latest v on v.figi = s.figi
                 order by s.symbol, s.figi
                 """;
         List<Item> rows = jdbc.query(sql, params, (rs, row) -> new Item(

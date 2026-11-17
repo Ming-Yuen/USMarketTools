@@ -5,11 +5,12 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.time.LocalDate;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class FinancialReportItemMappingId implements Serializable {
-    private int statementType;
-    private String itemName;
+public class StockFinancialPeriodId implements Serializable {
+    private String figi;
+    private LocalDate periodEnd;
 }

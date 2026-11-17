@@ -1,7 +1,19 @@
 package com.ykm.stock.analytics.repository.jpa;
 
 import com.ykm.stock.analytics.enums.ActiveStatus;
-import com.ykm.stock.analytics.model.entity.*;
+import com.ykm.stock.analytics.enums.ValuationReason;
+import com.ykm.stock.analytics.model.entity.FinancialReport;
+import com.ykm.stock.analytics.model.entity.SecFinancialFact;
+import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockConcept;
+import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
+import com.ykm.stock.analytics.model.entity.StockIndustry;
+import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
+import com.ykm.stock.analytics.model.entity.StockQuote;
+import com.ykm.stock.analytics.model.entity.StockShareObservation;
+import com.ykm.stock.analytics.model.entity.StockSplit;
+import com.ykm.stock.analytics.model.entity.StockStatus;
+import com.ykm.stock.analytics.model.entity.StockValuationLatest;
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -17,9 +29,10 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
-import java.time.LocalDate;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,8 +54,8 @@ class ValuationBatchQueryJpaTests {
         assumeTrue(url != null && !url.isBlank(), "Set STOCK_WATERMARK_TEST_JDBC_URL to an isolated stock_valuation_test database");
         if (!url.matches("jdbc:postgresql://(127\\.0\\.0\\.1|localhost):[0-9]{1,5}/stock_valuation_test"))
             throw new IllegalArgumentException("Only an explicitly configured local stock_valuation_test database is allowed");
-        username = System.getenv().getOrDefault("STOCK_WATERMARK_TEST_DB_USER", "postgres");
-        password = System.getenv().getOrDefault("STOCK_WATERMARK_TEST_DB_PASSWORD", "");
+        username = System.getenv().getOrDefault("STOCK_WATERMARK_TEST_DB_USER", "trading");
+        password = System.getenv().getOrDefault("STOCK_WATERMARK_TEST_DB_PASSWORD", "TradingPass123!");
         schema = "valuation_batch_" + UUID.randomUUID().toString().replace("-", "");
         try (Connection connection = DriverManager.getConnection(url, username, password); Statement statement = connection.createStatement()) {
             statement.execute("create schema " + schema);
@@ -59,10 +72,12 @@ class ValuationBatchQueryJpaTests {
                 .applySetting("hibernate.hbm2ddl.auto", "create-drop")
                 .applySetting("jakarta.persistence.validation.mode", "none").build();
         MetadataSources metadata = new MetadataSources(registry);
-        for (Class<?> type : List.of(Stock.class, StockStatus.class, StockQuote.class, FinancialReport.class, StockValuationDaily.class,
+        for (Class<?> type : List.of(Stock.class, StockStatus.class, StockQuote.class, FinancialReport.class,
+                StockFinancialPeriod.class, StockValuationLatest.class,
                 StockIndustry.class, StockIndustryHistory.class, StockConcept.class, StockShareObservation.class,
-                SecFinancialFact.class, StockSplit.class))
+                SecFinancialFact.class, StockSplit.class)) {
             metadata.addAnnotatedClass(type);
+        }
         factory = metadata.buildMetadata().buildSessionFactory();
     }
 
@@ -77,7 +92,6 @@ class ValuationBatchQueryJpaTests {
         }
     }
 
-    /** 行情選股：支援 ADR／ETF／沒有 CIK 的普通股，但尊重 active 與各股水位。 */
     @Test
     void quoteCandidatesIncludeSupportedSecuritiesWithoutRequiringSecIdentity() {
         try (Session session = factory.openSession()) {
@@ -174,8 +188,8 @@ class ValuationBatchQueryJpaTests {
             LocalDate day = LocalDate.of(2025, 2, 18);
             List<SecFinancialFact> inputs = repository.findValuationFlows(ciks, tags, day, knownAt);
             assertThat(inputs).extracting(SecFinancialFact::getId).containsExactlyInAnyOrder(3L, 4L, 5L);
-            SecFinancialFactsCalculator.Flows financials = new SecFinancialFactsCalculator().calculateSelectedFacts(inputs, ciks.getFirst(), "USD", day,
-                    knownAt, List.of(), ignored -> java.util.Set.of(), ignored -> {});
+            SecFinancialFactsCalculator.Flows financials = new SecFinancialFactsCalculator()
+                    .calculateSelectedFacts(inputs, ciks.getFirst(), null, "USD", day, knownAt, List.of());
             assertThat(financials.revenue().value()).isEqualByComparingTo("120");
             session.getTransaction().rollback();
         }
@@ -189,45 +203,8 @@ class ValuationBatchQueryJpaTests {
         report.setPeriodEnd(LocalDate.parse(periodEnd));
         report.setObservedAt(observedAt);
         report.setCurrency("USD");
-        report.setItems(List.of(new FinancialReport.Item(100, "Revenue", new BigDecimal(revenue), null, null)));
+        report.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(revenue), null, null)));
         return report;
-    }
-
-    @Test
-    void latestSuccessUsesActualSavedDates() {
-        try (Session session = factory.openSession()) {
-            session.beginTransaction();
-            session.createNativeMutationQuery("insert into stock(figi,symbol,active_status,stock_type) values ('F1','AAPL','ACTIVE','Common Stock')").executeUpdate();
-            session.createNativeMutationQuery("""
-                    insert into stock_valuation_daily(figi,valuation_date,calculated_at,valuation_cutoff,pe,pe_reason,pb_reason) values
-                    ('F1','2025-05-01','2025-05-06','2025-05-01 20:00:00',null,'NON_POSITIVE_EPS','SPLIT_SYNC_ERROR'),
-                    ('F1','2025-05-02','2025-05-06','2025-05-02 20:00:00',20,null,null),
-                    ('F1','2025-05-05','2025-05-06','2025-05-05 20:00:00',null,'NON_POSITIVE_EPS',null)
-                    """).executeUpdate();
-            StockValuationDailyRepository repository = new JpaRepositoryFactory(session).getRepository(StockValuationDailyRepository.class);
-            assertThat(repository.findLatestAvailableDates(List.of("F1"), LocalDate.of(2025, 5, 1), DAY))
-                    .singleElement().satisfies(row -> assertThat(row).containsExactly("F1", LocalDate.of(2025, 5, 2)));
-            session.getTransaction().rollback();
-        }
-    }
-
-    @Test
-    void recordedSecCiksAreScopedToTheRequestedStocksAndDates() {
-        try (Session session = factory.openSession()) {
-            session.beginTransaction();
-            session.createNativeMutationQuery("insert into stock(figi,symbol,active_status,stock_type) values ('F1','AAPL','ACTIVE','Common Stock'),('F2','JPM','ACTIVE','Common Stock')").executeUpdate();
-            session.createNativeMutationQuery("""
-                    insert into stock_valuation_daily(figi,valuation_date,calculated_at,valuation_cutoff,sec_financial_cik) values
-                    ('F1','2025-04-25','2025-05-06','2025-04-25 20:00:00','0000000001'),
-                    ('F1','2025-04-29','2025-05-06','2025-04-29 20:00:00','0000320193'),
-                    ('F1','2025-04-30','2025-05-06','2025-04-30 20:00:00','0000320193'),
-                    ('F1','2025-05-05','2025-05-06','2025-05-05 20:00:00',null),
-                    ('F2','2025-05-05','2025-05-06','2025-05-05 20:00:00','0000019617')
-                    """).executeUpdate();
-            StockValuationDailyRepository repository = new JpaRepositoryFactory(session).getRepository(StockValuationDailyRepository.class);
-            assertThat(repository.findRecordedSecCiks(List.of("F1"), LocalDate.of(2025, 4, 28), DAY)).containsExactly("0000320193");
-            session.getTransaction().rollback();
-        }
     }
 
     @Test
@@ -251,24 +228,73 @@ class ValuationBatchQueryJpaTests {
         }
     }
 
+    /** Scenario：stock_financial_period 新列批次寫入不觸發逐股 SELECT，並支援整股刪除與查詢。 */
     @Test
-    void assignedNewValuationIdsDoNotTriggerPerStockSelectsBeforeTheInsertBatch() {
+    void stockFinancialPeriodBatchInsertAndDeleteByFigiInExecuteCleanly() {
         try (Session session = factory.openSession()) {
             session.beginTransaction();
-            session.createNativeMutationQuery("insert into stock(figi,symbol,active_status,stock_type) select 'F'||n,'S'||n,'ACTIVE','Common Stock' from generate_series(1,50) n").executeUpdate();
             factory.getStatistics().clear();
-            for (int index = 1; index <= 50; index++) {
-                StockValuationDaily row = new StockValuationDaily();
-                row.setFigi("F" + index);
-                row.setValuationDate(DAY);
-                row.setValuationCutoff(Instant.parse("2025-05-05T20:00:00Z"));
-                row.setCalculatedAt(Instant.parse("2025-05-06T00:00:00Z"));
-                row.setPe(java.math.BigDecimal.TEN);
+            Instant now = Instant.parse("2025-05-06T00:00:00Z");
+            for (int index = 1; index <= 40; index++) {
+                StockFinancialPeriod row = new StockFinancialPeriod();
+                row.setFigi("F1");
+                row.setPeriodEnd(LocalDate.of(2015, 3, 31).plusMonths((index - 1) * 3L));
+                row.setPeriodStart(row.getPeriodEnd().minusDays(89));
+                row.setReportingCurrency("USD");
+                row.setAccountingStandards("US_GAAP");
+                row.setRevenueTtm(new BigDecimal("1000000"));
+                row.setRevenueTtmStatus("AVAILABLE");
+                row.setEpsTtmReason(ValuationReason.NON_POSITIVE_EPS);
+                row.setUpdatedAt(now);
                 session.persist(row);
             }
             session.flush();
             assertThat(factory.getStatistics().getEntityLoadCount()).isZero();
             assertThat(factory.getStatistics().getPrepareStatementCount()).isEqualTo(1);
+
+            StockFinancialPeriodRepository repo = new JpaRepositoryFactory(session).getRepository(StockFinancialPeriodRepository.class);
+            assertThat(repo.findExistingFigis(List.of("F1", "F2"))).isEqualTo(Set.of("F1"));
+            assertThat(repo.findByFigiOrderByPeriodEndAsc("F1")).hasSize(40);
+            repo.deleteByFigiIn(List.of("F1"));
+            session.flush();
+            assertThat(repo.findByFigiOrderByPeriodEndAsc("F1")).isEmpty();
+            session.getTransaction().rollback();
+        }
+    }
+
+    /** Scenario：stock_valuation_latest 同業查詢僅回傳 ACTIVE 且 tracked=true 的股票，並回傳 coalesce(s.cik, s.figi) 供同發行人去重。 */
+    @Test
+    void stockValuationLatestPeerQueryFiltersActiveTrackedAndReturnsIssuerKey() {
+        try (Session session = factory.openSession()) {
+            session.beginTransaction();
+            session.createNativeMutationQuery("""
+                    insert into stock(figi,symbol,active_status,stock_type,cik,tracked) values
+                    ('G_A','GOOGL','ACTIVE','Common Stock','0001652044',true),
+                    ('G_C','GOOG','ACTIVE','Common Stock','0001652044',true),
+                    ('SOLO','NOCIK','ACTIVE','Common Stock',null,true),
+                    ('UNTRACKED','OFF1','ACTIVE','Common Stock','0000111111',false),
+                    ('INACTIVE','OFF2','INACTIVE','Common Stock','0000222222',true)
+                    """).executeUpdate();
+            Instant close = Instant.parse("2025-05-05T20:00:00Z");
+            for (String figi : List.of("G_A", "G_C", "SOLO", "UNTRACKED", "INACTIVE")) {
+                StockValuationLatest snap = new StockValuationLatest();
+                snap.setFigi(figi);
+                snap.setValuationDate(DAY);
+                snap.setAnalysisAsOf(close);
+                snap.setCalculatedAt(close.plusSeconds(60));
+                snap.setIndustryCode("I1");
+                snap.setStatus("AVAILABLE");
+                snap.setPe(new BigDecimal("22.5"));
+                snap.setPeStatus("AVAILABLE");
+                session.persist(snap);
+            }
+            session.flush();
+
+            StockValuationLatestRepository repo = new JpaRepositoryFactory(session).getRepository(StockValuationLatestRepository.class);
+            List<Object[]> peers = repo.findActiveTrackedPeerSnapshots("I1");
+            assertThat(peers).hasSize(3);
+            assertThat(peers).extracting(row -> (String) row[0])
+                    .containsExactlyInAnyOrder("0001652044", "0001652044", "SOLO");
             session.getTransaction().rollback();
         }
     }

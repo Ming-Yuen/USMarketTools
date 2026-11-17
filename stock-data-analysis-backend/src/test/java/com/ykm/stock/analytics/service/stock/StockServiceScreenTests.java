@@ -98,8 +98,8 @@ class StockServiceScreenTests {
         ArgumentCaptor<String> pageSql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).query(pageSql.capture(), same(parameters), ArgumentMatchers.<RowMapper<Item>>any());
         assertThat(pageSql.getValue()).contains("limit :limit offset :offset", "q.quote_date = ss.quote_date",
-                "from stock_valuation_daily r", "order by r.valuation_date desc limit 1", "case when r.pb > 0 then r.pb end as pb")
-                .doesNotContain("AAPL' OR", "s.cik");
+                "left join stock_valuation_latest v on v.figi = s.figi")
+                .doesNotContain("stock_valuation_daily", "AAPL' OR", "s.cik");
         assertThat(pageSql.getValue()).doesNotContain("'PARTIAL'", "v.pe is null or v.pb is null");
         ArgumentCaptor<SqlParameterSource> conceptParameters = ArgumentCaptor.forClass(SqlParameterSource.class);
         verify(jdbc).query(anyString(), conceptParameters.capture(), any(RowCallbackHandler.class));

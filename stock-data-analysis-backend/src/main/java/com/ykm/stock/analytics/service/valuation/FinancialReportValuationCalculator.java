@@ -1,23 +1,21 @@
 package com.ykm.stock.analytics.service.valuation;
 
 import com.ykm.stock.analytics.enums.FinancialConcept;
-import com.ykm.stock.analytics.enums.FinancialItemMappingStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
-import com.ykm.stock.analytics.model.entity.FinancialReportItemMapping;
 import com.ykm.stock.analytics.service.stock.StockIndicatorService;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -249,43 +247,6 @@ public class FinancialReportValuationCalculator {
                                   MetricResult<BigDecimal> ps, MetricResult<BigDecimal> pfcf,
                                   MetricResult<BigDecimal> evEbitda) {}
 
-    /** 一次建立名稱索引；同概念別名不加總，不同報表類型不繼承映射。 */
-    public List<ReportValues> extract(Collection<FinancialReport> reports, Collection<FinancialReportItemMapping> mappings) {
-        Map<ItemKey, FinancialReportItemMapping> catalog = new HashMap<>();
-        for (FinancialReportItemMapping mapping : mappings) {
-            ItemKey key = new ItemKey(mapping.getStatementType(), mapping.getItemName());
-            if (catalog.putIfAbsent(key, mapping) != null) throw new IllegalArgumentException("DUPLICATE_FINANCIAL_MAPPING:" + key);
-        }
-        List<ReportValues> result = new ArrayList<>();
-        for (FinancialReport report : reports) {
-            Map<FinancialConcept, MetricResult<BigDecimal>> values = new EnumMap<>(FinancialConcept.class);
-            Set<String> unknown = new LinkedHashSet<>();
-            List<FinancialReport.Item> pending = new ArrayList<>();
-            for (FinancialReport.Item item : report.getItems()) {
-                FinancialReportItemMapping mapping = catalog.get(new ItemKey(report.getStatementType(), item.name()));
-                if (mapping == null) {
-                    unknown.add(item.name() == null || item.name().isBlank() ? "<missing name>:" + item.fieldId() : item.name());
-                    continue;
-                }
-                if (mapping.getMappingStatus() == FinancialItemMappingStatus.PENDING) pending.add(item);
-                if (mapping.getMappingStatus() != FinancialItemMappingStatus.MAPPED) continue;
-                FinancialConcept concept = mapping.getFinancialConcept();
-                MetricResult<BigDecimal> previous = values.get(concept);
-                if (previous != null && previous.status() == MetricStatus.UNVERIFIED) continue;
-                if (item.value() == null) {
-                    values.putIfAbsent(concept, missing("FINANCIAL_INPUT_MISSING"));
-                } else if (previous == null || previous.value() == null) {
-                    values.put(concept, MetricResult.available(item.value()));
-                } else if (previous.value().compareTo(item.value()) != 0) {
-                    values.put(concept, unverified("FINANCIAL_CONCEPT_VALUE_CONFLICT"));
-                }
-            }
-            result.add(new ReportValues(report.getFigi(), report.getStatementType(), report.getPeriodEnd(), report.getPeriodType(),
-                    report.getFiscalYear(), report.getCurrency(), report.getAccountingStandards(), values, List.copyOf(unknown), List.copyOf(pending)));
-        }
-        return List.copyOf(result);
-    }
-
     /** 流量按四連季加總；EPS 採單季數值之和，不等於依 TTM 加權股數與稀釋性重算的 GAAP EPS。 */
     public MetricResult<BigDecimal> trailingTwelveMonths(List<ReportValues> reports, String figi, int statementType,
                                                         FinancialConcept concept, LocalDate periodEnd, String currency) {
@@ -358,13 +319,37 @@ public class FinancialReportValuationCalculator {
         return MetricResult.available(equity.value().subtract(preferred.value(), MC));
     }
 
-    /** 同一財報期間取數：營收缺報告總額時退回營業收入；損益表 D&A 優先採 DD&A 總額或 D&A 合計，缺合計才加總折舊與攤銷。 */
+    /** 同一財報期間取數：營收缺報告總額時退回營業收入；普通股淨利缺專列時退回母公司淨利扣優先股股利；資本支出正規化為正數規模；損益 D&A 優先採 DD&A 總額或 D&A 合計。 */
     public MetricResult<BigDecimal> flowInput(ReportValues report, FinancialConcept concept) {
         if (concept == FinancialConcept.REVENUE_AS_REPORTED) {
             MetricResult<BigDecimal> reported = report.value(FinancialConcept.REVENUE_AS_REPORTED);
             if (reported.value() != null || reported.status() == MetricStatus.UNVERIFIED) return reported;
             MetricResult<BigDecimal> operating = report.value(FinancialConcept.OPERATING_REVENUE);
             return operating.value() != null || operating.status() == MetricStatus.UNVERIFIED ? operating : reported;
+        }
+        if (concept == FinancialConcept.NET_INCOME_COMMON) {
+            MetricResult<BigDecimal> common = report.value(FinancialConcept.NET_INCOME_COMMON);
+            if (common.value() != null || common.status() == MetricStatus.UNVERIFIED) return common;
+            MetricResult<BigDecimal> parent = report.value(FinancialConcept.NET_INCOME_PARENT);
+            if (parent.status() == MetricStatus.UNVERIFIED || parent.value() == null) return parent.status() == MetricStatus.UNVERIFIED ? parent : common;
+            MetricResult<BigDecimal> prefDiv = report.value(FinancialConcept.PREFERRED_DIVIDENDS);
+            MetricResult<BigDecimal> otherPrefDiv = report.value(FinancialConcept.OTHER_PREFERRED_DIVIDENDS);
+            if (prefDiv.status() == MetricStatus.UNVERIFIED) return prefDiv;
+            if (otherPrefDiv.status() == MetricStatus.UNVERIFIED) return otherPrefDiv;
+            BigDecimal deduction = (prefDiv.value() != null && prefDiv.value().signum() > 0 ? prefDiv.value() : BigDecimal.ZERO)
+                    .add(otherPrefDiv.value() != null && otherPrefDiv.value().signum() > 0 ? otherPrefDiv.value() : BigDecimal.ZERO, MC);
+            return MetricResult.available(parent.value().subtract(deduction, MC));
+        }
+        if (concept == FinancialConcept.OPERATING_CASH_FLOW) {
+            MetricResult<BigDecimal> total = report.value(FinancialConcept.OPERATING_CASH_FLOW);
+            if (total.value() != null || total.status() == MetricStatus.UNVERIFIED) return total;
+            MetricResult<BigDecimal> continuing = report.value(FinancialConcept.CONTINUING_OPERATING_CASH_FLOW);
+            return continuing.value() != null || continuing.status() == MetricStatus.UNVERIFIED ? continuing : total;
+        }
+        if (concept == FinancialConcept.CAPITAL_EXPENDITURE) {
+            MetricResult<BigDecimal> capex = report.value(FinancialConcept.CAPITAL_EXPENDITURE);
+            if (capex.value() == null) return capex;
+            return MetricResult.available(capex.value().abs());
         }
         if (concept != FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION) return report.value(concept);
         MetricResult<BigDecimal> dda = report.value(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION);
@@ -406,6 +391,14 @@ public class FinancialReportValuationCalculator {
 
     /** 營運企業 EV：US_GAAP 優先排除營運租賃（缺拆分時退回純借款），IFRS 納入全部租賃負債；優先股與非控權益採帳面近似，缺值視為 0。 */
     public MetricResult<BigDecimal> enterpriseValue(BigDecimal marketCap, ReportValues balance) {
+        MetricResult<BigDecimal> adjustment = enterpriseValueAdjustment(balance);
+        if (adjustment.status() != MetricStatus.AVAILABLE || adjustment.value() == null) return adjustment;
+        if (marketCap == null) return missing("VALUATION_DATE_SHARES_MISSING");
+        return MetricResult.available(marketCap.add(adjustment.value(), MC));
+    }
+
+    /** 營運企業 EV 非市值調整淨額（有息債務＋優先股帳面值＋非控權益帳面值－現金），供財季分母表與即時估值共用。 */
+    public MetricResult<BigDecimal> enterpriseValueAdjustment(ReportValues balance) {
         String standard = normalizeAccountingStandard(balance.accountingStandards());
         if (standard == null) return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
         // 存款、回購與證券借貸屬於金融機構負債結構，不套用一般營運企業 EV 公式。
@@ -415,31 +408,55 @@ public class FinancialReportValuationCalculator {
             if (value.status() == MetricStatus.UNVERIFIED) return value;
             if (value.value() != null && value.value().signum() != 0) return missing("EV_FINANCING_SCOPE_UNRESOLVED");
         }
-        MetricResult<BigDecimal> preferred = balance.value(FinancialConcept.PREFERRED_STOCK_CAPITAL);
+        MetricResult<BigDecimal> preferred = preferredEquity(balance);
         if (preferred.status() == MetricStatus.UNVERIFIED) return preferred;
-        if (preferred.value() != null && preferred.value().signum() < 0) return unverified("PREFERRED_EQUITY_NEGATIVE");
         BigDecimal preferredVal = preferred.value() == null ? BigDecimal.ZERO : preferred.value();
 
-        MetricResult<BigDecimal> minority = balance.value(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
+        MetricResult<BigDecimal> minority = noncontrollingInterest(balance);
         if (minority.status() == MetricStatus.UNVERIFIED) return minority;
-        BigDecimal minorityVal = minority.value();
-        if (minorityVal == null) {
-            MetricResult<BigDecimal> total = balance.value(FinancialConcept.TOTAL_EQUITY);
-            MetricResult<BigDecimal> parent = balance.value(FinancialConcept.STOCKHOLDERS_EQUITY);
-            if (total.status() == MetricStatus.UNVERIFIED) return total;
-            if (parent.status() == MetricStatus.UNVERIFIED) return parent;
-            minorityVal = total.value() != null && parent.value() != null
-                    ? total.value().subtract(parent.value(), MC) : BigDecimal.ZERO;
-        }
+        BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
 
         MetricResult<BigDecimal> debt = totalDebt(balance, "IFRS".equals(standard));
         if (debt.status() == MetricStatus.UNVERIFIED) return debt;
         MetricResult<BigDecimal> cash = balance.value(FinancialConcept.CASH_AND_EQUIVALENTS);
         if (cash.status() == MetricStatus.UNVERIFIED) return cash;
-        if (marketCap == null) return missing("VALUATION_DATE_SHARES_MISSING");
         if (debt.value() == null) return debt;
         if (cash.value() == null) return cash;
-        return MetricResult.available(marketCap.add(debt.value(), MC).add(preferredVal, MC).add(minorityVal, MC).subtract(cash.value(), MC));
+        return MetricResult.available(debt.value().add(preferredVal, MC).add(minorityVal, MC).subtract(cash.value(), MC));
+    }
+
+    /** 按資產負債表準則計算期末有息債務（US_GAAP 排除營運租賃或採純借款；IFRS 納入全部租賃負債）。 */
+    public MetricResult<BigDecimal> totalDebt(ReportValues balance) {
+        String standard = normalizeAccountingStandard(balance.accountingStandards());
+        if (standard == null) return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        for (FinancialConcept financing : List.of(FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES,
+                FinancialConcept.SECURITIES_LENDING_AND_REPO_PAYABLES_AS_REPORTED, FinancialConcept.BANK_DEPOSITS)) {
+            MetricResult<BigDecimal> value = balance.value(financing);
+            if (value.status() == MetricStatus.UNVERIFIED) return value;
+            if (value.value() != null && value.value().signum() != 0) return missing("EV_FINANCING_SCOPE_UNRESOLVED");
+        }
+        return totalDebt(balance, "IFRS".equals(standard));
+    }
+
+    public MetricResult<BigDecimal> preferredEquity(ReportValues balance) {
+        MetricResult<BigDecimal> preferred = balance.value(FinancialConcept.PREFERRED_STOCK_CAPITAL);
+        if (preferred.status() == MetricStatus.UNVERIFIED) return preferred;
+        if (preferred.value() != null && preferred.value().signum() < 0) return unverified("PREFERRED_EQUITY_NEGATIVE");
+        if (preferred.value() != null) return preferred;
+        return hasBalanceAnchor(balance) ? MetricResult.available(BigDecimal.ZERO) : preferred;
+    }
+
+    public MetricResult<BigDecimal> noncontrollingInterest(ReportValues balance) {
+        MetricResult<BigDecimal> minority = balance.value(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
+        if (minority.status() == MetricStatus.UNVERIFIED || minority.value() != null) return minority;
+        MetricResult<BigDecimal> total = balance.value(FinancialConcept.TOTAL_EQUITY);
+        MetricResult<BigDecimal> parent = balance.value(FinancialConcept.STOCKHOLDERS_EQUITY);
+        if (total.status() == MetricStatus.UNVERIFIED) return total;
+        if (parent.status() == MetricStatus.UNVERIFIED) return parent;
+        if (total.value() != null && parent.value() != null) {
+            return MetricResult.available(total.value().subtract(parent.value(), MC));
+        }
+        return hasBalanceAnchor(balance) ? MetricResult.available(BigDecimal.ZERO) : minority;
     }
 
     private MetricResult<BigDecimal> totalDebt(ReportValues balance, boolean ifrs) {
@@ -588,7 +605,7 @@ public class FinancialReportValuationCalculator {
     private MetricResult<BigDecimal> divide(BigDecimal numerator, BigDecimal denominator, String missingReason) {
         if (denominator == null) return missing(missingReason);
         if (denominator.signum() == 0) return missing("VALUATION_DENOMINATOR_ZERO");
-        return MetricResult.available(numerator.divide(denominator, MC));
+        return MetricResult.available(numerator.divide(denominator, 4, RoundingMode.HALF_UP));
     }
 
     private static boolean sameCurrency(String first, String second) {

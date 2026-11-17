@@ -14,6 +14,17 @@ import java.util.Set;
 public interface SecFinancialFactRepository extends JpaRepository<SecFinancialFact, Long> {
     List<SecFinancialFact> findByCik(String cik);
     List<SecFinancialFact> findByCikAndPeriodEndGreaterThanEqual(String cik, LocalDate periodEnd);
+
+    @Query("""
+            select f from SecFinancialFact f
+            where f.cik in :ciks and f.periodEnd >= :periodEnd
+              and ((f.taxonomy = 'us-gaap' and f.tag in :tags)
+                or (f.taxonomy = 'dei' and f.tag = 'EntityCommonStockSharesOutstanding' and f.unit = 'shares'))
+            order by f.cik asc, f.periodEnd asc, f.filed asc, f.accession asc
+            """)
+    List<SecFinancialFact> findPeriodRebuildFacts(@Param("ciks") Collection<String> ciks,
+                                                  @Param("tags") Collection<String> tags,
+                                                  @Param("periodEnd") LocalDate periodEnd);
     List<SecFinancialFact> findByCikAndTagInAndPeriodEndLessThan(String cik, Collection<String> tags, LocalDate periodEnd);
 
     @Query("""

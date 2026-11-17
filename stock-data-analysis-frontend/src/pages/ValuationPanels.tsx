@@ -33,6 +33,8 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
     () => [...points].filter(point => Number.isFinite(Date.parse(point.date))).sort((a, b) => a.date.localeCompare(b.date)),
     [points],
   );
+  const dateKey = useMemo(() => ordered.map(point => point.date).join(","), [ordered]);
+  const seriesKey = useMemo(() => ordered.map(point => `${point.date}:${point.value ?? ""}`).join("|"), [ordered]);
   const total = ordered.length;
   const minZoom = Math.min(total, 4);
   const [win, setWin] = useState<[number, number] | null>(null);
@@ -42,15 +44,18 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
 
   useEffect(() => {
     setWin(null);
+  }, [dateKey]);
+
+  useEffect(() => {
     setHoverIdx(null);
-  }, [ordered]);
+  }, [seriesKey]);
 
   const [winStart, winEnd] = useMemo<[number, number]>(() => {
-    if (!win || total <= minZoom) return [0, total];
-    const span = clampIdx(win[1] - win[0], minZoom, total);
+    if (!win || total === 0) return [0, total];
+    const span = clampIdx(win[1] - win[0], 1, total);
     const s = clampIdx(win[0], 0, total - span);
     return [s, s + span];
-  }, [win, total, minZoom]);
+  }, [win, total]);
 
   const zoomBy = useCallback((factor: number, ratio = 0.8) => {
     if (total <= minZoom) return;
@@ -85,7 +90,7 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
     last.setUTCFullYear(last.getUTCFullYear() - years);
     const cutoff = last.toISOString().slice(0, 10);
     const idx = ordered.findIndex(p => p.date >= cutoff);
-    if (idx <= 0) { setWin(null); } else { setWin([Math.min(idx, total - minZoom), total]); }
+    if (idx <= 0) { setWin(null); } else { setWin([idx, total]); }
     setHoverIdx(null);
   };
 
@@ -251,7 +256,14 @@ export function ValuationHistoryPanel({ figi, initial }: { figi: string; initial
       params: { ...range, frequency: "MONTH_END" },
     })).data,
   });
-  const rows = [...(range ? history.data ?? [] : initial)].sort((a, b) => a.valuationDate.localeCompare(b.valuationDate));
+  const rows = useMemo(
+    () => [...(range ? history.data ?? [] : initial)].sort((a, b) => a.valuationDate.localeCompare(b.valuationDate)),
+    [range, history.data, initial],
+  );
+  const chartPoints = useMemo(
+    () => rows.map(row => ({ date: row.valuationDate, value: row.metrics[metric]?.status === "AVAILABLE" ? row.metrics[metric].value : null })),
+    [rows, metric],
+  );
   const metricCodes = Object.keys(rows[0]?.metrics ?? initial[0]?.metrics ?? {}) as Array<keyof ValuationResult["metrics"]>;
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -276,7 +288,7 @@ export function ValuationHistoryPanel({ figi, initial }: { figi: string; initial
     {error && <Alert severity="warning">{error}</Alert>}
     {history.isError && <Alert severity="error">歷史估值載入失敗：{(history.error as Error).message}</Alert>}
     {history.isFetching ? <Typography>正在載入歷史估值…</Typography> : <>
-      <SeriesChart title={metricLabel(metric) + " 歷史走勢"} points={rows.map(row => ({ date: row.valuationDate, value: row.metrics[metric]?.status === "AVAILABLE" ? row.metrics[metric].value : null }))} />
+      <SeriesChart title={metricLabel(metric) + " 歷史走勢"} points={chartPoints} />
       <TableContainer sx={{ maxHeight: 320 }}><Table size="small" stickyHeader aria-label="歷史估值數據">
         <TableHead><TableRow>{([
           ["估值日", "left"], ["股價", "right"], ["P/E", "right"], ["P/B", "right"], ["P/S", "right"], ["P/FCF", "right"], ["EV/EBITDA", "right"], ["狀態", "left"],

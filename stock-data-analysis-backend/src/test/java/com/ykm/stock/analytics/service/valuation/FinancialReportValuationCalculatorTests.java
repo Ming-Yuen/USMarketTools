@@ -518,6 +518,28 @@ class FinancialReportValuationCalculatorTests {
         assertThat(result.pfcf().value()).isEqualByComparingTo("10");
     }
 
+    @Test
+    void fiscalYearTransitionBlocksNonContiguousQuarterTtmWhilePreserving52WeekRetailerQuarters() {
+        List<FinancialReport> fergCf = List.of(
+                flow(2025, 4, "2025-07-31", "471"),
+                report("A", 3, 2025, 7, "2025-12-31", "USD", item("Operating Cash Flow", "674")),
+                flow(2026, 1, "2026-03-31", "680"),
+                flow(2026, 2, "2026-06-30", "-198"),
+                flow(2026, 3, "2026-09-30", "648"));
+        List<FinancialReportValuationCalculator.ReportValues> fergRows = calculator.extract(fergCf);
+        assertReason(calculator.trailingTwelveMonths(fergRows, "A", 3, FinancialConcept.OPERATING_CASH_FLOW,
+                LocalDate.parse("2026-09-30"), "USD"), "TTM_QUARTERS_MISSING");
+
+        List<FinancialReport> retail52Week = List.of(
+                flow(2026, 1, "2025-11-22", "100"),
+                flow(2026, 2, "2026-02-14", "110"),
+                flow(2026, 3, "2026-05-09", "120"),
+                flow(2026, 4, "2026-08-29", "170"));
+        List<FinancialReportValuationCalculator.ReportValues> retailRows = calculator.extract(retail52Week);
+        assertThat(calculator.trailingTwelveMonths(retailRows, "A", 3, FinancialConcept.OPERATING_CASH_FLOW,
+                LocalDate.parse("2026-08-29"), "USD").value()).isEqualByComparingTo("500");
+    }
+
     private java.util.Map<FinancialConcept, String> leaseInputs(String currentTotal, String currentDebt, String currentLease,
                                                                String longTotal, String longDebt, String longLease) {
         java.util.Map<FinancialConcept, String> inputs = new java.util.EnumMap<>(FinancialConcept.class);

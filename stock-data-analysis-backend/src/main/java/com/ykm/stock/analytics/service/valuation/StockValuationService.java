@@ -2345,6 +2345,9 @@ public class StockValuationService {
             if (priorAnnualEnd != null) return priorAnnualEnd.plusDays(1);
             return periodEnd.minusYears(1).plusDays(1);
         }
+        if (!calculator.areContiguousQuarters(periods, periodEnd)) {
+            return quarterStart;
+        }
         LocalDate earliestEnd = periods.stream().map(ReportValues::periodEnd).min(LocalDate::compareTo).orElse(periodEnd);
         List<ReportValues> prior = reports.stream()
                 .filter(r -> r.figi().equals(figi) && r.statementType() == statementType && r.periodEnd().isBefore(earliestEnd))
@@ -2403,8 +2406,9 @@ public class StockValuationService {
             MetricResult<BigDecimal> existing = values.getOrDefault(concept, balance.value(concept));
             if (existing.value() != null || existing.status() == MetricStatus.UNVERIFIED || input == null || input.value() == null
                     || !balance.periodEnd().equals(input.periodEnd())) continue;
-            if (concept == FinancialConcept.PREFERRED_STOCK_CAPITAL && input.value().signum() == 0
-                    && "PreferredStock default 0".equals(input.note())) {
+            if ((concept == FinancialConcept.PREFERRED_STOCK_CAPITAL && input.value().signum() == 0 && "PreferredStock default 0".equals(input.note()))
+                    || (concept == FinancialConcept.NONCONTROLLING_INTEREST_EQUITY && input.value().signum() == 0
+                            && "NoncontrollingInterest default 0".equals(input.note()))) {
                 continue;
             }
             values.put(concept, MetricResult.available(input.value()));

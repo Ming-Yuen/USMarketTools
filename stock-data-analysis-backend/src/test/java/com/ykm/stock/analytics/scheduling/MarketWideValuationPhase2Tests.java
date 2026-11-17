@@ -748,6 +748,94 @@ class MarketWideValuationPhase2Tests {
         assertThat(aapl52Row.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 28));
     }
 
+    @Test
+    void giprRedeemableNciAndAmznAdditiveCurrentBorrowingsAndFergTransitionStayConsistent() {
+        ActiveStockWithStatus gipr = target("GIPR_FIGI", "GIPR", "0001651721", "Generation Income Properties Inc", "6798");
+        ActiveStockWithStatus amzn = target("AMZN_FIGI", "AMZN", "0001018724", "Amazon.com Inc", "5961");
+        ActiveStockWithStatus ferg = target("FERG2_FIGI", "FERG", "0002011641", "Ferguson Enterprises Inc", "5070");
+        stubStocksAndStatuses(List.of(gipr, amzn, ferg));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(
+                simpleObs("GIPR_FIGI", 7274682L), simpleObs("AMZN_FIGI", 10811000000L), simpleObs("FERG2_FIGI", 193648602L)));
+
+        List<FinancialReport> batchReports = new ArrayList<>();
+        List<SecFinancialFact> batchSec = new ArrayList<>();
+
+        // 1) GIPR：無 Futu 2026-09-30 資產負債表，SEC 同時列示永久 NCI 5,711,585 與可贖回 NCI 8,580,000 -> 面板與 EV 同步計入 14,291,585，普通股權益維持 16,767
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "Assets", "74032858"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "Liabilities", "59724506"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "CashAndCashEquivalentsAtCarryingValue", "867743"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "StockholdersEquity", "16767"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "MinorityInterest", "5711585"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "5728352"));
+        batchSec.add(secBalanceFact("0001651721", "2026-09-30", "10-Q", "RedeemableNoncontrollingInterestEquityCarryingAmount", "8580000"));
+
+        // 2) AMZN：Futu 漏列短期借款，SEC 同時列示 ShortTermBorrowings = 380 與 LongTermDebtCurrent = 6827 -> 短期純借款合計 7207，加長期 173125 與融資租賃 14495 = 194827
+        FinancialReport amznBal = new FinancialReport();
+        amznBal.setFigi("AMZN_FIGI");
+        amznBal.setStatementType(2);
+        amznBal.setPeriodType(3);
+        amznBal.setFiscalYear(2026);
+        amznBal.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        amznBal.setCurrency("USD");
+        amznBal.setAccountingStandards("US_GAAP");
+        amznBal.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        amznBal.setItems(List.of(
+                new FinancialReport.Item(8085L, "Stockholders' Equity", new BigDecimal("350000"), null, null),
+                new FinancialReport.Item(8068L, "Long Term Debt and Capital Lease Obligation", new BigDecimal("271949"), null, null),
+                new FinancialReport.Item(8069L, "-Long Term Debt", new BigDecimal("173125"), null, null),
+                new FinancialReport.Item(8070L, "-Long Term Capital Lease Obligation", new BigDecimal("98824"), null, null),
+                new FinancialReport.Item(8004L, "-Cash and Cash Equivalents", new BigDecimal("55783"), null, null)));
+        batchReports.add(amznBal);
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "ShortTermBorrowings", "380"));
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "LongTermDebtCurrent", "6827"));
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "LongTermDebtNoncurrent", "173125"));
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "FinanceLeaseLiability", "14495"));
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "OperatingLeaseLiabilityCurrent", "14093"));
+        batchSec.add(secBalanceFact("0001018724", "2026-09-30", "10-Q", "OperatingLeaseLiabilityNoncurrent", "86195"));
+
+        // 3) FERG 改財年：舊財年 Q4（2025-07-31）與新財年 Q1..Q3（2026-03-31..09-30）間隔 5 個月過渡期，不得跨過渡期硬湊 TTM FCF
+        String[][] fergCfRows = {
+                {"2025-07-31", "2025", "4", "471"},
+                {"2025-12-31", "2025", "7", "674"},
+                {"2026-03-31", "2026", "1", "680"},
+                {"2026-06-30", "2026", "2", "-198"},
+                {"2026-09-30", "2026", "3", "648"}
+        };
+        for (String[] item : fergCfRows) {
+            FinancialReport cf = new FinancialReport();
+            cf.setFigi("FERG2_FIGI");
+            cf.setStatementType(3);
+            cf.setFiscalYear(Integer.parseInt(item[1]));
+            cf.setPeriodType(Integer.parseInt(item[2]));
+            cf.setPeriodEnd(LocalDate.parse(item[0]));
+            cf.setCurrency("USD");
+            cf.setAccountingStandards("US_GAAP");
+            cf.setObservedAt(HIST_CLOSE.minusSeconds(600));
+            cf.setItems(List.of(new FinancialReport.Item(8072L, "Free Cash Flow", new BigDecimal(item[3]), null, null)));
+            batchReports.add(cf);
+        }
+
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(batchSec);
+
+        valuationService.rebuildFinancialPeriods(List.of("GIPR_FIGI", "AMZN_FIGI", "FERG2_FIGI"));
+
+        StockFinancialPeriod giprRow = storedPeriods.get("GIPR_FIGI").getFirst();
+        assertThat(giprRow.getCommonEquity()).isEqualByComparingTo("16767");
+        assertThat(giprRow.getNoncontrollingInterest()).isEqualByComparingTo("14291585");
+        assertThat(giprRow.getEvAdjustment()).isEqualByComparingTo("13423842");
+
+        StockFinancialPeriod amznRow = storedPeriods.get("AMZN_FIGI").getFirst();
+        assertThat(amznRow.getTotalDebt()).isEqualByComparingTo("194827");
+        assertThat(amznRow.getEvAdjustment()).isEqualByComparingTo("139044");
+
+        StockFinancialPeriod fergLatest = storedPeriods.get("FERG2_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 30).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(fergLatest.getFreeCashFlowTtm()).isNull();
+        assertThat(fergLatest.getFreeCashFlowTtmReason()).isEqualTo(ValuationReason.TTM_QUARTERS_MISSING);
+        assertThat(fergLatest.getFreeCashFlowTtmPeriodStart()).isNotEqualTo(LocalDate.of(2025, 5, 1));
+    }
+
     private SecFinancialFact secBalanceFact(String cik, String periodEnd, String form, String tag, String val) {
         SecFinancialFact fact = new SecFinancialFact();
         fact.setCik(cik);

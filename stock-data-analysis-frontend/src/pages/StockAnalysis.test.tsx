@@ -337,3 +337,45 @@ test("keeps selected 1Y window when recent points are null, labels outstanding s
   expect(screen.queryByText(/多方柱/)).not.toBeInTheDocument();
   expect(screen.getByText(/柱狀：0\.00（中性）/)).toBeInTheDocument();
 });
+
+test("does not clamp 1Y preset backward across multi-year gaps and preserves 1Y window while editing history date draft", () => {
+  const sparsePoints = [
+    { date: "2022-04-28", value: 12 },
+    { date: "2022-07-28", value: 14 },
+    { date: "2022-10-28", value: 13 },
+    { date: "2023-01-28", value: 15 },
+    { date: "2023-04-28", value: 16 },
+    { date: "2026-03-31", value: 20 },
+  ];
+  const { unmount } = render(<SeriesChart title="稀疏歷史 P/E" points={sparsePoints} />);
+  fireEvent.click(screen.getByRole("button", { name: "1年" }));
+  expect(screen.getByText(/顯示區間：2026-03-31 ～ 2026-03-31/)).toBeInTheDocument();
+  expect(screen.getByText(/所選區間內可用資料不足/)).toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "稀疏歷史 P/E" })).not.toBeInTheDocument();
+  unmount();
+
+  report.history = Array.from({ length: 12 }, (_, i) => {
+    const year = i < 6 ? 2024 : 2026;
+    const month = String((i % 6) + 1).padStart(2, "0");
+    const valid = i < 5;
+    return {
+      ...report.valuation,
+      valuationDate: `${year}-${month}-28`,
+      price: 100 + i,
+      status: valid ? "AVAILABLE" : "INSUFFICIENT_DATA",
+      metrics: {
+        ...report.valuation.metrics,
+        pe: valid
+          ? { value: 18 + i, status: "AVAILABLE", reasonCode: null, source: "FUTU", periodStart: "2023-01-01", periodEnd: "2023-12-31" }
+          : { value: null, status: "NOT_APPLICABLE", reasonCode: "NON_POSITIVE_EPS", source: "FUTU", periodStart: "2025-01-01", periodEnd: "2025-12-31" },
+      },
+    };
+  });
+  render(<StockAnalysisPage />);
+  const historySection = screen.getByRole("region", { name: "歷史估值" });
+  fireEvent.click(within(historySection).getByRole("button", { name: "1年" }));
+  expect(within(historySection).getByText(/所選區間內可用資料不足/)).toBeInTheDocument();
+
+  fireEvent.change(within(historySection).getByLabelText("開始日期"), { target: { value: "2024-02-01" } });
+  expect(within(historySection).getByText(/所選區間內可用資料不足/)).toBeInTheDocument();
+});

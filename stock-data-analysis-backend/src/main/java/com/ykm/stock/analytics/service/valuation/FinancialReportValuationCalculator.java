@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -261,19 +262,37 @@ public class FinancialReportValuationCalculator {
         }
         List<ReportValues> quarters = periods;
         if (quarters.size() != 4 || !quarters.getFirst().periodEnd().equals(periodEnd)) return missing("TTM_QUARTERS_MISSING");
+        if (quarters.stream().anyMatch(row -> row.fiscalYear() == null)) return missing("FISCAL_YEAR_MISSING");
+        if (!areContiguousQuarters(quarters, periodEnd)) return missing("TTM_QUARTERS_MISSING");
         BigDecimal total = BigDecimal.ZERO;
-        Integer previousQuarter = null;
         for (ReportValues row : quarters) {
-            if (row.fiscalYear() == null) return missing("FISCAL_YEAR_MISSING");
-            int quarter = row.fiscalYear() * 4 + row.periodType();
-            if (previousQuarter != null && quarter != previousQuarter - 1) return missing("TTM_QUARTERS_MISSING");
             if (!sameCurrency(currency, row.currency())) return missing("REPORTING_CURRENCY_MISMATCH");
             MetricResult<BigDecimal> value = flowInput(row, concept);
             if (value.status() != MetricStatus.AVAILABLE) return value;
             total = total.add(value.value(), MC);
-            previousQuarter = quarter;
         }
         return MetricResult.available(total);
+    }
+
+    /** 驗證四個單季報期在財季序號與日曆區間均連續，防止改財年時跨過渡期（如 10-KT）把舊財年 Q4 與新財年 Q1 硬湊成 TTM。 */
+    public boolean areContiguousQuarters(List<ReportValues> quarters, LocalDate periodEnd) {
+        if (quarters == null || quarters.size() != 4 || !quarters.getFirst().periodEnd().equals(periodEnd)) return false;
+        long threeQuarterSpan = ChronoUnit.DAYS.between(quarters.getLast().periodEnd(), quarters.getFirst().periodEnd());
+        if (threeQuarterSpan < 245 || threeQuarterSpan > 305) return false;
+        Integer previousQuarter = null;
+        LocalDate previousEnd = null;
+        for (ReportValues row : quarters) {
+            if (row.fiscalYear() == null || row.periodType() < 1 || row.periodType() > 4) return false;
+            int quarter = row.fiscalYear() * 4 + row.periodType();
+            if (previousQuarter != null && quarter != previousQuarter - 1) return false;
+            if (previousEnd != null) {
+                long gapDays = ChronoUnit.DAYS.between(row.periodEnd(), previousEnd);
+                if (gapDays < 70 || gapDays > 125) return false;
+            }
+            previousQuarter = quarter;
+            previousEnd = row.periodEnd();
+        }
+        return true;
     }
 
     /** 年度優先申報值；四季 EPS 受各季加權股數、稀釋性及四捨五入影響，不保證與年度 EPS 相同。 */

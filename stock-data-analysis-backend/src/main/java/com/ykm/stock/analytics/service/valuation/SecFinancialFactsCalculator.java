@@ -49,7 +49,10 @@ public class SecFinancialFactsCalculator {
             "RevenuesNetOfInterestExpense", "GrossProfit", "OperatingIncomeLoss", "NetIncomeLoss", "ProfitLoss",
             "NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic", "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted");
     private static final Set<String> BALANCE_PERIOD_TAGS = Set.of("Assets", "Liabilities", "StockholdersEquity",
-            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
+            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "CashAndCashEquivalentsAtCarryingValue", "DebtCurrent", "ShortTermBorrowings", "CommercialPaper",
+            "LongTermDebt", "LongTermDebtCurrent", "LongTermDebtNoncurrent", "DebtAndCapitalLeaseObligations",
+            "LongTermDebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities");
     private static final Set<String> CASH_FLOW_PERIOD_TAGS = Set.of(OPERATING_CASH_FLOW, CONTINUING_OPERATING_CASH_FLOW,
             "PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment");
 
@@ -513,8 +516,8 @@ public class SecFinancialFactsCalculator {
                 : eligible.stream().filter(fact -> preferredEnd.equals(fact.getPeriodEnd())).toList();
         Flow preferred = preferredEquityBookValue(sameBalancePeriod, preferredEnd);
         inputs.put(FinancialConcept.PREFERRED_STOCK_CAPITAL, preferred);
-        inputs.put(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, balance(eligible, "MinorityInterest"));
-        inputs.put(FinancialConcept.STOCKHOLDERS_EQUITY, balance(eligible, "StockholdersEquity"));
+        inputs.put(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, resolveSecNoncontrollingInterest(sameBalancePeriod, preferredEnd));
+        inputs.put(FinancialConcept.STOCKHOLDERS_EQUITY, parentStockholdersEquity(eligible, sameBalancePeriod));
         inputs.put(FinancialConcept.TOTAL_EQUITY, balance(eligible, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"));
         inputs.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED,
                 balance(eligible, "AccumulatedOtherComprehensiveIncomeLossNetOfTax"));
@@ -776,27 +779,11 @@ public class SecFinancialFactsCalculator {
         BigDecimal preferredVal = preferred.value() != null && preferred.value().signum() > 0 ? preferred.value() : BigDecimal.ZERO;
         if (preferred.observedAt() != null && preferred.availableFrom() != null) components.add(preferred);
 
-        Flow minority = balance(samePeriod, "MinorityInterest");
-        if (minority.reason() != null && minority.reason().contains("CONFLICT")) return missing("SEC_EV_COMPONENTS_UNRESOLVED", end);
-        BigDecimal minorityVal;
-        if (minority.value() != null) {
-            minorityVal = minority.value();
-            components.add(minority);
-        } else {
-            Flow parent = balance(samePeriod, "StockholdersEquity");
-            Flow total = balance(samePeriod, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
-            if (parent.value() != null && total.value() != null) {
-                minorityVal = total.value().subtract(parent.value());
-                components.add(parent);
-                components.add(total);
-            } else {
-                minorityVal = BigDecimal.ZERO;
-            }
-        }
-        Flow redeemableNci = balance(samePeriod, "RedeemableNoncontrollingInterestEquityCarryingAmount");
-        if (redeemableNci.value() != null && redeemableNci.value().signum() > 0) {
-            minorityVal = minorityVal.add(redeemableNci.value());
-            components.add(redeemableNci);
+        Flow nci = resolveSecNoncontrollingInterest(samePeriod, end);
+        if (nci.reason() != null && nci.reason().contains("CONFLICT")) return missing("SEC_EV_COMPONENTS_UNRESOLVED", end);
+        BigDecimal minorityVal = nci.value() != null ? nci.value() : BigDecimal.ZERO;
+        if (nci.observedAt() != null && nci.availableFrom() != null && !"NoncontrollingInterest default 0".equals(nci.note())) {
+            components.add(nci);
         }
 
         Flow debt = resolveSecDebt(samePeriod, end);
@@ -805,6 +792,54 @@ public class SecFinancialFactsCalculator {
 
         BigDecimal adjustment = debt.value().add(preferredVal).add(minorityVal).subtract(cash.value());
         return combineWithNote(adjustment, components, "TotalDebt + Preferred + NCI - Cash");
+    }
+
+    private Flow parentStockholdersEquity(List<SecFinancialFact> eligible, List<SecFinancialFact> samePeriod) {
+        Flow parent = balance(eligible, "StockholdersEquity");
+        if (parent.value() != null || samePeriod.isEmpty()) return parent;
+        Flow total = balance(samePeriod, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
+        Flow minority = balance(samePeriod, "MinorityInterest");
+        if (total.reason() != null && total.reason().contains("CONFLICT")) return total;
+        if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
+        if (total.value() == null) return parent;
+        BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
+        List<Flow> parts = minority.value() == null ? List.of(total) : List.of(total, minority);
+        return combineWithNote(total.value().subtract(minorityVal), parts, "TotalEquity - MinorityInterest");
+    }
+
+    private Flow resolveSecNoncontrollingInterest(List<SecFinancialFact> samePeriod, LocalDate end) {
+        if (end == null || samePeriod.isEmpty()) return missing("SEC_BALANCE_INPUT_MISSING", end);
+        Flow minority = balance(samePeriod, "MinorityInterest");
+        if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
+        List<Flow> used = new ArrayList<>();
+        BigDecimal amount = null;
+        if (minority.value() != null) {
+            amount = minority.value();
+            used.add(minority);
+        } else {
+            Flow parent = balance(samePeriod, "StockholdersEquity");
+            Flow total = balance(samePeriod, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
+            if (parent.reason() != null && parent.reason().contains("CONFLICT")) return parent;
+            if (total.reason() != null && total.reason().contains("CONFLICT")) return total;
+            if (parent.value() != null && total.value() != null) {
+                amount = total.value().subtract(parent.value());
+                used.add(parent);
+                used.add(total);
+            }
+        }
+        Flow redeemable = balance(samePeriod, "RedeemableNoncontrollingInterestEquityCarryingAmount");
+        if (redeemable.reason() != null && redeemable.reason().contains("CONFLICT")) return redeemable;
+        if (redeemable.value() != null && redeemable.value().signum() > 0) {
+            amount = (amount == null ? BigDecimal.ZERO : amount).add(redeemable.value());
+            used.add(redeemable);
+        }
+        if (amount != null) return combineWithNote(amount, used, "NoncontrollingInterest");
+        for (String anchorTag : List.of("StockholdersEquity",
+                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Liabilities", "Assets")) {
+            Flow anchor = balance(samePeriod, anchorTag);
+            if (anchor.value() != null) return combineWithNote(BigDecimal.ZERO, List.of(anchor), "NoncontrollingInterest default 0");
+        }
+        return missing("SEC_BALANCE_INPUT_MISSING", end);
     }
 
     private Flow resolveSecDebt(List<SecFinancialFact> samePeriod, LocalDate end) {
@@ -886,10 +921,25 @@ public class SecFinancialFactsCalculator {
     }
 
     private Flow resolveSecCurrentBorrowing(List<SecFinancialFact> samePeriod) {
-        for (String tag : List.of("LongTermDebtCurrent", "ShortTermBorrowings", "CommercialPaper", "DebtCurrent")) {
-            Flow candidate = balance(samePeriod, tag);
-            if (candidate.value() != null) return candidate;
+        Flow debtCurrent = balance(samePeriod, "DebtCurrent");
+        Flow ltCurrent = balance(samePeriod, "LongTermDebtCurrent");
+        Flow shortBorrowings = balance(samePeriod, "ShortTermBorrowings");
+        Flow commercialPaper = balance(samePeriod, "CommercialPaper");
+        for (Flow item : List.of(debtCurrent, ltCurrent, shortBorrowings, commercialPaper)) {
+            if (item.reason() != null && item.reason().contains("CONFLICT")) return item;
         }
+        Flow shortPure = shortBorrowings.value() != null ? shortBorrowings : commercialPaper;
+        if (debtCurrent.value() != null) {
+            BigDecimal partsSum = (ltCurrent.value() != null ? ltCurrent.value() : BigDecimal.ZERO)
+                    .add(shortPure.value() != null ? shortPure.value() : BigDecimal.ZERO);
+            if (debtCurrent.value().compareTo(partsSum) >= 0) return debtCurrent;
+        }
+        if (ltCurrent.value() != null && shortPure.value() != null) {
+            return combine(ltCurrent.value().add(shortPure.value()), List.of(ltCurrent, shortPure));
+        }
+        if (ltCurrent.value() != null) return ltCurrent;
+        if (shortPure.value() != null) return shortPure;
+        if (debtCurrent.value() != null) return debtCurrent;
         return missing("SEC_BALANCE_INPUT_MISSING", null);
     }
 

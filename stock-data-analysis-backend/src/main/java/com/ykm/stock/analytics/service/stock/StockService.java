@@ -229,9 +229,20 @@ public class StockService {
                 .addValue("offset", (long) page * size)
                 .addValue("stockTypes", SecurityTypePolicy.OPERATING_STOCK_TYPES);
         StringBuilder where = new StringBuilder(" where s.active_status = 'ACTIVE' and s.tracked = true and s.stock_type in (:stockTypes) ");
+        String rankSelect = "0 as match_rank";
         if (StringUtils.isNotBlank(symbol)) {
+            String trimmed = symbol.trim();
             where.append(" and (s.symbol ilike :symbol or s.long_name ilike :symbol) ");
-            params.addValue("symbol", "%" + symbol.trim() + "%");
+            params.addValue("symbol", "%" + trimmed + "%");
+            params.addValue("symbolExact", trimmed.toUpperCase());
+            params.addValue("symbolPrefix", trimmed + "%");
+            rankSelect = """
+                    case
+                      when upper(s.symbol) = :symbolExact then 0
+                      when s.symbol ilike :symbolPrefix then 1
+                      when s.symbol ilike :symbol then 2
+                      else 3
+                    end as match_rank""";
         }
         if (StringUtils.isNotBlank(industry)) {
             where.append(" and (i.code = :industry or i.industry = :industry) ");
@@ -245,9 +256,11 @@ public class StockService {
         if (total == null || total == 0) return new StockScreenResponse(List.of(), 0, page, size);
         String sql = """
                 with selected as (
-                  select s.figi, s.symbol, s.long_name, s.stock_type, i.code as industry_code, i.industry
+                  select s.figi, s.symbol, s.long_name, s.stock_type, i.code as industry_code, i.industry, """
+                + rankSelect + """
+                
                 """ + FROM + where + """
-                  order by s.symbol, s.figi limit :limit offset :offset
+                  order by match_rank, s.symbol, s.figi limit :limit offset :offset
                 )
                 select s.*, ss.quote_date, q.close_price, v.valuation_date, v.pe, v.pb, v.ps, v.pfcf, v.ev_ebitda,
                        case when v.figi is null then 'NOT_CALCULATED' else v.status end as valuation_status,
@@ -256,7 +269,7 @@ public class StockService {
                 left join stock_status ss on ss.figi = s.figi
                 left join stock_quote q on q.figi = s.figi and q.quote_date = ss.quote_date
                 left join stock_valuation_latest v on v.figi = s.figi
-                order by s.symbol, s.figi
+                order by s.match_rank, s.symbol, s.figi
                 """;
         List<Item> rows = jdbc.query(sql, params, (rs, row) -> new Item(
                 rs.getString("figi"), rs.getString("symbol"), rs.getString("long_name"), rs.getString("stock_type"),

@@ -177,6 +177,29 @@ class StockServiceScreenTests {
         verifyNoInteractions(jdbc, stocks, statuses, industries, converter, concepts);
     }
 
+    @Test
+    void symbolSearchRanksExactSymbolBeforePrefixContainsAndNameMatches() throws Exception {
+        when(jdbc.queryForObject(anyString(), any(SqlParameterSource.class), eq(Long.class))).thenReturn(1L);
+        ResultSet mu = row("F_MU", "MU");
+        when(mu.getString("valuation_status")).thenReturn("AVAILABLE");
+        stubPage(mu);
+
+        service.screen(" mu ", null, null, 0, 50);
+
+        ArgumentCaptor<String> pageSql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<SqlParameterSource> pageParams = ArgumentCaptor.forClass(SqlParameterSource.class);
+        verify(jdbc).query(pageSql.capture(), pageParams.capture(), ArgumentMatchers.<RowMapper<Item>>any());
+        assertThat(pageParams.getValue().getValue("symbolExact")).isEqualTo("MU");
+        assertThat(pageParams.getValue().getValue("symbolPrefix")).isEqualTo("mu%");
+        assertThat(pageParams.getValue().getValue("symbol")).isEqualTo("%mu%");
+        assertThat(pageSql.getValue())
+                .contains("when upper(s.symbol) = :symbolExact then 0")
+                .contains("when s.symbol ilike :symbolPrefix then 1")
+                .contains("when s.symbol ilike :symbol then 2")
+                .contains("order by match_rank, s.symbol, s.figi")
+                .contains("order by s.match_rank, s.symbol, s.figi");
+    }
+
     private ResultSet row(String figi, String symbol) throws Exception {
         ResultSet row = mock(ResultSet.class);
         when(row.getString("figi")).thenReturn(figi);

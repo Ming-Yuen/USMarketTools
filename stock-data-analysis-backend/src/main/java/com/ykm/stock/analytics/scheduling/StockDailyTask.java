@@ -50,20 +50,35 @@ public class StockDailyTask implements Job {
     public void execute(JobExecutionContext context) {
         List<MassiveTickerDetails> downloaded = massiveService.getAllStockTickers();
         Map<String, MassiveTickerDetails> current = new LinkedHashMap<>();
+        Map<String, String> supersededTickers = new LinkedHashMap<>();
         for (MassiveTickerDetails ticker : downloaded) {
             if (StringUtils.isBlank(ticker.getCompositeFigi()) || StringUtils.isBlank(ticker.getTicker())) continue;
             if (!securityTypePolicy.supportsStockMaster(ticker.getType())) continue;
             String figi = ticker.getCompositeFigi().trim();
             MassiveTickerDetails previous = current.putIfAbsent(figi, ticker);
-            if (previous != null && !previous.getTicker().equals(ticker.getTicker()))
-                throw new IllegalStateException("AMBIGUOUS_MASTER_FIGI:" + figi);
+            if (previous != null && !previous.getTicker().equals(ticker.getTicker())) {
+                if (previous.getLastUpdatedUtc() == null || ticker.getLastUpdatedUtc() == null
+                        || previous.getLastUpdatedUtc().equals(ticker.getLastUpdatedUtc())) {
+                    throw new IllegalStateException("AMBIGUOUS_MASTER_FIGI:" + figi);
+                }
+                if (ticker.getLastUpdatedUtc().isAfter(previous.getLastUpdatedUtc())) {
+                    log.info("Massive ticker rename resolved by lastUpdatedUtc | figi={} oldTicker={} newTicker={}",
+                            figi, previous.getTicker(), ticker.getTicker());
+                    current.put(figi, ticker);
+                    supersededTickers.put(figi, previous.getTicker());
+                } else {
+                    log.info("Massive ticker rename resolved by lastUpdatedUtc | figi={} oldTicker={} newTicker={}",
+                            figi, ticker.getTicker(), previous.getTicker());
+                    supersededTickers.put(figi, ticker.getTicker());
+                }
+            }
         }
         if (current.isEmpty()) throw new IllegalStateException("EMPTY_STOCK_MASTER");
         Map<String, String> finnhubTypes = resolveFinnhubTypes(current, finnhubService.getStockSymbols("US"));
         Map<String, String> secCiks = secTickerClient.getTickerCiks();
         Set<String> resolvedCiks = new LinkedHashSet<>();
-        for (MassiveTickerDetails ticker : current.values()) {
-            String cik = secCiks.get(SecTickerClient.tickerKey(ticker.getTicker()));
+        for (Map.Entry<String, MassiveTickerDetails> entry : current.entrySet()) {
+            String cik = resolveTickerCik(entry.getValue().getTicker(), supersededTickers.get(entry.getKey()), secCiks);
             if (cik != null) resolvedCiks.add(cik);
         }
         Map<String, String> secSics = resolveSecSics(resolvedCiks);
@@ -84,7 +99,7 @@ public class StockDailyTask implements Job {
                         existing.put(figi, stock);
                         newFigis.add(figi);
                     }
-                    String resolvedCik = secCiks.get(SecTickerClient.tickerKey(ticker.getTicker()));
+                    String resolvedCik = resolveTickerCik(ticker.getTicker(), supersededTickers.get(figi), secCiks);
                     stockConverter.updateFromMassive(ticker, stock);
                     stock.setStockType(finnhubTypes.get(figi));
                     stock.setCik(resolvedCik);
@@ -100,6 +115,14 @@ public class StockDailyTask implements Job {
             for (Stock stock : inactive) stock.setActiveStatus(ActiveStatus.INACTIVE);
             for (List<Stock> batch : Lists.partition(inactive, STOCK_BATCH_SIZE)) stockService.updateStocks(batch);
         });
+    }
+
+    private String resolveTickerCik(String primaryTicker, String supersededTicker, Map<String, String> secCiks) {
+        String cik = secCiks.get(SecTickerClient.tickerKey(primaryTicker));
+        if (cik == null && supersededTicker != null) {
+            cik = secCiks.get(SecTickerClient.tickerKey(supersededTicker));
+        }
+        return cik;
     }
 
     private Map<String, String> resolveSecSics(Collection<String> ciks) {

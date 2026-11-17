@@ -131,6 +131,26 @@ class StockDailyTaskTests {
     }
 
     @Test
+    void resolvesSameDayTickerRenameByLatestUpdatedTimestampAndRetainsPreRenameSecCik() {
+        MassiveTickerDetails oldBkh = ticker("BBG000BD9ZM7", "BKH");
+        oldBkh.setLastUpdatedUtc(java.time.Instant.parse("2026-11-16T07:08:23Z"));
+        MassiveTickerDetails newHzn = ticker("BBG000BD9ZM7", "HZN");
+        newHzn.setLastUpdatedUtc(java.time.Instant.parse("2026-11-17T07:10:15Z"));
+        when(massive.getAllStockTickers()).thenReturn(List.of(oldBkh, newHzn));
+        when(finnhub.getStockSymbols("US")).thenReturn(List.of(finnhubSymbol("BBG000BD9ZM7", "HZN", "Common Stock")));
+        when(sec.getTickerCiks()).thenReturn(Map.of("BKH", "0001130464"));
+        when(submissionsSnapshot.readSic("0001130464")).thenReturn(Optional.of("4931"));
+
+        task.execute(null);
+
+        verify(stocks).updateStocks(argThat(rows -> rows.size() == 1
+                && "BBG000BD9ZM7".equals(rows.getFirst().getFigi())
+                && "HZN".equals(rows.getFirst().getSymbol())
+                && "0001130464".equals(rows.getFirst().getCik())
+                && "4931".equals(rows.getFirst().getSic())));
+    }
+
+    @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void batchesMasterAndNewStatuses() {
         when(massive.getAllStockTickers()).thenReturn(IntStream.range(0, 401).mapToObj(i -> ticker("F" + i, "S" + i)).toList());

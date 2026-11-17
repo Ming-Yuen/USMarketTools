@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 import lombok.ToString;
+import org.hibernate.annotations.ColumnDefault;
 import org.hibernate.annotations.Comment;
 import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.JoinFormula;
@@ -49,9 +50,14 @@ public class Stock {
     @Comment("Finnhub 美股證券類型原文，例如 Common Stock、ADR、ETP、Closed-End Fund、Royalty Trst；未能確認為 NULL。")
     private String stockType;
 
-    @Column(name = "finnhub_industry", length = 128)
-    @Comment("Finnhub companyProfile2 的目前產業名稱；富途產業缺失時供估值補充辨識，未知為 NULL，非歷史分類。")
-    private String finnhubIndustry;
+    @Column(name = "sic", length = 4)
+    @Comment("SEC submissions.zip 申報的 4 碼標準產業分類 SIC；無 SEC 申報或未知為 NULL。")
+    private String sic;
+
+    @Column(name = "tracked", nullable = false)
+    @ColumnDefault("true")
+    @Comment("人工追蹤開關；預設 true 全市場啟用，false 停追時跳過財報、估值與選股，但保留同發行人兄弟股與基準 ETF 行情拆股。")
+    private boolean tracked = true;
 
     @Column(name = "currency", length = 16)
     @Comment("Massive currency_name，正規化為大寫，例如 USD。")

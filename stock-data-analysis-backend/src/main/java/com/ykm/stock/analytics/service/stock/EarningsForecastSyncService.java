@@ -65,6 +65,7 @@ public class EarningsForecastSyncService {
         if (symbols.isEmpty()) return List.of();
         // 盈利預期只按富途代碼匹配唯一普通股，不依賴 SEC CIK，ETF、ADR、權證不進分析資料。
         Map<String, List<Stock>> bySymbol = stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, symbols).stream()
+                .filter(Stock::isTracked)
                 .filter(stock -> SecurityTypePolicy.isOperatingCompanyType(stock.getStockType()))
                 .collect(Collectors.groupingBy(Stock::getSymbol));
         Map<StockEarningsForecast.Key, StockEarningsForecast> rows = new LinkedHashMap<>();

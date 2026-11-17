@@ -1,13 +1,13 @@
 package com.ykm.stock.analytics.scheduling;
 
 import com.google.common.collect.Lists;
+import com.ykm.stock.analytics.client.SecSubmissionsArchive;
 import com.ykm.stock.analytics.client.SecTickerClient;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.converter.jpa.StockConverter;
 import com.ykm.stock.analytics.enums.ActiveStatus;
-import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerDetails;
-import com.ykm.stock.analytics.model.dto.finnhub.response.CompanyProfile2;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Symbol;
+import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerDetails;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.market.FinnhubService;
@@ -21,8 +21,8 @@ import org.quartz.Job;
 import org.quartz.JobExecutionContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.client.RestClientException;
 
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -30,7 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** Massive 主檔一次批量取得；尚無 Finnhub 產業的營運公司逐股補取分類。 */
+/** Massive 主檔一次批量取得；結合 Finnhub 證券類型與 SEC Ticker／submissions.zip 的 CIK 與 4 碼 SIC 同步主檔。 */
 @Slf4j
 @RequiredArgsConstructor
 @DisallowConcurrentExecution
@@ -40,6 +40,7 @@ public class StockDailyTask implements Job {
     private final MassiveService massiveService;
     private final FinnhubService finnhubService;
     private final SecTickerClient secTickerClient;
+    private final SecSubmissionsArchive secSubmissionsArchive;
     private final StockConverter stockConverter;
     private final StockService stockService;
     private final SecurityTypePolicy securityTypePolicy;
@@ -60,9 +61,14 @@ public class StockDailyTask implements Job {
         if (current.isEmpty()) throw new IllegalStateException("EMPTY_STOCK_MASTER");
         Map<String, String> finnhubTypes = resolveFinnhubTypes(current, finnhubService.getStockSymbols("US"));
         Map<String, String> secCiks = secTickerClient.getTickerCiks();
-        // 未有 Finnhub 分類的營運公司才查簡介，與富途產業是否存在無關；網路呼叫不放入交易。
-        Map<String, String> finnhubIndustries = resolveFinnhubIndustries(current, finnhubTypes);
-        // 三個主檔來源均已取得後才開始交易；公司簡介失敗僅影響對應股票的分類。
+        Set<String> resolvedCiks = new LinkedHashSet<>();
+        for (MassiveTickerDetails ticker : current.values()) {
+            String cik = secCiks.get(SecTickerClient.tickerKey(ticker.getTicker()));
+            if (cik != null) resolvedCiks.add(cik);
+        }
+        Map<String, String> secSics = resolveSecSics(resolvedCiks);
+
+        // 外部主檔來源均已取得後才開始交易；既有股票的 tracked 開關絕不覆寫。
         transactionTemplate.executeWithoutResult(status -> {
             Map<String, Stock> existing = stockService.findAllStocks().stream()
                     .collect(Collectors.toMap(Stock::getFigi, stock -> stock));
@@ -74,15 +80,15 @@ public class StockDailyTask implements Job {
                     if (stock == null) {
                         stock = new Stock();
                         stock.setFigi(figi);
+                        stock.setTracked(true);
                         existing.put(figi, stock);
                         newFigis.add(figi);
                     }
                     String resolvedCik = secCiks.get(SecTickerClient.tickerKey(ticker.getTicker()));
                     stockConverter.updateFromMassive(ticker, stock);
                     stock.setStockType(finnhubTypes.get(figi));
-                    if (StringUtils.isBlank(stock.getFinnhubIndustry()) && finnhubIndustries.containsKey(figi))
-                        stock.setFinnhubIndustry(finnhubIndustries.get(figi));
-                    stock.setCik(resolvedCik); // 明確清除未知值，不受 MapStruct IGNORE 的保留語意影響。
+                    stock.setCik(resolvedCik);
+                    stock.setSic(resolvedCik == null ? null : secSics.get(resolvedCik));
                     return stock;
                 }).toList();
                 stockService.updateStocks(stocks);
@@ -96,28 +102,16 @@ public class StockDailyTask implements Job {
         });
     }
 
-    /** Finnhub 詳細類型限定營運公司；已有 Finnhub 產業值不重複查詢。 */
-    private Map<String, String> resolveFinnhubIndustries(Map<String, MassiveTickerDetails> current, Map<String, String> finnhubTypes) {
-        Map<String, Stock> existing = stockService.findAllStocks().stream()
-                .collect(Collectors.toMap(Stock::getFigi, stock -> stock));
-        Map<String, String> result = new LinkedHashMap<>();
-        for (Map.Entry<String, MassiveTickerDetails> entry : current.entrySet()) {
-            String figi = entry.getKey();
-            if (!SecurityTypePolicy.isOperatingCompanyType(finnhubTypes.get(figi))) continue;
-            Stock stock = existing.get(figi);
-            if (stock != null && StringUtils.isNotBlank(stock.getFinnhubIndustry())) continue;
-            String symbol = entry.getValue().getTicker().trim();
-            try {
-                CompanyProfile2 profile = finnhubService.getCompanyProfile2(symbol);
-                if (profile == null || !symbol.equalsIgnoreCase(profile.getTicker())
-                        || StringUtils.isBlank(profile.getFinnhubIndustry())) continue;
-                result.put(figi, profile.getFinnhubIndustry().trim());
-            } catch (RestClientException e) {
-                log.warn("Finnhub industry profile failed | figi={} symbol={} cause={}", figi, symbol,
-                        e.getClass().getSimpleName());
+    private Map<String, String> resolveSecSics(Collection<String> ciks) {
+        if (ciks.isEmpty()) return Map.of();
+        Map<String, String> sics = new LinkedHashMap<>();
+        try (SecSubmissionsArchive.Snapshot snapshot = secSubmissionsArchive.prepare()) {
+            if (snapshot == null) return Map.of();
+            for (String cik : ciks) {
+                snapshot.readSic(cik).ifPresent(sic -> sics.put(cik, sic));
             }
         }
-        return result;
+        return sics;
     }
 
     /** 以同一證券的 Composite FIGI 為主；僅同股份類別、代碼與 MIC 全相符時補分類。 */

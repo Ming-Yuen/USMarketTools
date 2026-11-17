@@ -248,6 +248,22 @@ class StockQuoteDailyTaskTests {
         verify(history).updateStockQuote(argThat(rows -> rows.size() == 1 && "F3".equals(rows.getFirst().getFigi())));
         assertThat(goodStatus.getQuoteDate()).isEqualTo(DAY);
     }
+    /** Scenario：日常增量存在近 5 個交易日序列時，回看最近 5 個交易日補齊漏日而不重複改寫無變更行情。 */
+    @Test
+    void incrementalRunLooksBackFiveTradingSessionsToHealMissedBars() {
+        status.setQuoteDate(LocalDate.of(2026, 10, 15));
+        List<LocalDate> sessions = List.of(
+                LocalDate.of(2026, 10, 9), LocalDate.of(2026, 10, 12), LocalDate.of(2026, 10, 13),
+                LocalDate.of(2026, 10, 14), LocalDate.of(2026, 10, 15), DAY);
+        when(market.getTradingDays(DAY.minusDays(15), DAY)).thenReturn(sessions);
+        respond(page(LocalDate.of(2026, 10, 12)), page(DAY));
+
+        task.execute(null);
+
+        verify(alpaca).readHistoricalBars(eq(List.of("ABC")), eq(LocalDate.of(2026, 10, 12)), eq(DAY), any());
+        assertThat(status.getQuoteDate()).isEqualTo(DAY);
+    }
+
     private void respond(AlpacaBarsResponse... pages) {
         doAnswer(call -> {
             Consumer<AlpacaBarsResponse> consumer = call.getArgument(3);

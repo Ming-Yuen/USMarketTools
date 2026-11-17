@@ -11,6 +11,7 @@ import com.ykm.stock.analytics.repository.jpa.StockIndustryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockConceptRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.model.dto.stockInsight.StockScreenResponse;
 import com.ykm.stock.analytics.model.dto.stockInsight.StockScreenResponse.Concept;
 import com.ykm.stock.analytics.model.dto.stockInsight.StockScreenResponse.Item;
@@ -175,6 +176,43 @@ public class StockService {
         return stockClassificationRepository.findById(code).orElse(null);
     }
 
+    public record TrackedUpdateResult(String figi, String symbol, boolean tracked) {}
+
+    public record BatchTrackedUpdateResult(int updatedCount, List<String> figis, boolean tracked) {}
+
+    /** 更新單一股票的人工追蹤開關；不影響同發行人關聯行情或歷史資料。 */
+    @Transactional
+    public TrackedUpdateResult updateTracked(String figi, Boolean tracked) {
+        if (StringUtils.isBlank(figi) || tracked == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "TRACKED_REQUEST_INVALID");
+        Stock stock = stockRepository.findById(figi.trim())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND"));
+        stock.setTracked(tracked);
+        stockRepository.saveAndFlush(stock);
+        return new TrackedUpdateResult(stock.getFigi(), stock.getSymbol(), stock.isTracked());
+    }
+
+    /** 批量更新人工追蹤開關；任一指定 FIGI 不存在時整批拒絕，避免部分靜默跳過。 */
+    @Transactional
+    public BatchTrackedUpdateResult updateTrackedBatch(Collection<String> figis, Boolean tracked) {
+        if (figis == null || figis.isEmpty() || tracked == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "TRACKED_BATCH_REQUEST_INVALID");
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String figi : figis) {
+            if (StringUtils.isBlank(figi))
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "TRACKED_BATCH_REQUEST_INVALID");
+            normalized.add(figi.trim());
+        }
+        List<Stock> found = stockRepository.findAllById(normalized);
+        if (found.size() != normalized.size())
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND");
+        for (Stock stock : found) {
+            stock.setTracked(tracked);
+        }
+        stockRepository.saveAllAndFlush(found);
+        return new BatchTrackedUpdateResult(found.size(), List.copyOf(normalized), tracked);
+    }
+
     private final NamedParameterJdbcTemplate jdbc;
     private static final String FROM = """
             from stock s
@@ -182,13 +220,15 @@ public class StockService {
             left join stock_industry i on i.code = h.industry_code
             """;
 
-    /** Controller 入口：先分頁選取 ACTIVE 普通股，再批次讀行情、估值與概念；不觸發同步或計算。 */
+    /** Controller 入口：先分頁選取 ACTIVE 且 tracked=true 的營運股票，再批次讀行情、估值與概念；不觸發同步或計算。 */
     @Transactional(readOnly = true)
     public StockScreenResponse screen(String symbol, String industry, String conceptCode, int page, int size) {
         if (page < 0 || size < 1 || size > 200)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page 必須非負，size 必須介乎 1 至 200");
-        MapSqlParameterSource params = new MapSqlParameterSource("limit", size).addValue("offset", (long) page * size);
-        StringBuilder where = new StringBuilder(" where s.active_status = 'ACTIVE' and s.stock_type in ('Common Stock','REIT','MLP','NY Reg Shrs','Ltd Part') ");
+        MapSqlParameterSource params = new MapSqlParameterSource("limit", size)
+                .addValue("offset", (long) page * size)
+                .addValue("stockTypes", SecurityTypePolicy.OPERATING_STOCK_TYPES);
+        StringBuilder where = new StringBuilder(" where s.active_status = 'ACTIVE' and s.tracked = true and s.stock_type in (:stockTypes) ");
         if (StringUtils.isNotBlank(symbol)) {
             where.append(" and (s.symbol ilike :symbol or s.long_name ilike :symbol) ");
             params.addValue("symbol", "%" + symbol.trim() + "%");

@@ -64,7 +64,7 @@ public class SecCompanyFactsArchive {
     static RestClient http(RestClient.Builder builder, String userAgent) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(20_000);
-        factory.setReadTimeout(60_000);
+        factory.setReadTimeout(180_000);
         return builder.clone().requestFactory(factory).defaultHeader(HttpHeaders.USER_AGENT, userAgent)
                 .defaultHeader(HttpHeaders.ACCEPT_ENCODING, "identity").build();
     }

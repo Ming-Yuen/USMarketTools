@@ -89,7 +89,8 @@ class StockServiceScreenTests {
         assertThat(parameters.getValue("concept")).isEqualTo("C1");
         assertThat(parameters.getValue("limit")).isEqualTo(25);
         assertThat(parameters.getValue("offset")).isEqualTo(50L);
-        assertThat(countSql.getValue()).contains("s.active_status = 'ACTIVE'", "s.stock_type in ('Common Stock','REIT','MLP','NY Reg Shrs','Ltd Part')",
+        assertThat(parameters.getValue("stockTypes")).isEqualTo(com.ykm.stock.analytics.service.analysis.SecurityTypePolicy.OPERATING_STOCK_TYPES);
+        assertThat(countSql.getValue()).contains("s.active_status = 'ACTIVE'", "s.tracked = true", "s.stock_type in (:stockTypes)",
                 "h.observed_to is null",
                 "s.symbol ilike :symbol", "i.code = :industry", "m.concept_code = :concept")
                 .doesNotContain("AAPL' OR", "s.cik");

@@ -12,6 +12,14 @@ public interface SecFinancialFactRepository extends JpaRepository<SecFinancialFa
     List<SecFinancialFact> findByCik(String cik);
     List<SecFinancialFact> findByCikAndPeriodEndGreaterThanEqual(String cik, LocalDate periodEnd);
     List<SecFinancialFact> findByCikAndTagInAndPeriodEndLessThan(String cik, Collection<String> tags, LocalDate periodEnd);
+
+    @Query("""
+            select distinct f.cik from SecFinancialFact f
+            where f.cik in :ciks and f.filed >= :filedFrom
+              and f.form in ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A','6-K','6-K/A')
+            """)
+    java.util.Set<String> findRecentPeriodicFilingCiks(@org.springframework.data.repository.query.Param("ciks") Collection<String> ciks,
+                                                       @org.springframework.data.repository.query.Param("filedFrom") LocalDate filedFrom);
     @Query("""
             select f.cik, max(f.periodEnd) from SecFinancialFact f
             where f.cik in :ciks and f.taxonomy = 'us-gaap' and f.tag <> 'CommonStockSharesOutstanding'

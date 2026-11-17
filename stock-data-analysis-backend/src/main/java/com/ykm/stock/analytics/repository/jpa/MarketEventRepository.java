@@ -8,9 +8,17 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 
 public interface MarketEventRepository extends JpaRepository<MarketEvent, String> {
     List<MarketEvent> findByEventDateBetweenOrderByEventDateAscOccurrenceAtAsc(LocalDate from, LocalDate through);
+
+    @Query("""
+            select distinct e.figi from MarketEvent e
+            where e.eventType = 'EARNINGS' and e.status <> 'CANCELLED'
+              and e.figi is not null and e.eventDate between :from and :through
+            """)
+    Set<String> findEarningsFigisBetween(@Param("from") LocalDate from, @Param("through") LocalDate through);
 
     @Query("""
             select e from MarketEvent e where e.eventDate between :from and :through

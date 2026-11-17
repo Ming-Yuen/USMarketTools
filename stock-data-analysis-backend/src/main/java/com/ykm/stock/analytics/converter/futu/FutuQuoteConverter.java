@@ -114,7 +114,8 @@ public interface FutuQuoteConverter {
         if (name != null && !name.isBlank()) return name;
         // Futu 2026/Q3 結構漏名；同 ID 歷史名稱及 JPM/LII/SSNC 同期申報均確認為庫藏股金額。
         // 僅修補這兩個資產負債表 ID 的缺名；來源改名或其他未知項目仍交由映射審核。
-        if (statement == QotCommon.FinancialStatementsType.FinancialStatementsType_BalanceSheet && (fieldId == 8092 || fieldId == 9077))
+        if (statement == QotCommon.FinancialStatementsType.FinancialStatementsType_BalanceSheet
+                && (fieldId == 8092 || fieldId == 9077 || fieldId == 10072))
             return "Less: Treasury Stock";
         return name;
     }

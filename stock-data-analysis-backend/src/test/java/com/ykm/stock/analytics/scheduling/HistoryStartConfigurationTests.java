@@ -5,27 +5,30 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.io.InputStream;
 import java.time.LocalDate;
 import java.util.Map;
 import java.util.Properties;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HistoryStartConfigurationTests {
     @Test
     void quoteMayStartLaterWithoutMovingSplitPreparation() {
         checkDates(Map.of("history.start-date", "2019-01-01", "market-history.start-date", "2022-01-01"),
-                "2022-01-01", "2016-01-01");
+                "2022-01-01", "2014-01-01");
     }
 
     @Test
-    void absentMarketOverrideDefaultsTo2016IndependentOfGenericHistory() {
-        checkDates(Map.of("history.start-date", "2020-01-01"), "2016-01-01", "2016-01-01");
+    void absentMarketOverrideDefaultsTo2016AndSplitDefaultsTo2014() {
+        checkDates(Map.of("history.start-date", "2020-01-01"), "2016-01-01", "2014-01-01");
     }
 
     @Test
     void devRetainsSourceHistoryAndStartsMarketHistoryIn2016() throws Exception {
         Properties properties = new Properties();
-        try (java.io.InputStream input = getClass().getResourceAsStream("/application-dev.properties")) {
+        try (InputStream input = getClass().getResourceAsStream("/application-dev.properties")) {
             properties.load(input);
         }
         assertThat(properties.getProperty("history.start-date")).isEqualTo("2019-01-01");
@@ -33,13 +36,13 @@ class HistoryStartConfigurationTests {
     }
 
     @Test
-    void splitConfigurationStartsIn2016AndAllowsExplicitOverride() throws Exception {
+    void splitConfigurationStartsIn2014AndAllowsExplicitOverride() throws Exception {
         Properties properties = new Properties();
-        try (java.io.InputStream input = getClass().getResourceAsStream("/application.properties")) {
+        try (InputStream input = getClass().getResourceAsStream("/application.properties")) {
             properties.load(input);
         }
         assertThat(properties.getProperty("market-history.start-date")).isEqualTo("2016-01-01");
-        assertThat(properties.getProperty("split.history-start-date")).isEqualTo("2016-01-01");
+        assertThat(properties.getProperty("split.history-start-date")).isEqualTo("2014-01-01");
         checkDates(Map.of("history.start-date", "2022-01-01", "split.history-start-date", "2018-01-01"),
                 "2016-01-01", "2018-01-01");
     }
@@ -52,7 +55,7 @@ class HistoryStartConfigurationTests {
             conversion.addConverter(String.class, LocalDate.class, LocalDate::parse);
             context.getBeanFactory().setConversionService(conversion);
             context.registerBean(StockQuoteDailyTask.class, () -> new StockQuoteDailyTask(null, null, null, null, null, null));
-            context.registerBean(StockSplitDailyTask.class, () -> new StockSplitDailyTask(null, null, null, null, null, null, null, null));
+            context.registerBean(StockSplitDailyTask.class, () -> new StockSplitDailyTask(null, null, null, null, null, null, null, null, null));
             context.refresh();
             assertThat(ReflectionTestUtils.getField(context.getBean(StockQuoteDailyTask.class), "historyStartDate")).isEqualTo(LocalDate.parse(marketStart));
             assertThat(ReflectionTestUtils.getField(context.getBean(StockSplitDailyTask.class), "historyStartDate")).isEqualTo(LocalDate.parse(sourceStart));

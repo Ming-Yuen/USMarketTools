@@ -1,17 +1,23 @@
 package com.ykm.stock.analytics.converter.sec;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.ykm.stock.analytics.client.SecSubmissionsArchive.FilingSubmission;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 @Component
 @RequiredArgsConstructor
@@ -22,55 +28,68 @@ public class SecFinancialFactConverter {
     public static final String DEPRECIATION_DEPLETION_AMORTIZATION = "DepreciationDepletionAndAmortization";
     public static final String ACCRETION_EXPENSE = "AccretionExpense";
     public static final String ADJUSTMENT_FOR_AMORTIZATION = "AdjustmentForAmortization";
-    public static final List<String> EQUITY_COMPONENT_TAGS = List.of("PreferredStockSharesOutstanding", "PreferredStockSharesIssued",
-            "PreferredStockIncludingAdditionalPaidInCapitalNetOfDiscount", "TreasuryStockValue", "TreasuryStockCommonValue",
-            "CommonStockValue", "AdditionalPaidInCapital", "AdditionalPaidInCapitalCommonStock");
-    // 來源概念分開保存，不是公式別名或可直接相加的清單；期間／單位／口徑仍須消費端對齊。
-    static final List<String> US_GAAP_TAGS = List.of(
-            "CommonStockSharesOutstanding", "PreferredStockSharesOutstanding", "PreferredStockSharesIssued", "EarningsPerShareBasic", "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted",
+    public static final String WEIGHTED_AVERAGE_DILUTED_SHARES = "WeightedAverageNumberOfDilutedSharesOutstanding";
+    public static final String WEIGHTED_AVERAGE_BASIC_AND_DILUTED_SHARES = "WeightedAverageNumberOfShareOutstandingBasicAndDiluted";
+
+    private static final Set<String> CORE_STATEMENT_PERIOD_TAGS = Set.of(
+            "Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax", "RevenuesNetOfInterestExpense",
+            "OperatingIncomeLoss", "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
+            "EarningsPerShareBasic", "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted",
+            "Assets", "Liabilities", "StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations");
+
+    // 精簡至估值與財務面板實際讀取的核心標準標籤，補入稀釋加權平均股數以驗證跨越拆股日的 EPS。
+    public static final List<String> US_GAAP_TAGS = List.of(
+            "CommonStockSharesOutstanding", WEIGHTED_AVERAGE_DILUTED_SHARES, WEIGHTED_AVERAGE_BASIC_AND_DILUTED_SHARES,
+            "EarningsPerShareBasic", "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted",
             "StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "MinorityInterest",
             "RedeemableNoncontrollingInterestEquityCarryingAmount", "PreferredStockValueOutstanding", "PreferredStockValue",
             "PreferredStockIncludingAdditionalPaidInCapitalNetOfDiscount", "ConvertiblePreferredStockNonredeemableOrRedeemableIssuerOptionValue",
             "RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet", "RevenuesNetOfInterestExpense",
             "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
-            "PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToDevelopSoftware", "PaymentsToAcquireProductiveAssets",
-            "CashAndCashEquivalentsAtCarryingValue", "MarketableSecuritiesCurrent", "MarketableSecuritiesNoncurrent",
+            "PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+            "CashAndCashEquivalentsAtCarryingValue",
             "ShortTermBorrowings", "CommercialPaper", "DebtCurrent", "LongTermDebtCurrent", "LongTermDebtNoncurrent", "LongTermDebt",
-            "LongTermDebtAndCapitalLeaseObligationsCurrent", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities", "DebtAndCapitalLeaseObligations",
+            "LongTermDebtAndCapitalLeaseObligationsCurrent", "LongTermDebtAndCapitalLeaseObligations",
+            "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities", "DebtAndCapitalLeaseObligations",
             "FinanceLeaseLiability", "FinanceLeaseLiabilityCurrent", "FinanceLeaseLiabilityNoncurrent",
             "OperatingLeaseLiability", "OperatingLeaseLiabilityCurrent", "OperatingLeaseLiabilityNoncurrent",
             "CapitalLeaseObligations", "CapitalLeaseObligationsCurrent", "CapitalLeaseObligationsNoncurrent",
-            "GrossProfit", "CostOfGoodsAndServicesSold", "Assets", "Liabilities", "LiabilitiesCurrent",
-            "AccountsPayableCurrent", "AccruedLiabilitiesCurrent", "DeferredRevenueCurrent", "DeferredRevenueNoncurrent", "OtherLiabilitiesNoncurrent",
-            "CommonStocksIncludingAdditionalPaidInCapital", "CommonStockValue", "AdditionalPaidInCapital",
-            "AdditionalPaidInCapitalCommonStock", "RetainedEarningsAccumulatedDeficit", "AccumulatedOtherComprehensiveIncomeLossNetOfTax",
-            "TreasuryStockValue", "TreasuryStockCommonValue",
-            "OperatingIncomeLoss", "Depletion", "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic", "IncomeTaxExpenseBenefit", "InterestExpenseNonoperating", "InterestExpense", "InterestAndDebtExpense",
+            "Assets", "Liabilities",
+            "OperatingIncomeLoss", "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
             "Depreciation", "AmortizationOfIntangibleAssets", DEPRECIATION_DEPLETION_AMORTIZATION,
-            DEPRECIATION_AMORTIZATION, DEPRECIATION_AMORTIZATION_ACCRETION, ACCRETION_EXPENSE, ADJUSTMENT_FOR_AMORTIZATION);
+            DEPRECIATION_AMORTIZATION, DEPRECIATION_AMORTIZATION_ACCRETION);
 
     public record FactKey(String cik, String taxonomy, String tag, String unit, LocalDate periodStart, LocalDate periodEnd, String accession) {}
+
     private final MarketStatusService calendar;
 
     public List<SecFinancialFact> convert(String cik, JsonNode root, Instant observedAt) {
-        return convert(cik, root, observedAt, LocalDate.MIN);
+        return convert(cik, root, observedAt, LocalDate.MIN, Map.of());
     }
 
     public List<SecFinancialFact> convert(String cik, JsonNode root, Instant observedAt, LocalDate periodEndFrom) {
-        // CIK 來自精確匹配的官方 ZIP entry；根欄位存在時仍必須一致，不依公司名猜測。
-        if (root == null || !root.isObject() || !root.path("facts").isObject()) throw new IllegalStateException("SEC_FACT_COMPANY_INVALID:" + cik);
+        return convert(cik, root, observedAt, periodEndFrom, Map.of());
+    }
+
+    public List<SecFinancialFact> convert(String cik, JsonNode root, Instant observedAt, LocalDate periodEndFrom,
+                                          Map<String, FilingSubmission> submissions) {
+        if (root == null || !root.isObject() || !root.path("facts").isObject())
+            throw new IllegalStateException("SEC_FACT_COMPANY_INVALID:" + cik);
         JsonNode embeddedCik = root.path("cik");
         if (!embeddedCik.isMissingNode() && (!embeddedCik.asText().matches("[0-9]{1,10}")
-                || Long.parseLong(embeddedCik.asText()) != Long.parseLong(cik))) throw new IllegalStateException("SEC_FACT_COMPANY_INVALID:" + cik);
+                || Long.parseLong(embeddedCik.asText()) != Long.parseLong(cik)))
+            throw new IllegalStateException("SEC_FACT_COMPANY_INVALID:" + cik);
+
+        Map<String, FilingSubmission> metadata = submissions == null ? Map.of() : submissions;
         Map<FactKey, SecFinancialFact> result = new LinkedHashMap<>();
-        readTag(cik, root, "dei", "EntityCommonStockSharesOutstanding", observedAt, periodEndFrom, result);
-        for (String tag : US_GAAP_TAGS) readTag(cik, root, "us-gaap", tag, observedAt, periodEndFrom, result);
-        // fy/fp 描述申報本身。只有該申報真正當期期末保留財季標記，避免將比較期標成今年。
-        Map<String, LocalDate> reportEnds = new LinkedHashMap<>();
-        for (SecFinancialFact fact : result.values()) {
-            if (!"us-gaap".equals(fact.getTaxonomy()) || "shares".equals(fact.getUnit()) || fact.getPeriodEnd().isAfter(fact.getFiled())) continue;
-            reportEnds.merge(fact.getAccession(), fact.getPeriodEnd(), (first, second) -> first.isAfter(second) ? first : second);
+        readTag(cik, root, "dei", "EntityCommonStockSharesOutstanding", observedAt, periodEndFrom, metadata, result);
+        for (String tag : US_GAAP_TAGS) {
+            readTag(cik, root, "us-gaap", tag, observedAt, periodEndFrom, metadata, result);
         }
+
+        // 優先採用 submissions.zip 的精確 reportDate 對齊當期期末，避免期後事項日期抹除整份申報的財季標記。
+        Map<String, LocalDate> reportEnds = resolveReportEnds(result, metadata);
         for (SecFinancialFact fact : result.values()) {
             if (!fact.getPeriodEnd().equals(reportEnds.get(fact.getAccession()))) {
                 fact.setReportFiscalYear(null);
@@ -80,24 +99,59 @@ public class SecFinancialFactConverter {
         return List.copyOf(result.values());
     }
 
-    public List<SecFinancialFact> historicalEquityComponents(String cik, JsonNode root, Instant observedAt, LocalDate from, LocalDate before) {
-        if (!from.isBefore(before)) return List.of();
-        Map<FactKey, SecFinancialFact> result = new LinkedHashMap<>();
-        for (String tag : EQUITY_COMPONENT_TAGS) readTag(cik, root, "us-gaap", tag, observedAt, from, result);
-        return result.values().stream().filter(fact -> fact.getPeriodEnd().isBefore(before)).toList();
+    private Map<String, LocalDate> resolveReportEnds(Map<FactKey, SecFinancialFact> facts, Map<String, FilingSubmission> submissions) {
+        Map<String, Set<LocalDate>> candidateEnds = new LinkedHashMap<>();
+        Map<String, LocalDate> fallbackStatementMax = new LinkedHashMap<>();
+        Map<String, LocalDate> fallbackAnyMax = new LinkedHashMap<>();
+        for (SecFinancialFact fact : facts.values()) {
+            if (!"us-gaap".equals(fact.getTaxonomy()) || isSharesTag(fact.getTag()) || fact.getPeriodEnd().isAfter(fact.getFiled())) continue;
+            String accession = fact.getAccession();
+            candidateEnds.computeIfAbsent(accession, ignored -> new LinkedHashSet<>()).add(fact.getPeriodEnd());
+            fallbackAnyMax.merge(accession, fact.getPeriodEnd(), (first, second) -> first.isAfter(second) ? first : second);
+            if (CORE_STATEMENT_PERIOD_TAGS.contains(fact.getTag())) {
+                fallbackStatementMax.merge(accession, fact.getPeriodEnd(), (first, second) -> first.isAfter(second) ? first : second);
+            }
+        }
+        Map<String, LocalDate> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, Set<LocalDate>> entry : candidateEnds.entrySet()) {
+            String accession = entry.getKey();
+            Set<LocalDate> ends = entry.getValue();
+            FilingSubmission submission = submissions.get(accession);
+            LocalDate reportDate = submission == null ? null : submission.reportDate();
+            LocalDate matched = null;
+            if (reportDate != null) {
+                if (ends.contains(reportDate)) {
+                    matched = reportDate;
+                } else {
+                    long bestDistance = Long.MAX_VALUE;
+                    for (LocalDate candidate : ends) {
+                        long distance = Math.abs(ChronoUnit.DAYS.between(candidate, reportDate));
+                        if (distance <= 7 && (distance < bestDistance || (distance == bestDistance && candidate.isAfter(matched)))) {
+                            bestDistance = distance;
+                            matched = candidate;
+                        }
+                    }
+                }
+            }
+            if (matched == null) {
+                matched = fallbackStatementMax.getOrDefault(accession, fallbackAnyMax.get(accession));
+            }
+            if (matched != null) resolved.put(accession, matched);
+        }
+        return resolved;
     }
 
     private void readTag(String cik, JsonNode root, String taxonomy, String tag, Instant observedAt,
-                         LocalDate periodEndFrom, Map<FactKey, SecFinancialFact> result) {
+                         LocalDate periodEndFrom, Map<String, FilingSubmission> submissions, Map<FactKey, SecFinancialFact> result) {
         JsonNode concept = root.path("facts").path(taxonomy).path(tag);
         if (concept.isMissingNode()) return;
         if (!concept.isObject() || !concept.path("units").isObject()) throw new IllegalStateException("SEC_FACT_UNITS_INVALID:" + tag);
         Iterator<Map.Entry<String, JsonNode>> units = concept.path("units").fields();
         while (units.hasNext()) {
             Map.Entry<String, JsonNode> unit = units.next();
-            // 股數僅收原始 shares；其他財務項保留實際幣別／每股單位，不匯兌、不猜尺度。
             if (isSharesTag(tag) && !"shares".equals(unit.getKey())) continue;
-            if (unit.getKey().isBlank() || unit.getKey().length() > 64 || !unit.getValue().isArray()) throw new IllegalStateException("SEC_FACT_UNIT_INVALID:" + tag);
+            if (unit.getKey().isBlank() || unit.getKey().length() > 64 || !unit.getValue().isArray())
+                throw new IllegalStateException("SEC_FACT_UNIT_INVALID:" + tag);
             for (JsonNode value : unit.getValue()) {
                 LocalDate periodEnd = LocalDate.parse(text(value, "end"));
                 if (periodEnd.isBefore(periodEndFrom)) continue;
@@ -120,19 +174,31 @@ public class SecFinancialFactConverter {
                     throw new IllegalStateException("SEC_FACT_INVALID:" + tag + ":" + fact.getAccession() + ":" + fact.getPeriodEnd());
                 fact.setValue(value.path("val").decimalValue());
                 if (isSharesTag(tag) && fact.getValue().signum() < 0)
-                    log.warn("SEC source negative shares retained as raw anomaly | cik={} tag={} accession={} end={} value={}", cik, tag, fact.getAccession(), fact.getPeriodEnd(), fact.getValue());
-                fact.setAvailableFromDate(calendar.getNextTradingDay(fact.getFiled()));
+                    log.warn("SEC source negative shares retained as raw anomaly | cik={} tag={} accession={} end={} value={}",
+                            cik, tag, fact.getAccession(), fact.getPeriodEnd(), fact.getValue());
+                FilingSubmission submission = submissions.get(fact.getAccession());
+                LocalDate acceptanceBase = filed;
+                if (submission != null && submission.acceptedAt() != null) {
+                    LocalDate acceptedNyDate = submission.acceptedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+                    if (acceptedNyDate.isAfter(filed)) acceptanceBase = acceptedNyDate;
+                }
+                LocalDate nextSession = calendar.getNextTradingDay(acceptanceBase);
+                fact.setAvailableFromDate(nextSession != null ? nextSession : acceptanceBase.plusDays(1));
                 fact.setObservedAt(observedAt);
                 FactKey key = key(fact);
-                SecFinancialFact previous = result.putIfAbsent(key, fact);
-                if (previous != null && !sameDisclosure(previous, fact)) throw new IllegalStateException("SEC_FACT_CONFLICT:" + key);
+                SecFinancialFact previous = result.get(key);
+                if (previous == null || !fact.getFiled().isBefore(previous.getFiled())) {
+                    result.put(key, fact);
+                }
             }
         }
     }
 
     private boolean isSharesTag(String tag) {
-        return "EntityCommonStockSharesOutstanding".equals(tag) || "CommonStockSharesOutstanding".equals(tag)
-                || "PreferredStockSharesOutstanding".equals(tag) || "PreferredStockSharesIssued".equals(tag);
+        return "EntityCommonStockSharesOutstanding".equals(tag)
+                || "CommonStockSharesOutstanding".equals(tag)
+                || WEIGHTED_AVERAGE_DILUTED_SHARES.equals(tag)
+                || WEIGHTED_AVERAGE_BASIC_AND_DILUTED_SHARES.equals(tag);
     }
 
     private String text(JsonNode value, String key) {
@@ -142,10 +208,16 @@ public class SecFinancialFactConverter {
     }
 
     public static FactKey key(SecFinancialFact fact) {
-        return new FactKey(fact.getCik(), fact.getTaxonomy(), fact.getTag(), fact.getUnit(), fact.getPeriodStart(), fact.getPeriodEnd(), fact.getAccession());
+        return new FactKey(fact.getCik(), fact.getTaxonomy(), fact.getTag(), fact.getUnit(),
+                fact.getPeriodStart(), fact.getPeriodEnd(), fact.getAccession());
     }
 
     public static boolean sameDisclosure(SecFinancialFact first, SecFinancialFact second) {
-        return first.getValue().compareTo(second.getValue()) == 0 && first.getFiled().equals(second.getFiled()) && first.getForm().equals(second.getForm());
+        return first.getValue().compareTo(second.getValue()) == 0
+                && first.getFiled().equals(second.getFiled())
+                && first.getForm().equals(second.getForm())
+                && Objects.equals(first.getAvailableFromDate(), second.getAvailableFromDate())
+                && Objects.equals(first.getReportFiscalYear(), second.getReportFiscalYear())
+                && Objects.equals(first.getReportFiscalPeriod(), second.getReportFiscalPeriod());
     }
 }

@@ -34,6 +34,187 @@ public class FinancialReportValuationCalculator {
 
     private record ItemKey(int statementType, String name) {}
 
+    private record FieldKey(int statementType, long fieldId) {}
+
+    private static final Map<FieldKey, FinancialConcept> STATIC_FIELD_CONCEPTS = buildStaticFieldConcepts();
+    private static final Map<ItemKey, FinancialConcept> STATIC_NAME_CONCEPTS = buildStaticNameConcepts();
+
+    private static Map<FieldKey, FinancialConcept> buildStaticFieldConcepts() {
+        Map<FieldKey, FinancialConcept> map = new HashMap<>();
+        // 1: 損益表（一般工商 8xxx、銀行 9xxx、保險 10xxx）
+        registerFields(map, 1, FinancialConcept.REVENUE_AS_REPORTED, 8001L, 9001L, 10001L);
+        registerFields(map, 1, FinancialConcept.OPERATING_REVENUE, 8002L, 9002L, 10002L);
+        registerFields(map, 1, FinancialConcept.OPERATING_PROFIT, 8017L);
+        registerFields(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION, 8011L, 9022L);
+        registerFields(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, 8012L, 9023L, 10023L);
+        registerFields(map, 1, FinancialConcept.INCOME_DEPLETION, 8013L);
+        registerFields(map, 1, FinancialConcept.INCOME_DEPRECIATION, 10024L);
+        registerFields(map, 1, FinancialConcept.INCOME_AMORTIZATION, 10025L);
+        registerFields(map, 1, FinancialConcept.NONOPERATING_INTEREST_EXPENSE, 8020L, 10028L);
+        registerFields(map, 1, FinancialConcept.INTEREST_EXPENSE_AS_REPORTED, 9005L);
+        registerFields(map, 1, FinancialConcept.PRETAX_PROFIT, 8034L, 9037L, 10038L);
+        registerFields(map, 1, FinancialConcept.INCOME_TAX_EXPENSE, 8035L, 9038L, 10039L);
+        registerFields(map, 1, FinancialConcept.NET_PROFIT, 8037L, 9040L, 10041L);
+        registerFields(map, 1, FinancialConcept.NET_INCOME_PARENT, 8043L, 9046L, 10047L);
+        registerFields(map, 1, FinancialConcept.PREFERRED_DIVIDENDS, 8044L, 9047L, 10048L);
+        registerFields(map, 1, FinancialConcept.OTHER_PREFERRED_DIVIDENDS, 8045L, 9048L, 10049L);
+        registerFields(map, 1, FinancialConcept.NET_INCOME_COMMON, 8046L, 9049L, 10050L);
+        registerFields(map, 1, FinancialConcept.BASIC_EPS, 8047L, 9050L, 10051L);
+        registerFields(map, 1, FinancialConcept.DILUTED_EPS, 8048L, 9051L, 10052L);
+
+        // 2: 資產負債表（注意 fieldId 與損益表／現金流量表會重號，必須搭配 statementType）
+        registerFields(map, 2, FinancialConcept.TOTAL_ASSETS, 8001L, 9001L, 10001L);
+        registerFields(map, 2, FinancialConcept.CASH_AND_SHORT_TERM_INVESTMENTS, 8003L);
+        registerFields(map, 2, FinancialConcept.CASH_AND_FEDERAL_FUNDS_SOLD, 9002L);
+        registerFields(map, 2, FinancialConcept.CASH_AND_EQUIVALENTS, 8004L, 9003L, 10002L);
+        registerFields(map, 2, FinancialConcept.SHORT_TERM_INVESTMENTS, 8005L, 9010L, 10005L);
+        registerFields(map, 2, FinancialConcept.MONEY_MARKET_INVESTMENTS, 9004L);
+        registerFields(map, 2, FinancialConcept.RESTRICTED_CASH, 8018L);
+        registerFields(map, 2, FinancialConcept.RESTRICTED_CASH_AND_INVESTMENTS, 9005L);
+        registerFields(map, 2, FinancialConcept.RESTRICTED_CASH_AND_EQUIVALENTS, 10003L);
+        registerFields(map, 2, FinancialConcept.TOTAL_LIABILITIES, 8048L, 9040L, 10037L);
+        registerFields(map, 2, FinancialConcept.BANK_DEPOSITS, 9041L, 10039L);
+        registerFields(map, 2, FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES, 9042L);
+        registerFields(map, 2, FinancialConcept.SECURITIES_LENDING_AND_REPO_PAYABLES_AS_REPORTED, 10058L);
+        registerFields(map, 2, FinancialConcept.CURRENT_DEBT_AND_LEASES, 8057L, 9044L, 10041L);
+        registerFields(map, 2, FinancialConcept.CURRENT_DEBT, 8058L, 9045L, 10042L);
+        registerFields(map, 2, FinancialConcept.CURRENT_CAPITAL_LEASES, 8060L, 9046L, 10043L);
+        registerFields(map, 2, FinancialConcept.LONG_TERM_DEBT_AND_LEASES, 8068L, 9059L, 10053L);
+        registerFields(map, 2, FinancialConcept.LONG_TERM_DEBT, 8069L, 9060L, 10054L);
+        registerFields(map, 2, FinancialConcept.LONG_TERM_CAPITAL_LEASES, 8070L, 9061L, 10055L);
+        registerFields(map, 2, FinancialConcept.TOTAL_EQUITY, 8081L, 9069L, 10064L);
+        registerFields(map, 2, FinancialConcept.STOCKHOLDERS_EQUITY, 8085L, 9070L, 10065L);
+        registerFields(map, 2, FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, 8087L, 9072L, 10067L);
+        registerFields(map, 2, FinancialConcept.PREFERRED_STOCK_CAPITAL, 8088L, 9073L, 10068L);
+        registerFields(map, 2, FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED, 8090L, 9075L, 10070L);
+        registerFields(map, 2, FinancialConcept.RETAINED_EARNINGS, 8091L, 9076L, 10071L);
+        registerFields(map, 2, FinancialConcept.TREASURY_STOCK_AS_REPORTED, 8092L, 9077L, 10072L);
+        registerFields(map, 2, FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED, 8093L, 9078L, 10073L);
+        registerFields(map, 2, FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, 8095L, 9080L, 10075L);
+
+        // 3: 現金流量表
+        registerFields(map, 3, FinancialConcept.OPERATING_CASH_FLOW, 8015L, 9016L, 10011L);
+        registerFields(map, 3, FinancialConcept.CONTINUING_OPERATING_CASH_FLOW, 8016L, 9017L, 10012L);
+        registerFields(map, 3, FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION, 8019L, 9020L);
+        registerFields(map, 3, FinancialConcept.CAPITAL_EXPENDITURE, 8044L, 9049L, 10050L);
+        registerFields(map, 3, FinancialConcept.NET_PPE_CASH_FLOW, 8046L, 9050L, 10051L);
+        registerFields(map, 3, FinancialConcept.NET_INTANGIBLES_CASH_FLOW, 8047L, 9051L, 10052L);
+        registerFields(map, 3, FinancialConcept.FREE_CASH_FLOW, 8072L, 9078L, 10078L);
+        return Map.copyOf(map);
+    }
+
+    private static Map<ItemKey, FinancialConcept> buildStaticNameConcepts() {
+        Map<ItemKey, FinancialConcept> map = new HashMap<>();
+        registerNames(map, 1, FinancialConcept.REVENUE_AS_REPORTED, "Total Revenue as Reported");
+        registerNames(map, 1, FinancialConcept.OPERATING_REVENUE, "Total Operating Revenue");
+        registerNames(map, 1, FinancialConcept.OPERATING_PROFIT, "Operating Profit");
+        registerNames(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION, "Depreciation & Amortization & Depletion");
+        registerNames(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, "-Depreciation & Amortization", "Depreciation & Amortization");
+        registerNames(map, 1, FinancialConcept.INCOME_DEPLETION, "-Depletion");
+        registerNames(map, 1, FinancialConcept.INCOME_DEPRECIATION, "-Depreciation");
+        registerNames(map, 1, FinancialConcept.INCOME_AMORTIZATION, "-Amortization");
+        registerNames(map, 1, FinancialConcept.NONOPERATING_INTEREST_EXPENSE, "Non-Operating Interest Expense", "-Interest Expense Non-Operating");
+        registerNames(map, 1, FinancialConcept.INTEREST_EXPENSE_AS_REPORTED, "-Interest Expense");
+        registerNames(map, 1, FinancialConcept.PRETAX_PROFIT, "Pretax Profit");
+        registerNames(map, 1, FinancialConcept.INCOME_TAX_EXPENSE, "Tax");
+        registerNames(map, 1, FinancialConcept.NET_PROFIT, "Net Profit");
+        registerNames(map, 1, FinancialConcept.NET_INCOME_PARENT, "Net Income to Parent Company");
+        registerNames(map, 1, FinancialConcept.PREFERRED_DIVIDENDS, "Preferred Stock Dividends");
+        registerNames(map, 1, FinancialConcept.OTHER_PREFERRED_DIVIDENDS, "Other Preferred Stock Dividends");
+        registerNames(map, 1, FinancialConcept.NET_INCOME_COMMON, "Net Income to Common Stockholders");
+        registerNames(map, 1, FinancialConcept.BASIC_EPS, "Basic EPS");
+        registerNames(map, 1, FinancialConcept.DILUTED_EPS, "Diluted EPS");
+
+        registerNames(map, 2, FinancialConcept.TOTAL_ASSETS, "Total Assets");
+        registerNames(map, 2, FinancialConcept.CASH_AND_SHORT_TERM_INVESTMENTS, "Cash and Cash Equivalents & Short-Term Investments");
+        registerNames(map, 2, FinancialConcept.CASH_AND_FEDERAL_FUNDS_SOLD, "Cash, Cash Equivalents & Federal Funds Sold");
+        registerNames(map, 2, FinancialConcept.CASH_AND_EQUIVALENTS, "-Cash and Cash Equivalents", "Cash and Cash Equivalents");
+        registerNames(map, 2, FinancialConcept.SHORT_TERM_INVESTMENTS, "-Short Term Investments");
+        registerNames(map, 2, FinancialConcept.MONEY_MARKET_INVESTMENTS, "-Money Market Investments");
+        registerNames(map, 2, FinancialConcept.RESTRICTED_CASH, "Restricted Cash");
+        registerNames(map, 2, FinancialConcept.RESTRICTED_CASH_AND_INVESTMENTS, "-Restricted Cash and Investments");
+        registerNames(map, 2, FinancialConcept.RESTRICTED_CASH_AND_EQUIVALENTS, "Restricted Cash and Cash Equivalents");
+        registerNames(map, 2, FinancialConcept.TOTAL_LIABILITIES, "Total Liabilities");
+        registerNames(map, 2, FinancialConcept.BANK_DEPOSITS, "Total Deposits");
+        registerNames(map, 2, FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES,
+                "Federal Funds Purchased and Securities Sold Under Agreement to Repurchase");
+        registerNames(map, 2, FinancialConcept.SECURITIES_LENDING_AND_REPO_PAYABLES_AS_REPORTED, "Unrepurchased Pre-Sale Securities");
+        registerNames(map, 2, FinancialConcept.CURRENT_DEBT_AND_LEASES, "Short-Term Debt and Capital Lease Obligation");
+        registerNames(map, 2, FinancialConcept.CURRENT_DEBT, "-Current Debt");
+        registerNames(map, 2, FinancialConcept.CURRENT_CAPITAL_LEASES, "-Current Capital Lease Obligation");
+        registerNames(map, 2, FinancialConcept.LONG_TERM_DEBT_AND_LEASES, "Long Term Debt and Capital Lease Obligation");
+        registerNames(map, 2, FinancialConcept.LONG_TERM_DEBT, "-Long Term Debt");
+        registerNames(map, 2, FinancialConcept.LONG_TERM_CAPITAL_LEASES, "-Long Term Capital Lease Obligation");
+        registerNames(map, 2, FinancialConcept.TOTAL_EQUITY, "Total Equity");
+        registerNames(map, 2, FinancialConcept.STOCKHOLDERS_EQUITY, "Stockholders' Equity");
+        registerNames(map, 2, FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "-Common Stock");
+        registerNames(map, 2, FinancialConcept.PREFERRED_STOCK_CAPITAL, "-Preferred Stock");
+        registerNames(map, 2, FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED, "Additional Paid-In Capital");
+        registerNames(map, 2, FinancialConcept.RETAINED_EARNINGS, "Retained Earnings");
+        registerNames(map, 2, FinancialConcept.TREASURY_STOCK_AS_REPORTED, "Less: Treasury Stock");
+        registerNames(map, 2, FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED,
+                "Gains/Losses Not Affecting Retained Earnings", "Other Composite Income");
+        registerNames(map, 2, FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, "Minority Interests");
+
+        registerNames(map, 3, FinancialConcept.OPERATING_CASH_FLOW, "Operating Cash Flow");
+        registerNames(map, 3, FinancialConcept.CONTINUING_OPERATING_CASH_FLOW, "Net cash flow from continuing operations");
+        registerNames(map, 3, FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION, "Depreciation & Depletion & Amortization");
+        registerNames(map, 3, FinancialConcept.CAPITAL_EXPENDITURE, "Capital Expenditure");
+        registerNames(map, 3, FinancialConcept.NET_PPE_CASH_FLOW, "Net PPE Purchase and Sale");
+        registerNames(map, 3, FinancialConcept.NET_INTANGIBLES_CASH_FLOW, "Net Intangibles Purchase and Sale");
+        registerNames(map, 3, FinancialConcept.FREE_CASH_FLOW, "Free Cash Flow");
+        return Map.copyOf(map);
+    }
+
+    private static void registerFields(Map<FieldKey, FinancialConcept> map, int statementType, FinancialConcept concept, long... fieldIds) {
+        for (long fieldId : fieldIds) {
+            if (map.putIfAbsent(new FieldKey(statementType, fieldId), concept) != null)
+                throw new IllegalStateException("DUPLICATE_STATIC_FIELD_MAPPING:" + statementType + ":" + fieldId);
+        }
+    }
+
+    private static void registerNames(Map<ItemKey, FinancialConcept> map, int statementType, FinancialConcept concept, String... names) {
+        for (String name : names) {
+            if (map.putIfAbsent(new ItemKey(statementType, name), concept) != null)
+                throw new IllegalStateException("DUPLICATE_STATIC_NAME_MAPPING:" + statementType + ":" + name);
+        }
+    }
+
+    public static FinancialConcept resolveStaticConcept(int statementType, long fieldId, String itemName) {
+        if (fieldId > 0) {
+            FinancialConcept byField = STATIC_FIELD_CONCEPTS.get(new FieldKey(statementType, fieldId));
+            if (byField != null) return byField;
+        }
+        if (itemName != null && !itemName.isBlank()) {
+            return STATIC_NAME_CONCEPTS.get(new ItemKey(statementType, itemName.trim()));
+        }
+        return null;
+    }
+
+    /** 依內建多模板靜態規則提取標準概念：優先匹配 (statementType, fieldId)，無對應 fieldId 時 fallback (statementType, itemName)，未使用細項忽略不報警。 */
+    public List<ReportValues> extract(Collection<FinancialReport> reports) {
+        List<ReportValues> result = new ArrayList<>();
+        for (FinancialReport report : reports) {
+            Map<FinancialConcept, MetricResult<BigDecimal>> values = new EnumMap<>(FinancialConcept.class);
+            for (FinancialReport.Item item : report.getItems()) {
+                FinancialConcept concept = resolveStaticConcept(report.getStatementType(), item.fieldId(), item.name());
+                if (concept == null) continue;
+                MetricResult<BigDecimal> previous = values.get(concept);
+                if (previous != null && previous.status() == MetricStatus.UNVERIFIED) continue;
+                if (item.value() == null) {
+                    values.putIfAbsent(concept, missing("FINANCIAL_INPUT_MISSING"));
+                } else if (previous == null || previous.value() == null) {
+                    values.put(concept, MetricResult.available(item.value()));
+                } else if (previous.value().compareTo(item.value()) != 0) {
+                    values.put(concept, unverified("FINANCIAL_CONCEPT_VALUE_CONFLICT"));
+                }
+            }
+            result.add(new ReportValues(report.getFigi(), report.getStatementType(), report.getPeriodEnd(), report.getPeriodType(),
+                    report.getFiscalYear(), report.getCurrency(), report.getAccountingStandards(), values, List.of(), List.of()));
+        }
+        return List.copyOf(result);
+    }
+
     public record ReportValues(String figi, int statementType, LocalDate periodEnd, int periodType, Integer fiscalYear,
                                String currency, String accountingStandards, Map<FinancialConcept, MetricResult<BigDecimal>> values,
                                List<String> unknownNames, List<FinancialReport.Item> pendingItems) {

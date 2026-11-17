@@ -192,7 +192,7 @@ class StockValuationDailyTaskTests {
     @Test
     void finnhubBankingWithoutFinancialStatementsIsNotApplicableOnlyForCashFlowAndEv() {
         aapl.stock().setCik(null);
-        aapl.stock().setFinnhubIndustry("Banking");
+        aapl.stock().setSic("6021");
         when(reports.findValuationReports(anyCollection(), eq(DAY), eq(NOW))).thenReturn(List.of());
 
         task.execute(context(DAY));
@@ -211,7 +211,7 @@ class StockValuationDailyTaskTests {
     /** Scenario：已知富途非銀行分類優先於 Finnhub Banking 備援，不錯誤地套用 VALID NULL。 */
     @Test
     void futuNonBankClassificationOverridesFinnhubBanking() {
-        aapl.stock().setFinnhubIndustry("Banking");
+        aapl.stock().setSic("6021");
         StockIndustry nonBank = new StockIndustry();
         nonBank.setSourcePlateCode("US.LIST2249");
         StockIndustryHistory history = new StockIndustryHistory();
@@ -235,7 +235,7 @@ class StockValuationDailyTaskTests {
     @Test
     void knownSecNonBankClassificationOverridesFinnhubBanking() {
         aapl.stock().setCik("0000000001");
-        aapl.stock().setFinnhubIndustry("Banking");
+        aapl.stock().setSic("6021");
         when(statementArchives.filingIndustries(anySet())).thenReturn(Map.of("0000000001",
                 List.of(new FilingIndustry(DAY.minusDays(2), "7370"))));
 

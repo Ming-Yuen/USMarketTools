@@ -42,6 +42,7 @@ public class StockQuoteDailyTask implements Job {
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private static final int SYMBOL_BATCH_SIZE = 500;
     private static final int HISTORICAL_BATCH_SIZE = 10;
+    private static final int RECENT_LOOKBACK_SESSIONS = 5;
 
     @Value("${market-history.start-date:2016-01-01}")
     private LocalDate historyStartDate = LocalDate.of(2016, 1, 1);
@@ -56,6 +57,9 @@ public class StockQuoteDailyTask implements Job {
     @Override
     public void execute(JobExecutionContext context) {
         LocalDate latestClosedTradingDay = marketStatusService.getLastClosedTradingDay();
+        List<LocalDate> recentSessions = marketStatusService.getTradingDays(latestClosedTradingDay.minusDays(15), latestClosedTradingDay);
+        LocalDate lookbackStart = recentSessions != null && recentSessions.size() >= RECENT_LOOKBACK_SESSIONS
+                ? recentSessions.get(recentSessions.size() - RECENT_LOOKBACK_SESSIONS) : null;
         Map<LocalDate, List<Stock>> stocksByFrom = new LinkedHashMap<>();
         Map<String, String> symbolFigis = new LinkedHashMap<>();
         Map<String, String> ambiguous = new LinkedHashMap<>();
@@ -67,7 +71,13 @@ public class StockQuoteDailyTask implements Job {
                 ambiguous.put(previousFigi, reason);
                 ambiguous.put(stock.getFigi(), reason);
             }
-            LocalDate from = target.quoteDate() == null ? historyStartDate : target.quoteDate().plusDays(1);
+            LocalDate from;
+            if (target.quoteDate() == null) {
+                from = historyStartDate;
+            } else {
+                LocalDate nextDay = target.quoteDate().plusDays(1);
+                from = lookbackStart != null && lookbackStart.isBefore(nextDay) ? lookbackStart : nextDay;
+            }
             if (from.isBefore(historyStartDate)) from = historyStartDate;
             if (!from.isAfter(latestClosedTradingDay)) stocksByFrom.computeIfAbsent(from, date -> new ArrayList<>()).add(stock);
         }

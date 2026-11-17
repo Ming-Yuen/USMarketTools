@@ -2,6 +2,8 @@ package com.ykm.stock.analytics.service.stock;
 
 import com.google.common.util.concurrent.RateLimiter;
 import com.ykm.stock.analytics.config.MassiveSubscription;
+import com.ykm.stock.analytics.model.dto.massive.response.MassiveSplit;
+import com.ykm.stock.analytics.model.dto.massive.response.MassiveSplitListResponse;
 import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerDetails;
 import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerListResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +22,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -70,6 +73,32 @@ public class MassiveService {
         }
         if (rows.isEmpty()) throw new IllegalStateException("MASSIVE_STOCK_MASTER_EMPTY");
         log.info("Massive stock master received | rows={}", rows.size());
+        return rows;
+    }
+
+    /** 批量取得 execution_date >= from 的全市場拆股／反拆股／股票股利事件，不過濾 adjustment_type。 */
+    @Retryable(retryFor = {ResourceAccessException.class, HttpClientErrorException.TooManyRequests.class,
+            HttpServerErrorException.class}, maxAttempts = 5,
+            backoff = @Backoff(delay = 2000, multiplier = 2.0, maxDelay = 30000))
+    public List<MassiveSplit> getSplitsFrom(LocalDate executionDateFrom) {
+        if (executionDateFrom == null) throw new IllegalArgumentException("MASSIVE_SPLIT_FROM_DATE_REQUIRED");
+        MassiveSplitListResponse page = get("/stocks/v1/splits",
+                Map.of("execution_date.gte", executionDateFrom.toString(),
+                        "order", "asc", "limit", "1000", "sort", "execution_date"), MassiveSplitListResponse.class);
+        List<MassiveSplit> rows = new ArrayList<>();
+        Set<String> pages = new HashSet<>();
+        while (true) {
+            if (page == null || !"OK".equals(page.getStatus()) || page.getResults() == null
+                    || page.getResults().stream().anyMatch(java.util.Objects::isNull)
+                    || (page.getCount() != null && page.getCount() != page.getResults().size()))
+                throw new IllegalStateException("MASSIVE_SPLITS_INCOMPLETE");
+            rows.addAll(page.getResults());
+            if (page.getNextUrl() == null || page.getNextUrl().isBlank()) break;
+            if (page.getResults().isEmpty() || !pages.add(page.getNextUrl()))
+                throw new IllegalStateException("MASSIVE_SPLITS_PAGINATION_INVALID");
+            page = next(page.getNextUrl(), MassiveSplitListResponse.class);
+        }
+        log.info("Massive splits received | from={} rows={}", executionDateFrom, rows.size());
         return rows;
     }
 

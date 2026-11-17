@@ -62,7 +62,7 @@ public class StockQuoteHistoryService {
             if (previous == null) {
                 entityManager.persist(quote);
                 existing.put(id, quote);
-            } else {
+            } else if (!sameBar(previous, quote)) {
                 previous.setOpenPrice(quote.getOpenPrice());
                 previous.setHighPrice(quote.getHighPrice());
                 previous.setLowPrice(quote.getLowPrice());
@@ -73,6 +73,15 @@ public class StockQuoteHistoryService {
             }
         }
         entityManager.flush();
+    }
+
+    private boolean sameBar(StockQuote first, StockQuote second) {
+        return first.getOpenPrice().compareTo(second.getOpenPrice()) == 0
+                && first.getHighPrice().compareTo(second.getHighPrice()) == 0
+                && first.getLowPrice().compareTo(second.getLowPrice()) == 0
+                && first.getClosePrice().compareTo(second.getClosePrice()) == 0
+                && first.getVolume().compareTo(second.getVolume()) == 0
+                && java.util.Objects.equals(first.getDataSource(), second.getDataSource());
     }
 
     public StockQuote findFirstByFigiOrderByQuoteDateDesc(String figi) {

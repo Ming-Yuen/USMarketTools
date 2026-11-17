@@ -24,6 +24,8 @@ public interface StockConverter extends CommonTypeConverter {
     @Mapping(target = "longName", source = "name", qualifiedByName = "trimText")
     @Mapping(target = "mic", source = "primaryExchange", qualifiedByName = "trimText")
     @Mapping(target = "stockType", ignore = true)
+    @Mapping(target = "sic", ignore = true)
+    @Mapping(target = "tracked", ignore = true)
     @Mapping(target = "currency", source = "currencyName", qualifiedByName = "normalizeCurrency")
     @Mapping(target = "cik", ignore = true)
     @Mapping(target = "shareClassFigi", source = "shareClassFigi", qualifiedByName = "trimText")

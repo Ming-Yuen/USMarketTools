@@ -55,6 +55,39 @@ class FinancialReportValuationCalculatorTests {
         assertThat(rows.getFirst().values()).doesNotContainKey(FinancialConcept.NET_PROFIT);
     }
 
+    /** Scenario：靜態規則以 (statement_type, fieldId) 複合鍵優先匹配重號 ID（如 8046、8035、10072 缺名），無對應 fieldId 時退回英文名，未使用細項忽略不報警。 */
+    @Test
+    void staticExtractResolvesCollidingFieldIdsAcrossStatementsAndIgnoresUnusedItems() {
+        FinancialReport income = report("A", 1, 2026, 7, "2026-09-26", "USD",
+                new FinancialReport.Item(8046L, "Net Income to Common Stockholders", new BigDecimal("95000"), null, null),
+                new FinancialReport.Item(8035L, "Tax", new BigDecimal("15000"), null, null),
+                new FinancialReport.Item(9051L, "Diluted EPS", new BigDecimal("18.21"), null, null),
+                new FinancialReport.Item(8007L, "Selling and Admin Expenses", new BigDecimal("5000"), null, null));
+        FinancialReport balance = report("A", 2, 2026, 7, "2026-09-26", "USD",
+                new FinancialReport.Item(8035L, "Financial Assets", new BigDecimal("12000"), null, null),
+                new FinancialReport.Item(10072L, "", new BigDecimal("3000"), null, null),
+                new FinancialReport.Item(0L, "Stockholders' Equity", new BigDecimal("60000"), null, null));
+        FinancialReport cashFlow = report("A", 3, 2026, 7, "2026-09-26", "USD",
+                new FinancialReport.Item(8046L, "Net PPE Purchase and Sale", new BigDecimal("-9000"), null, null),
+                new FinancialReport.Item(10078L, "Free Cash Flow", new BigDecimal("85000"), null, null));
+
+        List<FinancialReportValuationCalculator.ReportValues> extracted = calculator.extract(List.of(income, balance, cashFlow));
+
+        assertThat(extracted.get(0).value(FinancialConcept.NET_INCOME_COMMON).value()).isEqualByComparingTo("95000");
+        assertThat(extracted.get(0).value(FinancialConcept.INCOME_TAX_EXPENSE).value()).isEqualByComparingTo("15000");
+        assertThat(extracted.get(0).value(FinancialConcept.DILUTED_EPS).value()).isEqualByComparingTo("18.21");
+        assertThat(extracted.get(0).unknownNames()).isEmpty();
+
+        assertThat(extracted.get(1).values()).doesNotContainKey(FinancialConcept.INCOME_TAX_EXPENSE);
+        assertThat(extracted.get(1).value(FinancialConcept.TREASURY_STOCK_AS_REPORTED).value()).isEqualByComparingTo("3000");
+        assertThat(extracted.get(1).value(FinancialConcept.STOCKHOLDERS_EQUITY).value()).isEqualByComparingTo("60000");
+        assertThat(extracted.get(1).unknownNames()).isEmpty();
+
+        assertThat(extracted.get(2).value(FinancialConcept.NET_PPE_CASH_FLOW).value()).isEqualByComparingTo("-9000");
+        assertThat(extracted.get(2).values()).doesNotContainKey(FinancialConcept.NET_INCOME_COMMON);
+        assertThat(extracted.get(2).value(FinancialConcept.FREE_CASH_FLOW).value()).isEqualByComparingTo("85000");
+    }
+
     @Test
     void equivalentAliasesAreNotAddedAndConflictsDoNotSelectAnArbitraryValue() {
         List<FinancialReportItemMapping> mappings = List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS),

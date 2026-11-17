@@ -2,7 +2,6 @@ package com.ykm.stock.analytics.service.market;
 
 import com.google.common.util.concurrent.RateLimiter;
 import com.ykm.stock.analytics.config.FinnhubProperties;
-import com.ykm.stock.analytics.model.dto.finnhub.response.CompanyProfile2;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Quote;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Recommendation;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Symbol;
@@ -52,14 +51,13 @@ public class FinnhubService {
     }
 
     @Retryable(
-            value = {
+            retryFor = {
                     ResourceAccessException.class,
                     SocketTimeoutException.class,
-                    HttpClientErrorException.Forbidden.class,
                     HttpClientErrorException.TooManyRequests.class
             },
-            maxAttempts = 1000,
-            backoff = @Backoff(delay = 1000)
+            maxAttempts = 5,
+            backoff = @Backoff(delay = 1000, multiplier = 2.0, maxDelay = 16000)
     )
     // 用途：呼叫外部 provider endpoint 並依指定 response type 反序列化結果。
     public <T> T get(String path, Map<String, Object> queryParams, ParameterizedTypeReference<T> responseType) {
@@ -117,11 +115,6 @@ public class FinnhubService {
     // 用途：取得股票Symbols，作為「Finnhub服務」流程中的處理步驟。
     public List<Symbol> getStockSymbols(String exchange) {
         return get("/stock/symbol", Map.of("exchange", exchange), new ParameterizedTypeReference<List<Symbol>>() {});
-    }
-
-    /** 取得免費公司簡介中的當前產業名稱；不取用其中的股數或市值估值。 */
-    public CompanyProfile2 getCompanyProfile2(String symbol) {
-        return get("/stock/profile2", Map.of("symbol", symbol), new ParameterizedTypeReference<CompanyProfile2>() {});
     }
 
     // 用途：取得股票行情，作為「Finnhub服務」流程中的處理步驟。

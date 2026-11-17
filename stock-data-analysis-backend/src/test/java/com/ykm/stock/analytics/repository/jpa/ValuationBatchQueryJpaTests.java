@@ -272,4 +272,57 @@ class ValuationBatchQueryJpaTests {
             session.getTransaction().rollback();
         }
     }
+
+    /** Scenario：tracked=false 跳過財報／SEC／估值／分類，但保留同 CIK 兄弟股與大盤基準 ETF 行情拆股；多股類判定排除 ADR 且不受 tracked 影響。 */
+    @Test
+    void trackedSwitchRetainsSiblingCikAndBenchmarkMarketDataWhileExcludingAdrFromMultiClass() {
+        try (Session session = factory.openSession()) {
+            session.beginTransaction();
+            session.createNativeMutationQuery("""
+                    insert into stock(figi,symbol,active_status,stock_type,cik,tracked) values
+                    ('G_A','GOOGL','ACTIVE','Common Stock','0001652044',true),
+                    ('G_C','GOOG','ACTIVE','Common Stock','0001652044',false),
+                    ('SOLO_OFF','XYZ','ACTIVE','Common Stock','0000999999',false),
+                    ('ETF_SPY','SPY','ACTIVE','ETP',null,false),
+                    ('ETF_OTHER','ARKK','ACTIVE','ETP',null,false),
+                    ('DUAL_CS','BHP_CS','ACTIVE','Common Stock','0000888888',true),
+                    ('DUAL_ADR','BHP','ACTIVE','ADR','0000888888',true)
+                    """).executeUpdate();
+            session.createNativeMutationQuery("""
+                    insert into stock_status(figi) values
+                    ('G_A'),('G_C'),('SOLO_OFF'),('ETF_SPY'),('ETF_OTHER'),('DUAL_CS'),('DUAL_ADR')
+                    """).executeUpdate();
+
+            StockRepository repository = new JpaRepositoryFactory(session).getRepository(StockRepository.class);
+
+            assertThat(repository.findValuationStocks(ActiveStatus.ACTIVE))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactlyInAnyOrder("G_A", "DUAL_CS");
+            assertThat(repository.findFinancialReportSyncStocks(ActiveStatus.ACTIVE))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactlyInAnyOrder("G_A", "DUAL_CS", "DUAL_ADR");
+            assertThat(repository.findSecFinancialFactsSyncStocks(ActiveStatus.ACTIVE))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactlyInAnyOrder("G_A", "DUAL_CS", "DUAL_ADR");
+            assertThat(repository.findAllActiveStocksWithStatus(ActiveStatus.ACTIVE))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactlyInAnyOrder("G_A", "DUAL_CS", "DUAL_ADR");
+
+            assertThat(repository.findSplitSyncStocks(ActiveStatus.ACTIVE))
+                    .extracting(Stock::getFigi)
+                    .containsExactlyInAnyOrder("G_A", "G_C", "ETF_SPY", "DUAL_CS", "DUAL_ADR");
+            assertThat(repository.findAllActiveStockQuoteDates(ActiveStatus.ACTIVE, DAY))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactlyInAnyOrder("G_A", "G_C", "ETF_SPY", "DUAL_CS", "DUAL_ADR");
+
+            assertThat(repository.findMultiSecurityIssuers(
+                    List.of("0001652044", "0000999999", "0000888888"), ActiveStatus.ACTIVE))
+                    .containsExactly("0001652044");
+            assertThat(repository.findIssuerSecurities(List.of("0001652044"), ActiveStatus.ACTIVE))
+                    .extracting(row -> row.stock().getFigi())
+                    .containsExactly("G_A", "G_C");
+
+            session.getTransaction().rollback();
+        }
+    }
 }

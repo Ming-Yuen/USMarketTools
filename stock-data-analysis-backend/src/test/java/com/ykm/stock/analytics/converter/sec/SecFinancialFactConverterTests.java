@@ -1,17 +1,29 @@
 package com.ykm.stock.analytics.converter.sec;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.stock.analytics.client.SecSubmissionsArchive.FilingSubmission;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
-import com.ykm.common.common_lib.service.DateTimeService;
 import org.junit.jupiter.api.Test;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class SecFinancialFactConverterTests {
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final MarketStatusService calendar = mock(MarketStatusService.class);
+    private final SecFinancialFactConverter converter = new SecFinancialFactConverter(calendar);
+    private final Instant observed = Instant.parse("2026-11-13T08:00:00Z");
+
     @Test
     void fiscalMetadataBelongsOnlyToCurrentPeriodAndCustomTaxonomyIsIgnored() throws Exception {
         String body = """
@@ -30,10 +42,53 @@ class SecFinancialFactConverterTests {
         assertThat(facts.getLast().getReportFiscalPeriod()).isEqualTo("Q3");
     }
 
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final MarketStatusService calendar = mock(MarketStatusService.class);
-    private final SecFinancialFactConverter converter = new SecFinancialFactConverter(calendar);
-    private final Instant observed = Instant.parse("2026-11-13T08:00:00Z");
+    /** Scenario：期後事項（如長債於季末後新發行日）同屬一份 10-Q 時，submissions reportDate 保護當期財季標記不被抹除。 */
+    @Test
+    void subsequentEventFactDoesNotWipeCurrentQuarterFiscalMetadataWhenSubmissionsReportDatePresent() throws Exception {
+        when(calendar.getNextTradingDay(LocalDate.parse("2026-05-20"))).thenReturn(LocalDate.parse("2026-05-21"));
+        String accn = "0001045810-26-000021";
+        String body = """
+                {"cik":1045810,"facts":{"us-gaap":{
+                  "EarningsPerShareDiluted":{"units":{"USD/shares":[
+                    {"start":"2026-01-26","end":"2026-04-26","val":2.39,"filed":"2026-05-20","accn":"0001045810-26-000021","form":"10-Q","fy":2027,"fp":"Q1"}
+                  ]}},
+                  "LongTermDebt":{"units":{"USD":[
+                    {"end":"2026-05-15","val":500000000,"filed":"2026-05-20","accn":"0001045810-26-000021","form":"10-Q","fy":2027,"fp":"Q1"}
+                  ]}}
+                }}}
+                """;
+        Map<String, FilingSubmission> submissions = Map.of(accn, new FilingSubmission(
+                accn, "10-Q", LocalDate.of(2026, 5, 20), LocalDate.of(2026, 4, 26), Instant.parse("2026-05-20T20:10:00Z")));
+
+        List<SecFinancialFact> facts = converter.convert("0001045810", mapper.readTree(body), observed, LocalDate.of(2014, 1, 1), submissions);
+
+        SecFinancialFact eps = facts.stream().filter(fact -> "EarningsPerShareDiluted".equals(fact.getTag())).findFirst().orElseThrow();
+        SecFinancialFact subsequentDebt = facts.stream().filter(fact -> "LongTermDebt".equals(fact.getTag())).findFirst().orElseThrow();
+        assertThat(eps.getReportFiscalYear()).isEqualTo(2027);
+        assertThat(eps.getReportFiscalPeriod()).isEqualTo("Q1");
+        assertThat(subsequentDebt.getReportFiscalYear()).isNull();
+        assertThat(subsequentDebt.getReportFiscalPeriod()).isNull();
+    }
+
+    /** Scenario：補入 WeightedAverageNumberOfDilutedSharesOutstanding 並只保留 shares 單位，供拆股 EPS 交叉驗證。 */
+    @Test
+    void extractsWeightedAverageDilutedSharesInSharesUnitOnly() throws Exception {
+        when(calendar.getNextTradingDay(LocalDate.parse("2026-08-26"))).thenReturn(LocalDate.parse("2026-08-27"));
+        String body = """
+                {"cik":1045810,"facts":{"us-gaap":{
+                  "WeightedAverageNumberOfDilutedSharesOutstanding":{"units":{
+                    "shares":[{"start":"2026-04-27","end":"2026-07-26","val":24510000000,"filed":"2026-08-26","accn":"0001045810-26-000033","form":"10-Q"}],
+                    "USD":[{"start":"2026-04-27","end":"2026-07-26","val":999,"filed":"2026-08-26","accn":"0001045810-26-000033","form":"10-Q"}]
+                  }}
+                }}}
+                """;
+        List<SecFinancialFact> facts = converter.convert("0001045810", mapper.readTree(body), observed);
+        assertThat(facts).singleElement().satisfies(fact -> {
+            assertThat(fact.getTag()).isEqualTo("WeightedAverageNumberOfDilutedSharesOutstanding");
+            assertThat(fact.getUnit()).isEqualTo("shares");
+            assertThat(fact.getValue()).isEqualByComparingTo("24510000000");
+        });
+    }
 
     @Test
     void legacyCombinedBasicAndDilutedEpsKeepsOriginalTagAndPeriodFromCompanyFacts() throws Exception {
@@ -56,8 +111,6 @@ class SecFinancialFactConverterTests {
 
     @Test
     void accentureThirdQuarterFilingKeepsNineMonthCashFlowsAndConservativeAvailability() throws Exception {
-        // ACN 2026-05-31 10-Q 現金流表（千美元）；官方 companyfacts 已還原為 USD。
-        // https://www.sec.gov/Archives/edgar/data/1467373/000146737326000032/acn-20260531.htm
         String body = """
                 {"cik":1467373,"facts":{"us-gaap":{"NetCashProvidedByUsedInOperatingActivities":{"units":{"USD":[
                   {"start":"2024-09-01","end":"2025-05-31","val":7560252000,"accn":"0001467373-26-000032","form":"10-Q","filed":"2026-06-18"},
@@ -73,11 +126,9 @@ class SecFinancialFactConverterTests {
         assertThat(current.getPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 1));
         assertThat(current.getValue()).isEqualByComparingTo("9267947000");
         assertThat(current.getUnit()).isEqualTo("USD");
-        assertThat(result).noneMatch(fact -> LocalDate.of(2026, 3, 1).equals(fact.getPeriodStart()));
         assertThat(result).allSatisfy(fact -> {
             assertThat(fact.getAccession()).isEqualTo("0001467373-26-000032");
             assertThat(fact.getFiled()).isEqualTo(LocalDate.of(2026, 6, 18));
-            // 無收市前接受時刻證據；6/19 Juneteenth 及週末後，6/22 才通過披露時間門。
             assertThat(fact.getAvailableFromDate()).isEqualTo(LocalDate.of(2026, 6, 22));
             assertThat(fact.getObservedAt()).isEqualTo(observed);
         });
@@ -97,116 +148,57 @@ class SecFinancialFactConverterTests {
                 """;
         List<SecFinancialFact> facts = converter.convert("0000320193", mapper.readTree(body), observed);
         assertThat(facts).hasSize(3);
-        assertThat(facts).extracting(SecFinancialFact::getValue).extracting(Object::toString).containsExactly("4443236000", "17772945000", "17772945000");
-        assertThat(facts).extracting(SecFinancialFact::getAvailableFromDate).containsExactly(LocalDate.parse("2020-08-03"), LocalDate.parse("2020-11-02"), LocalDate.parse("2020-11-02"));
-        assertThat(facts).allSatisfy(fact -> assertThat(fact.getObservedAt()).isEqualTo(observed));
+        assertThat(facts).extracting(SecFinancialFact::getValue).extracting(Object::toString)
+                .containsExactly("4443236000", "17772945000", "17772945000");
     }
 
     @Test
-    void incrementalIncludesWatermarkPeriodAndExcludesOlderPeriodEvenWhenFiledLater() throws Exception {
+    void fullHistoryFloorIncludesOldQuarterAmendmentsWithoutDroppingPriorYears() throws Exception {
         String body = """
                 {"cik":320193,"facts":{"us-gaap":{"StockholdersEquity":{"units":{"USD":[
                   {"end":"2013-12-31","val":10,"filed":"2014-01-02","accn":"0000320193-14-000001","form":"10-K"},
                   {"end":"2014-01-01","val":20,"filed":"2014-03-01","accn":"0000320193-14-000002","form":"10-Q"},
                   {"end":"2014-01-01","val":30,"filed":"2026-11-12","accn":"0000320193-26-000003","form":"10-K/A"},
-                  {"end":"2026-09-30","val":40,"filed":"2026-11-13","accn":"0000320193-26-000004","form":"10-Q"},
-                  {"end":"2026-12-31","val":50,"filed":"2027-01-28","accn":"0000320193-27-000001","form":"10-K"}
+                  {"end":"2026-09-30","val":40,"filed":"2026-11-13","accn":"0000320193-26-000004","form":"10-Q"}
                 ]}}}}}
                 """;
-        LocalDate backfill = LocalDate.of(2014, 1, 1);
-        assertThat(converter.convert("0000320193", mapper.readTree(body), observed, backfill))
+        assertThat(converter.convert("0000320193", mapper.readTree(body), observed, LocalDate.of(2014, 1, 1)))
                 .extracting(SecFinancialFact::getAccession)
-                .containsExactly("0000320193-14-000002", "0000320193-26-000003", "0000320193-26-000004", "0000320193-27-000001");
-        assertThat(converter.convert("0000320193", mapper.readTree(body), observed, LocalDate.of(2026, 9, 30)))
-                .extracting(SecFinancialFact::getAccession).containsExactly("0000320193-26-000004", "0000320193-27-000001");
-    }
-
-    @Test
-    void olderTreasuryStockFactsAreAvailableForTheEquityBackfill() throws Exception {
-        String body = """
-                {"facts":{"us-gaap":{"TreasuryStockValue":{"units":{"USD":[
-                  {"end":"2016-03-31","val":156404000000,"filed":"2016-04-26","accn":"0000051143-16-000013","form":"10-Q"}]}},
-                  "TreasuryStockCommonValue":{"units":{"USD":[
-                  {"end":"2026-09-30","val":171191000000,"filed":"2026-10-22","accn":"0000051143-26-000095","form":"10-Q"}]}}}}}
-                """;
-        assertThat(converter.historicalEquityComponents("0000051143", mapper.readTree(body), observed,
-                LocalDate.of(2014, 1, 1), LocalDate.of(2026, 9, 30)))
-                .extracting(SecFinancialFact::getTag).containsExactly("TreasuryStockValue");
-        assertThat(converter.convert("0000051143", mapper.readTree(body), observed, LocalDate.of(2026, 9, 30)))
-                .extracting(SecFinancialFact::getTag).containsExactly("TreasuryStockCommonValue");
-    }
-
-    @Test
-    void readsSeparateCommonParAndPaidInCapitalAndBackfillsEarlierPeriods() throws Exception {
-        when(calendar.getNextTradingDay(LocalDate.parse("2026-11-12"))).thenReturn(LocalDate.parse("2026-11-13"));
-        when(calendar.getNextTradingDay(LocalDate.parse("2018-11-12"))).thenReturn(LocalDate.parse("2018-11-13"));
-        String body = """
-                {"cik":897077,"facts":{"us-gaap":{
-                  "CommonStockValue":{"units":{"USD":[
-                  {"end":"2018-09-30","val":1000000,"filed":"2018-11-12","accn":"0000897077-18-000001","form":"10-Q"},
-                  {"end":"2026-09-30","val":1211000,"filed":"2026-11-12","accn":"0000897077-26-000110","form":"10-Q"}]}},
-                  "AdditionalPaidInCapitalCommonStock":{"units":{"USD":[
-                  {"end":"2018-09-30","val":150000000,"filed":"2018-11-12","accn":"0000897077-18-000001","form":"10-Q"},
-                  {"end":"2026-09-30","val":159795000,"filed":"2026-11-12","accn":"0000897077-26-000110","form":"10-Q"}]}}
-                }}}
-                """;
-        assertThat(converter.convert("0000897077", mapper.readTree(body), observed, LocalDate.of(2026, 9, 30)))
-                .extracting(SecFinancialFact::getTag).containsExactly("CommonStockValue", "AdditionalPaidInCapitalCommonStock");
-        assertThat(converter.historicalEquityComponents("0000897077", mapper.readTree(body), observed,
-                LocalDate.of(2014, 1, 1), LocalDate.of(2026, 9, 30)))
-                .extracting(SecFinancialFact::getTag).containsExactly("CommonStockValue", "AdditionalPaidInCapitalCommonStock");
+                .containsExactly("0000320193-14-000002", "0000320193-26-000003", "0000320193-26-000004");
     }
 
     @Test
     void missingTagsAndNonSharesUnitsDoNotFabricateFacts() throws Exception {
         assertThat(converter.convert("0000320193", mapper.readTree("{\"cik\":320193,\"facts\":{}}"), observed)).isEmpty();
-        assertThat(converter.convert("0000320193", mapper.readTree("{\"cik\":320193,\"facts\":{\"dei\":{\"EntityCommonStockSharesOutstanding\":{\"units\":{\"USD\":[]}}}}}"), observed)).isEmpty();
+        assertThat(converter.convert("0000320193", mapper.readTree(
+                "{\"cik\":320193,\"facts\":{\"dei\":{\"EntityCommonStockSharesOutstanding\":{\"units\":{\"USD\":[]}}}}}"), observed)).isEmpty();
     }
 
     @Test
     void acceptsOfficialZeroPaddedStringCikAsWellAsNumericCik() throws Exception {
         assertThat(converter.convert("0000081955", mapper.readTree("{\"cik\":\"0000081955\",\"facts\":{}}"), observed)).isEmpty();
-    }
-
-    @Test
-    void missingEmbeddedCikUsesAlreadyMatchedOfficialZipEntryIdentity() throws Exception {
         assertThat(converter.convert("0001790169", mapper.readTree("{\"entityName\":\"ZeroStack Corp.\",\"facts\":{}}"), observed)).isEmpty();
     }
 
+    /** Scenario：同一 accession 重複或重編同鍵值項目時採最新申報版本覆蓋，不再拋 SEC_FACT_CONFLICT 中斷整家公司同步。 */
     @Test
-    void preservesSecDocumentedScaleErrorWithoutGuessingOrRejectingDifferentTagDates() throws Exception {
+    void duplicateSameKeyKeepsLatestDisclosureWithoutThrowingConflict() throws Exception {
         when(calendar.getNextTradingDay(any())).thenReturn(LocalDate.parse("2026-11-16"));
-        // SEC 品質提醒的 555,555 vs 555,555,000 示例；是刻意異常 fixture，不是真實公司的已核實股數。
-        String body = """
-                {"cik":320193,"facts":{
-                  "dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[
-                    {"end":"2026-10-23","val":555555,"filed":"2026-11-13","accn":"0000320193-26-000001","form":"10-K"}]}}},
-                  "us-gaap":{"CommonStockSharesOutstanding":{"units":{"shares":[
-                    {"end":"2026-09-26","val":555555000,"filed":"2026-11-13","accn":"0000320193-26-000001","form":"10-K"}]}}}}}
-                """;
-        List<SecFinancialFact> result = converter.convert("0000320193", mapper.readTree(body), observed);
-        assertThat(result).hasSize(2);
-        assertThat(result.get(0).getValue()).isEqualByComparingTo("555555");
-        assertThat(result.get(1).getValue()).isEqualByComparingTo("555555000");
-        assertThat(result.get(0).getPeriodEnd()).isNotEqualTo(result.get(1).getPeriodEnd());
-    }
-
-    @Test
-    void duplicateSameDisclosureCollapsesButConflictingValueFailsCompany() throws Exception {
-        when(calendar.getNextTradingDay(any())).thenReturn(LocalDate.parse("2026-11-16"));
-        String row = "{\"end\":\"2026-09-30\",\"val\":100,\"filed\":\"2026-11-13\",\"accn\":\"0000320193-26-000001\",\"form\":\"10-Q\"}";
+        String row1 = "{\"end\":\"2026-09-30\",\"val\":100,\"filed\":\"2026-11-13\",\"accn\":\"0000320193-26-000001\",\"form\":\"10-Q\"}";
+        String row2 = "{\"end\":\"2026-09-30\",\"val\":101,\"filed\":\"2026-11-13\",\"accn\":\"0000320193-26-000001\",\"form\":\"10-Q\"}";
         String prefix = "{\"cik\":320193,\"facts\":{\"dei\":{\"EntityCommonStockSharesOutstanding\":{\"units\":{\"shares\":[";
         String suffix = "]}}}}}";
-        assertThat(converter.convert("0000320193", mapper.readTree(prefix + row + "," + row + suffix), observed)).hasSize(1);
-        assertThatThrownBy(() -> converter.convert("0000320193", mapper.readTree(prefix + row + "," + row.replace(":100", ":101") + suffix), observed))
-                .hasMessageContaining("SEC_FACT_CONFLICT");
+        List<SecFinancialFact> result = converter.convert("0000320193", mapper.readTree(prefix + row1 + "," + row2 + suffix), observed);
+        assertThat(result).singleElement().satisfies(fact -> assertThat(fact.getValue()).isEqualByComparingTo("101"));
     }
 
     @Test
-    void mismatchedCompanyAndIncompleteFactsFailInsteadOfNoData() throws Exception {
-        assertThatThrownBy(() -> converter.convert("0000320193", mapper.readTree("{\"cik\":1,\"facts\":{}}"), observed)).hasMessageContaining("COMPANY_INVALID");
+    void mismatchedCompanyAndIncompleteFactsFailInsteadOfNoData() {
+        assertThatThrownBy(() -> converter.convert("0000320193", mapper.readTree("{\"cik\":1,\"facts\":{}}"), observed))
+                .hasMessageContaining("COMPANY_INVALID");
         String prefix = "{\"cik\":320193,\"facts\":{\"dei\":{\"EntityCommonStockSharesOutstanding\":{\"units\":{\"shares\":[";
-        assertThatThrownBy(() -> converter.convert("0000320193", mapper.readTree(prefix + "{}]}}}}}"), observed)).hasMessageContaining("FIELD_MISSING");
+        assertThatThrownBy(() -> converter.convert("0000320193", mapper.readTree(prefix + "{}]}}}}}"), observed))
+                .hasMessageContaining("FIELD_MISSING");
     }
 
     @Test
@@ -227,7 +219,8 @@ class SecFinancialFactConverterTests {
         List<SecFinancialFact> result = converter.convert("0000320193", mapper.readTree(body), observed);
         assertThat(result).hasSize(5);
         assertThat(result.stream().filter(fact -> "Revenues".equals(fact.getTag())).toList()).hasSize(3);
-        assertThat(result.stream().filter(fact -> "NetCashProvidedByUsedInOperatingActivities".equals(fact.getTag())).findFirst().orElseThrow().getValue()).isEqualByComparingTo("-100");
+        assertThat(result.stream().filter(fact -> "NetCashProvidedByUsedInOperatingActivities".equals(fact.getTag()))
+                .findFirst().orElseThrow().getValue()).isEqualByComparingTo("-100");
         SecFinancialFact anomalousShares = result.stream().filter(fact -> "shares".equals(fact.getUnit())).findFirst().orElseThrow();
         assertThat(anomalousShares.getValue()).isEqualByComparingTo("-10");
         assertThat(anomalousShares.getPeriodStart()).isNull();

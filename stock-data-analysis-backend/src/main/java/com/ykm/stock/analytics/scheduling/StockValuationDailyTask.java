@@ -364,7 +364,7 @@ public class StockValuationDailyTask implements Job {
         List<FinancialReport> source = reports.findValuationReports(figis, day, calculatedAt);
         Map<String, List<StockSplit>> adjustments = splits.findByFigiInOrderByExecutionDateAsc(figis).stream()
                 .collect(Collectors.groupingBy(StockSplit::getFigi));
-        Map<String, List<ReportValues>> financials = calculator.extract(source, catalog).stream()
+        Map<String, List<ReportValues>> financials = calculator.extract(source).stream()
                 .collect(Collectors.groupingBy(ReportValues::figi));
         Set<String> multiSecurityIssuers = ciks.isEmpty() ? Set.of() : stocks.findMultiSecurityIssuers(ciks, ActiveStatus.ACTIVE);
         Map<String, List<SecFinancialFact>> byCik = ciks.isEmpty() ? Map.of()
@@ -388,11 +388,14 @@ public class StockValuationDailyTask implements Job {
                     // SEC 6211 也包含部分資產管理公司，只用來細分富途資本市場或補缺。
                     if ("6211".equals(filing.sic()) && (plate == null || "US.LIST2260".equals(plate))) securitiesBrokers.add(figi);
                 }));
-        // 只有富途與 SEC 都無產業分類時，才使用 Finnhub 的 Banking 補充銀行適用性。
+        // 富途與 SEC 季包都無產業分類時，使用股票主檔已同步的 SEC 4 碼 SIC 補充金融機構判定。
         for (ActiveStockWithStatus target : targets) {
             String figi = target.stock().getFigi();
+            String sic = target.stock().getSic();
             if (!industryPlates.containsKey(figi) && !withSecIndustry.contains(figi)
-                    && "Banking".equalsIgnoreCase(target.stock().getFinnhubIndustry())) financialInstitutions.add(figi);
+                    && sic != null && FINANCIAL_INSTITUTION_SICS.contains(sic)) financialInstitutions.add(figi);
+            if ("6211".equals(sic) && (!industryPlates.containsKey(figi) || "US.LIST2260".equals(industryPlates.get(figi))))
+                securitiesBrokers.add(figi);
         }
         List<StockShareObservation> observations = day.equals(lastClosed)
                 ? latestCloseShares(targets, prices, day, cutoff, calculatedAt)

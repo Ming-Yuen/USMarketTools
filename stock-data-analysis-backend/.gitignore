@@ -75,3 +75,4 @@ src/test/resources/sec/acceptance/*
 src/test/resources/sec/header-binding/*
 !src/test/resources/sec/acceptance/*.hdr.sgml.gz
 !src/test/resources/sec/header-binding/*.hdr.sgml.gz
+/config/local-secrets.properties

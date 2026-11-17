@@ -18,7 +18,9 @@ export function FutuObservationPanels({ observations }: { observations: FutuObse
     </> : <Typography color="text.secondary" sx={{ my: 2 }}>尚無供應商估值觀察。</Typography>}
     <Typography variant="subtitle1" fontWeight={700} sx={{ mt: 2 }}>盈利預期</Typography>
     {observations.earnings?.length ? <TableContainer><Table size="small" aria-label="盈利預期">
-      <TableHead><TableRow>{["財政期間", "期間類型", "起迄日", "預期 EPS", "預期營收", "幣別", "觀察日期", "來源"].map(label => <TableCell key={label}>{label}</TableCell>)}</TableRow></TableHead>
+      <TableHead><TableRow>{([
+        ["財政期間", "left"], ["期間類型", "left"], ["起迄日", "left"], ["預期 EPS", "right"], ["預期營收", "right"], ["幣別", "left"], ["觀察日期", "left"], ["來源", "left"],
+      ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
       <TableBody>{observations.earnings.map((row, index) => <TableRow key={row.fiscalPeriod + ":" + row.periodType + ":" + row.observationDate + ":" + index}>
         <TableCell>{row.fiscalPeriod}</TableCell><TableCell>{row.periodType}</TableCell>
         <TableCell>{row.periodStart && row.periodEnd ? row.periodStart + " 至 " + row.periodEnd : row.periodEnd ?? "—"}</TableCell>

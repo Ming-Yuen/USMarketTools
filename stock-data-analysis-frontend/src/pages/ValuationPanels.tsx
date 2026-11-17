@@ -31,7 +31,7 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
       <text x="62" y="35" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(maxY)}</text>
       <text x="62" y="180" textAnchor="end" fontSize="11" fill="currentColor">{formatNumber(minY)}</text>
       <path d={path} fill="none" stroke="#1976d2" strokeWidth="2" />
-      {valid.map(point => <circle key={point.date} cx={x(point.date)} cy={y(point.value as number)} r="2.5" fill="#1976d2">
+      {valid.length <= 90 && valid.map(point => <circle key={point.date} cx={x(point.date)} cy={y(point.value as number)} r="2.5" fill="#1976d2">
         <title>{point.date + "：" + formatNumber(point.value)}</title>
       </circle>)}
       <text x="70" y="205" fontSize="11" fill="currentColor">{valid[0].date}</text>
@@ -57,7 +57,9 @@ export function FinancialsPanel({ financials }: { financials: Financials | null 
     <Typography color="text.secondary" variant="body2" sx={{ mt: 1 }}>所有數值與期間由後端計算；缺失與不適用的資料保持空缺，不以零補值。</Typography>
     {!financials ? <Typography sx={{ mt: 2 }}>尚無財務數據</Typography> : <TableContainer sx={{ mt: 1 }}>
       <Table size="small">
-        <TableHead><TableRow>{["指標", "數值", "單位", "財務期間", "可用時間（香港）", "狀態／計算口徑"].map(label => <TableCell key={label}>{label}</TableCell>)}</TableRow></TableHead>
+        <TableHead><TableRow>{([
+          ["指標", "left"], ["數值", "right"], ["單位", "left"], ["財務期間", "left"], ["可用時間（香港）", "left"], ["狀態／計算口徑", "left"],
+        ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
         <TableBody>{financialLabels.map(([key, label, unit]) => {
           const value = financials[key] as FinancialValue | undefined;
           return <TableRow key={key}>
@@ -118,7 +120,9 @@ export function ValuationHistoryPanel({ figi, initial }: { figi: string; initial
     {history.isFetching ? <Typography>正在載入歷史估值…</Typography> : <>
       <SeriesChart title={metricLabel(metric) + " 歷史走勢"} points={rows.map(row => ({ date: row.valuationDate, value: row.metrics[metric]?.status === "AVAILABLE" ? row.metrics[metric].value : null }))} />
       <TableContainer sx={{ maxHeight: 320 }}><Table size="small" stickyHeader aria-label="歷史估值數據">
-        <TableHead><TableRow>{["估值日", "股價", "P/E", "P/B", "P/S", "P/FCF", "EV/EBITDA", "狀態"].map(label => <TableCell key={label}>{label}</TableCell>)}</TableRow></TableHead>
+        <TableHead><TableRow>{([
+          ["估值日", "left"], ["股價", "right"], ["P/E", "right"], ["P/B", "right"], ["P/S", "right"], ["P/FCF", "right"], ["EV/EBITDA", "right"], ["狀態", "left"],
+        ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
         <TableBody>{[...rows].reverse().map(row => <TableRow key={row.valuationDate}>
           <TableCell>{row.valuationDate}</TableCell><TableCell align="right">{formatNumber(row.price)} {row.currency ?? ""}</TableCell>
           {(["pe", "pb", "ps", "pfcf", "evEbitda"] as const).map(code => <TableCell key={code} align="right" title={row.metrics[code]?.reasonCode ?? undefined}>{row.metrics[code]?.status === "AVAILABLE" ? formatNumber(row.metrics[code].value) : "—"}</TableCell>)}

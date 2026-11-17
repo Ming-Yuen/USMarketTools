@@ -1,6 +1,5 @@
 package com.ykm.stock.analytics.service.valuation;
 
-import com.ykm.stock.analytics.converter.sec.SecFinancialFactConverter.FactKey;
 import com.ykm.stock.analytics.enums.FinancialConcept;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.model.entity.StockSplit;
@@ -26,8 +25,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiFunction;
-import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static com.ykm.stock.analytics.converter.sec.SecFinancialFactConverter.DEPRECIATION_AMORTIZATION;
@@ -36,7 +33,6 @@ import static com.ykm.stock.analytics.converter.sec.SecFinancialFactConverter.DE
 
 /** SEC 原幣、同 tag 的可加總流量；涵蓋全市場非金融營運企業與金融機構標準標籤。 */
 public class SecFinancialFactsCalculator {
-    public static final String DEPRECIATION_SCOPE_UNRESOLVED = "SEC_DEPRECIATION_AMORTIZATION_SCOPE_UNRESOLVED";
     public static final List<String> DEPRECIATION_PRIORITY_TAGS = List.of(
             DEPRECIATION_DEPLETION_AMORTIZATION, DEPRECIATION_AMORTIZATION_ACCRETION, DEPRECIATION_AMORTIZATION);
     public static final Set<String> DEPRECIATION_TOTAL_TAGS = Set.copyOf(DEPRECIATION_PRIORITY_TAGS);
@@ -261,40 +257,10 @@ public class SecFinancialFactsCalculator {
                 alignment.facts().stream().filter(fact -> !fact.getPeriodEnd().isAfter(day) || targetEnds.contains(fact.getPeriodEnd())).toList());
     }
 
-    public Flows calculate(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt) {
-        return calculate(input, cik, null, currency, day, calculatedAt, List.of());
-    }
-
-    public Flows calculate(List<SecFinancialFact> input, String cik, String sic, String currency, LocalDate day, Instant calculatedAt) {
-        return calculate(input, cik, sic, currency, day, calculatedAt, List.of());
-    }
-
-    public Flows calculate(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt,
-                           Collection<ReportValues> reports) {
-        return calculate(input, cik, null, currency, day, calculatedAt, reports);
-    }
-
     public Flows calculate(List<SecFinancialFact> input, String cik, String sic, String currency, LocalDate day, Instant calculatedAt,
                            Collection<ReportValues> reports) {
         PeriodSelection selection = selectPeriods(reports, input, day, calculatedAt);
         return calculateSelectedFacts(selection.facts(), cik, sic, currency, day, calculatedAt, selection.reports());
-    }
-
-    public Flows calculate(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt,
-                           Collection<ReportValues> reports, Function<List<SecFinancialFact>, Set<FactKey>> cashFlowDepreciation) {
-        return calculate(input, cik, null, currency, day, calculatedAt, reports);
-    }
-
-    public Flows calculate(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt,
-                           Collection<ReportValues> reports, Function<List<SecFinancialFact>, Set<FactKey>> cashFlowDepreciation,
-                           Consumer<SecFinancialFact> unresolvedDepreciation) {
-        return calculate(input, cik, null, currency, day, calculatedAt, reports);
-    }
-
-    public Flows calculateSelectedFacts(List<SecFinancialFact> input, String cik, String currency, LocalDate day, Instant calculatedAt,
-                                        Collection<ReportValues> reports, Function<List<SecFinancialFact>, Set<FactKey>> cashFlowDepreciation,
-                                        Consumer<SecFinancialFact> unresolvedDepreciation) {
-        return calculateSelectedFacts(input, cik, null, currency, day, calculatedAt, reports);
     }
 
     /** 財季已配對的資料沿用全年／TTM 公式，不再以原股價日封鎖後續取得的財報。 */
@@ -366,10 +332,6 @@ public class SecFinancialFactsCalculator {
             if (quarter(new Period(fact.getPeriodStart(), end))) starts.add(fact.getPeriodStart());
         }
         return starts;
-    }
-
-    public Flow dilutedEps(List<SecFinancialFact> eligibleEps) {
-        return trailing(eligibleEps, "EarningsPerShareDiluted");
     }
 
     /** 驗證跨越拆股日的單期稀釋 EPS：接受拆股後提交的直接 SEC EPS，或經加權平均稀釋股數與對應盈利交叉驗證一致。 */
@@ -517,7 +479,7 @@ public class SecFinancialFactsCalculator {
         Flow preferred = preferredEquityBookValue(sameBalancePeriod, preferredEnd);
         inputs.put(FinancialConcept.PREFERRED_STOCK_CAPITAL, preferred);
         inputs.put(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, resolveSecNoncontrollingInterest(sameBalancePeriod, preferredEnd));
-        inputs.put(FinancialConcept.STOCKHOLDERS_EQUITY, parentStockholdersEquity(eligible, sameBalancePeriod));
+        inputs.put(FinancialConcept.STOCKHOLDERS_EQUITY, parentStockholdersEquity(eligible));
         inputs.put(FinancialConcept.TOTAL_EQUITY, balance(eligible, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"));
         inputs.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED,
                 balance(eligible, "AccumulatedOtherComprehensiveIncomeLossNetOfTax"));
@@ -703,18 +665,7 @@ public class SecFinancialFactsCalculator {
 
     /** 優先股帳面值缺失或為 0 時直接採母公司股東權益（缺母公司權益時採總權益減非控權益）；優先股 > 0 時扣除帳面值。 */
     private Flow commonEquity(List<SecFinancialFact> facts) {
-        Flow parent = balance(facts, "StockholdersEquity");
-        String totalTag = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest";
-        Flow total = balance(facts, totalTag);
-        if (total.value() != null && (parent.periodEnd() == null || total.periodEnd().isAfter(parent.periodEnd()))) {
-            List<SecFinancialFact> sameTotalPeriod = facts.stream()
-                    .filter(fact -> total.periodEnd().equals(fact.getPeriodEnd())).toList();
-            Flow minority = balance(sameTotalPeriod, "MinorityInterest");
-            if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
-            BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
-            List<Flow> parts = minority.value() == null ? List.of(total) : List.of(total, minority);
-            parent = combineWithNote(total.value().subtract(minorityVal), parts, "TotalEquity - MinorityInterest");
-        }
+        Flow parent = parentStockholdersEquity(facts);
         if (parent.value() == null) return parent;
         LocalDate selectedEnd = parent.periodEnd();
         List<SecFinancialFact> samePeriod = facts.stream().filter(fact -> selectedEnd.equals(fact.getPeriodEnd())).toList();
@@ -725,6 +676,21 @@ public class SecFinancialFactsCalculator {
         if (preferredVal.signum() == 0) return parent;
         return combineWithNote(parent.value().subtract(preferredVal), List.of(parent, preferred),
                 "StockholdersEquity - PreferredStock");
+    }
+
+    private Flow parentStockholdersEquity(List<SecFinancialFact> facts) {
+        Flow parent = balance(facts, "StockholdersEquity");
+        Flow total = balance(facts, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
+        if (total.value() != null && (parent.periodEnd() == null || total.periodEnd().isAfter(parent.periodEnd()))) {
+            List<SecFinancialFact> sameTotalPeriod = facts.stream()
+                    .filter(fact -> total.periodEnd().equals(fact.getPeriodEnd())).toList();
+            Flow minority = balance(sameTotalPeriod, "MinorityInterest");
+            if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
+            BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
+            List<Flow> parts = minority.value() == null ? List.of(total) : List.of(total, minority);
+            return combineWithNote(total.value().subtract(minorityVal), parts, "TotalEquity - MinorityInterest");
+        }
+        return parent;
     }
 
     private Flow preferredEquityBookValue(List<SecFinancialFact> samePeriod, LocalDate end) {
@@ -792,19 +758,6 @@ public class SecFinancialFactsCalculator {
 
         BigDecimal adjustment = debt.value().add(preferredVal).add(minorityVal).subtract(cash.value());
         return combineWithNote(adjustment, components, "TotalDebt + Preferred + NCI - Cash");
-    }
-
-    private Flow parentStockholdersEquity(List<SecFinancialFact> eligible, List<SecFinancialFact> samePeriod) {
-        Flow parent = balance(eligible, "StockholdersEquity");
-        if (parent.value() != null || samePeriod.isEmpty()) return parent;
-        Flow total = balance(samePeriod, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
-        Flow minority = balance(samePeriod, "MinorityInterest");
-        if (total.reason() != null && total.reason().contains("CONFLICT")) return total;
-        if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
-        if (total.value() == null) return parent;
-        BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
-        List<Flow> parts = minority.value() == null ? List.of(total) : List.of(total, minority);
-        return combineWithNote(total.value().subtract(minorityVal), parts, "TotalEquity - MinorityInterest");
     }
 
     private Flow resolveSecNoncontrollingInterest(List<SecFinancialFact> samePeriod, LocalDate end) {

@@ -71,12 +71,12 @@ class SecFinancialFactsCalculatorTests {
         combined.setUnit("USD/shares");
         ReportValues quarter = new ReportValues("TEST", 1, combined.getPeriodEnd(), 4, 2016,
                 "USD", "US_GAAP", Map.of(), List.of(), List.of());
-        SecFinancialFactsCalculator.Flows flows = calculator.calculate(List.of(combined), CIK, "USD", DAY, NOW, List.of(quarter));
+        SecFinancialFactsCalculator.Flows flows = calculator.calculate(List.of(combined), CIK, null, "USD", DAY, NOW, List.of(quarter));
         assertThat(flows.input(FinancialConcept.DILUTED_EPS, quarter).value()).isEqualByComparingTo("0.12");
 
         ReportValues differentQuarter = new ReportValues("TEST", 1, LocalDate.of(2017, 3, 31), 1, 2017,
                 "USD", "US_GAAP", Map.of(), List.of(), List.of());
-        assertThat(calculator.calculate(List.of(combined), CIK, "USD", DAY, NOW, List.of(differentQuarter))
+        assertThat(calculator.calculate(List.of(combined), CIK, null, "USD", DAY, NOW, List.of(differentQuarter))
                 .input(FinancialConcept.DILUTED_EPS, differentQuarter).value()).isNull();
     }
 
@@ -441,7 +441,7 @@ class SecFinancialFactsCalculatorTests {
             fact.setAvailableFromDate(LocalDate.parse("2026-11-04"));
         }
         facts.getFirst().setUnit("USD/shares");
-        SecFinancialFactsCalculator.Flows result = calculator.calculate(facts, "0000320193", "USD", DAY, NOW);
+        SecFinancialFactsCalculator.Flows result = calculator.calculate(facts, "0000320193", null, "USD", DAY, NOW, List.of());
         assertThat(result.dilutedEpsTtm().value()).isEqualByComparingTo("8.98");
         assertThat(result.revenue().value()).isEqualByComparingTo("478834");
         assertThat(result.freeCashFlow().value()).isEqualByComparingTo("136056");
@@ -449,13 +449,13 @@ class SecFinancialFactsCalculatorTests {
         assertThat(result.ebitda().value()).isEqualByComparingTo("171486");
         assertThat(result.enterpriseValueAdjustment().value()).isEqualByComparingTo("45262");
 
-        SecFinancialFactsCalculator.Flows historical = calculator.calculate(facts, "0000320193", "USD", LocalDate.parse("2026-11-03"), NOW);
+        SecFinancialFactsCalculator.Flows historical = calculator.calculate(facts, "0000320193", null, "USD", LocalDate.parse("2026-11-03"), NOW, List.of());
         assertThat(historical.dilutedEpsTtm().value()).isEqualByComparingTo("8.98");
         assertThat(historical.revenue().value()).isEqualByComparingTo("478834");
         assertThat(historical.enterpriseValueAdjustment().value()).isEqualByComparingTo("45262");
 
         List<SecFinancialFact> missingLease = facts.stream().filter(fact -> !"OperatingLeaseLiability".equals(fact.getTag())).toList();
-        assertThat(calculator.calculate(missingLease, "0000320193", "USD", DAY, NOW).enterpriseValueAdjustment().value()).isEqualByComparingTo("45262");
+        assertThat(calculator.calculate(missingLease, "0000320193", null, "USD", DAY, NOW, List.of()).enterpriseValueAdjustment().value()).isEqualByComparingTo("45262");
     }
 
     @Test
@@ -554,14 +554,14 @@ class SecFinancialFactsCalculatorTests {
     void nonFinancialContractRevenueIsAcceptedDirectlyWhileFinancialInstitutionSicExcludesContractOnlyRevenue() {
         List<SecFinancialFact> appleShape = List.of(fact("Revenues", "2017-10-01", "2018-09-30", "100"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2025-10-01", "2026-09-30", "200"));
-        assertThat(calculator.calculate(appleShape, CIK, "3571", "USD", DAY, NOW).revenue().value()).isEqualByComparingTo("200");
+        assertThat(calculator.calculate(appleShape, CIK, "3571", "USD", DAY, NOW, List.of()).revenue().value()).isEqualByComparingTo("200");
         // 銀行（6021）、券商（6211）、保險（6311）不得將合約收入單獨當作總收入
         for (String financialSic : List.of("6021", "6211", "6311")) {
-            assertThat(calculator.calculate(appleShape, CIK, financialSic, "USD", DAY, NOW).revenue().value()).isNull();
+            assertThat(calculator.calculate(appleShape, CIK, financialSic, "USD", DAY, NOW, List.of()).revenue().value()).isNull();
         }
         List<SecFinancialFact> metShape = List.of(fact("Revenues", "2025-01-01", "2025-12-31", "77084000000"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2025-01-01", "2025-12-31", "2436000000"));
-        assertThat(calculator.calculate(metShape, CIK, "6311", "USD", DAY, NOW).revenue().value()).isEqualByComparingTo("77084000000");
+        assertThat(calculator.calculate(metShape, CIK, "6311", "USD", DAY, NOW, List.of()).revenue().value()).isEqualByComparingTo("77084000000");
     }
 
     @Test
@@ -670,7 +670,9 @@ class SecFinancialFactsCalculatorTests {
         assertThat(calculate(List.of(a, b)).revenue().value()).isEqualByComparingTo("100");
     }
 
-    private SecFinancialFactsCalculator.Flows calculate(List<SecFinancialFact> facts) { return calculator.calculate(facts, CIK, "USD", DAY, NOW); }
+    private SecFinancialFactsCalculator.Flows calculate(List<SecFinancialFact> facts) {
+        return calculator.calculate(facts, CIK, null, "USD", DAY, NOW, List.of());
+    }
 
     private void matchDepreciationFiling(List<SecFinancialFact> facts) {
         facts.stream().filter(fact -> List.of("Depreciation", "AmortizationOfIntangibleAssets").contains(fact.getTag()))

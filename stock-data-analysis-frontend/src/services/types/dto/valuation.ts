@@ -18,6 +18,10 @@ export interface ValuationReference {
   priceLow: number | null;
   priceHigh: number | null;
   sampleCount: number | null;
+  windowSampleCount?: number | null;
+  excludedSampleCount?: number | null;
+  sampleStartDate?: string | null;
+  sampleEndDate?: string | null;
 }
 
 export interface ValuationResult {

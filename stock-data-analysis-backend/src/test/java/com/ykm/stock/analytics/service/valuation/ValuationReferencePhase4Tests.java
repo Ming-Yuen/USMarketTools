@@ -145,8 +145,12 @@ class ValuationReferencePhase4Tests {
         assertThat(bundle.valuation().primaryMetric()).isEqualTo("PE");
         assertThat(hist.status()).isEqualTo("AVAILABLE");
         assertThat(hist.metricCode()).isEqualTo("PE");
-        // 僅計入 10 個正 PE 月份，2 個負 EPS 月份絕不切換 EV/EBITDA 混入
+        // 僅計入 10 個正 PE 月份，2 個負 EPS 月份絕不切換 EV/EBITDA 混入，並完整揭露視窗覆蓋與排除月數
         assertThat(hist.sampleCount()).isEqualTo(10);
+        assertThat(hist.windowSampleCount()).isEqualTo(12);
+        assertThat(hist.excludedSampleCount()).isEqualTo(2);
+        assertThat(hist.sampleStartDate()).isEqualTo(LocalDate.of(2025, 2, 28));
+        assertThat(hist.sampleEndDate()).isEqualTo(LATEST_DAY);
         // [10, 12, 14, 16, 18, 20, 22, 24, 26, 28]: P20 = 13.6000, P50 = 19.0000, P80 = 24.4000
         assertThat(hist.multipleLow()).isEqualByComparingTo("13.6000");
         assertThat(hist.multipleMedian()).isEqualByComparingTo("19.0000");
@@ -230,7 +234,7 @@ class ValuationReferencePhase4Tests {
                 peerTuple("0001018724", "AMZN", "25.0000"),
                 peerTuple("0001065280", "NFLX", "30.0000")
         );
-        when(latestValuations.findActiveTrackedPeerSnapshots("I78")).thenReturn(fourIssuersFiveStocks);
+        when(latestValuations.findActiveTrackedPeerSnapshots("I78", LATEST_DAY)).thenReturn(fourIssuersFiveStocks);
 
         ReportValuationBundle insufficient = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I78");
         assertThat(insufficient.valuation().peerReference().status()).isEqualTo("INSUFFICIENT_DATA");
@@ -245,7 +249,7 @@ class ValuationReferencePhase4Tests {
                 peerTuple("0001065280", "NFLX", "30.0000"),
                 peerTuple("0000320193", FIGI, "35.0000")
         );
-        when(latestValuations.findActiveTrackedPeerSnapshots("I78")).thenReturn(fiveIssuersSixStocks);
+        when(latestValuations.findActiveTrackedPeerSnapshots("I78", LATEST_DAY)).thenReturn(fiveIssuersSixStocks);
 
         ReportValuationBundle available = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I78");
         ValuationReferenceDto peer = available.valuation().peerReference();
@@ -257,6 +261,48 @@ class ValuationReferencePhase4Tests {
         assertThat(peer.multipleHigh()).isEqualByComparingTo("30.0000");
         assertThat(peer.priceLow()).isEqualByComparingTo("160.0000");
         assertThat(peer.priceHigh()).isEqualByComparingTo("240.0000");
+    }
+
+    @Test
+    void peerReferenceExcludesStaleValuationDateSnapshotsBeforeFiveIssuerGate() {
+        StockFinancialPeriod period = buildPeriod(LocalDate.of(2025, 1, 1), LocalDate.of(2026, 9, 30),
+                new BigDecimal("8.00"), new BigDecimal("500"), new BigDecimal("1000"), new BigDecimal("200"), new BigDecimal("100"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(period));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(LATEST_DAY)))
+                .thenReturn(List.of(quote(LATEST_DAY, "200")));
+
+        LocalDate staleDate = LocalDate.of(2026, 10, 15);
+        // 四家當日（2026-11-13）＋ 一家過期（2026-10-15）-> 過期快照須先剔除，不得湊滿五家輸出 AVAILABLE
+        List<Object[]> fourCurrentPlusOneStale = List.of(
+                peerTupleOnDate("0001652044", "GOOGL", LATEST_DAY, "16.0000"),
+                peerTupleOnDate("0001326801", "META", LATEST_DAY, "20.0000"),
+                peerTupleOnDate("0001018724", "AMZN", LATEST_DAY, "25.0000"),
+                peerTupleOnDate("0001065280", "NFLX", LATEST_DAY, "30.0000"),
+                peerTupleOnDate("0001999999", "UCFI", staleDate, "999.0000")
+        );
+        when(latestValuations.findActiveTrackedPeerSnapshots("I78", LATEST_DAY)).thenReturn(fourCurrentPlusOneStale);
+
+        ReportValuationBundle gated = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I78");
+        assertThat(gated.valuation().peerReference().status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(gated.valuation().peerReference().reasonCode()).isEqualTo("INDUSTRY_PEER_COMPANIES_INSUFFICIENT");
+
+        // 五家當日 ＋ 一家過期 -> 僅以五家當日計算 P25/P50/P75，過期快照極端倍數 999 不污染分位數
+        List<Object[]> fiveCurrentPlusOneStale = List.of(
+                peerTupleOnDate("0001652044", "GOOGL", LATEST_DAY, "16.0000"),
+                peerTupleOnDate("0001326801", "META", LATEST_DAY, "20.0000"),
+                peerTupleOnDate("0001018724", "AMZN", LATEST_DAY, "25.0000"),
+                peerTupleOnDate("0001065280", "NFLX", LATEST_DAY, "30.0000"),
+                peerTupleOnDate("0000320193", FIGI, LATEST_DAY, "35.0000"),
+                peerTupleOnDate("0001999999", "UCFI", staleDate, "999.0000")
+        );
+        when(latestValuations.findActiveTrackedPeerSnapshots("I78", LATEST_DAY)).thenReturn(fiveCurrentPlusOneStale);
+
+        ReportValuationBundle clean = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I78");
+        ValuationReferenceDto peer = clean.valuation().peerReference();
+        assertThat(peer.status()).isEqualTo("AVAILABLE");
+        assertThat(peer.sampleCount()).isEqualTo(5);
+        assertThat(peer.multipleMedian()).isEqualByComparingTo("25.0000");
+        assertThat(peer.multipleHigh()).isEqualByComparingTo("30.0000");
     }
 
     @Test
@@ -316,7 +362,7 @@ class ValuationReferencePhase4Tests {
         assertThat(histBundle.valuation().peerReference().reasonCode()).isEqualTo("HISTORICAL_DATE_NOT_APPLICABLE");
         assertThat(histBundle.valuation().industryAssumption().status()).isEqualTo("NOT_APPLICABLE");
         assertThat(histBundle.valuation().industryAssumption().reasonCode()).isEqualTo("HISTORICAL_DATE_NOT_APPLICABLE");
-        verify(latestValuations, never()).findActiveTrackedPeerSnapshots("I10_HIST");
+        verify(latestValuations, never()).findActiveTrackedPeerSnapshots(any(), eq(histDay));
     }
 
     @Test
@@ -344,9 +390,13 @@ class ValuationReferencePhase4Tests {
     }
 
     private Object[] peerTuple(String issuerKey, String figi, String pe) {
+        return peerTupleOnDate(issuerKey, figi, LATEST_DAY, pe);
+    }
+
+    private Object[] peerTupleOnDate(String issuerKey, String figi, LocalDate valuationDate, String pe) {
         StockValuationLatest row = new StockValuationLatest();
         row.setFigi(figi);
-        row.setValuationDate(LATEST_DAY);
+        row.setValuationDate(valuationDate);
         row.setIndustryCode("I78");
         row.setStatus("AVAILABLE");
         row.setPe(new BigDecimal(pe));

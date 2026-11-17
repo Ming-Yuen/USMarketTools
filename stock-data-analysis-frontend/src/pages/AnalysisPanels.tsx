@@ -50,6 +50,8 @@ export function ValuationReferencePanel({ title, description, reference, currenc
   const { t } = useTranslation();
   const available = reference?.status === "AVAILABLE";
   const assumption = reference?.kind === "INDUSTRY_ASSUMPTION";
+  const historical = reference?.kind === "HISTORICAL_MARKET";
+  const peer = reference?.kind === "PEER_MARKET";
   return <Paper component="section" aria-label={title} variant="outlined" sx={{ p: 2.5, height: "100%" }}>
     <Typography variant="h6" fontWeight={700}>{title}</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>{description}</Typography>
@@ -58,13 +60,41 @@ export function ValuationReferencePanel({ title, description, reference, currenc
       <Typography>指標：{metricLabel(reference?.metricCode)}</Typography>
       {available && reference ? <>
         <Typography>{assumption ? "假設倍數" : "市場倍數區間"}：<b>{formatNumber(reference.multipleLow)}–{formatNumber(reference.multipleHigh)} 倍</b></Typography>
-        {!assumption && <Typography>市場中位數：{formatNumber(reference.multipleMedian)} 倍 · 樣本數：{reference.sampleCount ?? "—"}</Typography>}
+        {historical && <Typography>
+          市場中位數：{formatNumber(reference.multipleMedian)} 倍 · {reference.windowSampleCount != null
+            ? `有效月份：${reference.sampleCount ?? "—"}／${reference.windowSampleCount} 個月`
+            : `樣本數：${reference.sampleCount ?? "—"}`}
+        </Typography>}
+        {peer && <Typography>
+          市場中位數：{formatNumber(reference.multipleMedian)} 倍 · 同日有效公司數：{reference.sampleCount ?? "—"}
+          {reference.sampleEndDate ? `（${reference.sampleEndDate}）` : ""}
+        </Typography>}
+        {historical && reference.sampleStartDate && reference.sampleEndDate && (
+          <Typography variant="body2" color="text.secondary">
+            實際樣本起迄：{reference.sampleStartDate} ～ {reference.sampleEndDate}
+          </Typography>
+        )}
+        {historical && reference.excludedSampleCount != null && reference.excludedSampleCount > 0 && (
+          <Typography variant="body2" color="text.secondary">
+            已排除月份：{reference.excludedSampleCount} 個月（虧損／分母非正或缺資料月份不納入分位數）
+          </Typography>
+        )}
         <Typography>{assumption ? "假設價格區間" : "價格參考區間"}：<b>{formatNumber(reference.priceLow)}–{formatNumber(reference.priceHigh)}</b> {currency ?? ""}</Typography>
         {reference.priceLow == null || reference.priceHigh == null ? <Typography variant="body2" color="text.secondary">倍數可用，但價格換算條件不足；不以零補值。</Typography> : null}
-      </> : <Typography color="text.secondary">{reasonLabel(t, reference?.reasonCode)}</Typography>}
+      </> : <>
+        <Typography color="text.secondary">{reasonLabel(t, reference?.reasonCode)}</Typography>
+        {historical && reference?.windowSampleCount != null && reference.sampleCount != null && (
+          <Typography variant="body2" color="text.secondary">
+            視窗覆蓋：有效 {reference.sampleCount}／{reference.windowSampleCount} 個月
+            {reference.excludedSampleCount ? `（已排除 ${reference.excludedSampleCount} 個虧損或缺資料月份）` : ""}
+          </Typography>
+        )}
+      </>}
       <Typography variant="caption" color="text.secondary">{assumption
         ? "這是經確認的產業假設情境，不是市場實際成交估值。"
-        : "這是實際市場資料的比較基準，不等同內在價值或買賣指令。"}</Typography>
+        : historical
+          ? "歷史倍數以各月末收盤價配對同財季最新修訂財報計算（非當日投資者即時已知之 Point-in-Time 回測值），不等同內在價值或買賣指令。"
+          : "這是同交易日實際市場資料的比較基準，不等同內在價值或買賣指令。"}</Typography>
     </Stack>
   </Paper>;
 }

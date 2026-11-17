@@ -241,7 +241,7 @@ public class StockValuationService {
         ValuationReferenceDto historicalRef = buildHistoricalReference(
                 selectedMetric, monthlyHistory, matchedPeriod, denoms, stock.getCurrency(), financialInstitution, day);
         ValuationReferenceDto peerRef = buildPeerReference(
-                selectedMetric, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency(), financialInstitution);
+                selectedMetric, resolvedIndustryCode, day, historicalDate, matchedPeriod, denoms, stock.getCurrency(), financialInstitution);
         ValuationReferenceDto assumptionRef = buildIndustryAssumption(
                 selectedMetric, modelCtx, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency());
 
@@ -1942,7 +1942,7 @@ public class StockValuationService {
         return null;
     }
 
-    /** 自身歷史估值參考：以單一適用主指標貫穿 <= valuationDate 的 5 年月頻有效樣本計算 P20 / P50 / P80 並換算價格區間。 */
+    /** 自身歷史估值參考：以單一適用主指標貫穿 <= valuationDate 的 5 年月頻有效樣本計算 P20 / P50 / P80 並換算價格區間，保留視窗總月數與排除月數。 */
     private ValuationReferenceDto buildHistoricalReference(
             String selectedMetric, List<ValuationResultDto> monthlyHistory, StockFinancialPeriod period,
             DayDenominators denoms, String quoteCurrency, boolean financialInstitution, LocalDate day) {
@@ -1950,17 +1950,31 @@ public class StockValuationService {
             return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
                     MetricStatus.UNVERIFIED.name(), "REPORTING_CURRENCY_MISMATCH");
         }
+        int windowCount = 0;
+        LocalDate firstSampleDate = null;
+        LocalDate lastSampleDate = null;
         List<BigDecimal> samples = new ArrayList<>();
         for (ValuationResultDto row : monthlyHistory) {
-            if (row.valuationDate() == null || row.valuationDate().isAfter(day) || row.metrics() == null) continue;
+            if (row.valuationDate() == null || row.valuationDate().isAfter(day)) continue;
+            windowCount++;
+            if (row.metrics() == null) continue;
             ValuationResultDto.Value cell = row.metrics().byMetricCode(selectedMetric);
             if (cell != null && "AVAILABLE".equals(cell.status()) && cell.value() != null && cell.value().signum() > 0) {
                 samples.add(cell.value());
+                if (firstSampleDate == null || row.valuationDate().isBefore(firstSampleDate)) {
+                    firstSampleDate = row.valuationDate();
+                }
+                if (lastSampleDate == null || row.valuationDate().isAfter(lastSampleDate)) {
+                    lastSampleDate = row.valuationDate();
+                }
             }
         }
+        int excludedCount = Math.max(0, windowCount - samples.size());
         if (samples.size() < MIN_HISTORICAL_SAMPLES) {
-            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
-                    MetricStatus.INSUFFICIENT_DATA.name(), "HISTORICAL_SAMPLES_INSUFFICIENT");
+            return ValuationReferenceDto.unavailableWithSampleCoverage(
+                    ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "HISTORICAL_SAMPLES_INSUFFICIENT",
+                    samples.size(), windowCount, excludedCount, firstSampleDate, lastSampleDate);
         }
         samples.sort(BigDecimal::compareTo);
         BigDecimal low = quantile(samples, 0.20);
@@ -1971,14 +1985,15 @@ public class StockValuationService {
         BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
         BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
         return new ValuationReferenceDto(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
-                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh, samples.size());
+                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh,
+                samples.size(), windowCount, excludedCount, firstSampleDate, lastSampleDate);
     }
 
-    /** 同業市場估值參考：僅在最新收市日按 coalesce(cik, figi) 發行人去重聚合 >= 5 家計算 P25 / P50 / P75；歷史日期一律 NOT_APPLICABLE。 */
+    /** 同業市場估值參考：僅在最新收市日聚合相同 valuationDate 的同產業快照，按 coalesce(cik, figi) 去重 >= 5 家計算 P25 / P50 / P75。 */
     private ValuationReferenceDto buildPeerReference(
-            String selectedMetric, String industryCode, boolean historicalDate, StockFinancialPeriod period,
-            DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
-        if (historicalDate) {
+            String selectedMetric, String industryCode, LocalDate valuationDate, boolean historicalDate,
+            StockFinancialPeriod period, DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
+        if (historicalDate || valuationDate == null) {
             return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
                     MetricStatus.NOT_APPLICABLE.name(), "HISTORICAL_DATE_NOT_APPLICABLE");
         }
@@ -1986,11 +2001,14 @@ public class StockValuationService {
             return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
                     MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_CLASSIFICATION_MISSING");
         }
-        List<Object[]> rows = latestValuations.findActiveTrackedPeerSnapshots(industryCode);
+        List<Object[]> rows = latestValuations.findActiveTrackedPeerSnapshots(industryCode, valuationDate);
         Map<String, List<BigDecimal>> byIssuer = new LinkedHashMap<>();
         for (Object[] tuple : rows) {
             if (tuple == null || tuple.length < 2 || !(tuple[0] instanceof String issuerKey)
                     || !(tuple[1] instanceof StockValuationLatest snapshot)) {
+                continue;
+            }
+            if (!Objects.equals(snapshot.getValuationDate(), valuationDate)) {
                 continue;
             }
             BigDecimal val = extractLatestMetric(snapshot, selectedMetric);
@@ -2016,7 +2034,8 @@ public class StockValuationService {
         BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
         BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
         return new ValuationReferenceDto(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
-                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh, issuerMultiples.size());
+                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh,
+                issuerMultiples.size(), null, null, valuationDate, valuationDate);
     }
 
     /** 產業估值假設：僅在最新收市日讀取當前生效設定換算假設價格區間；歷史日期一律 NOT_APPLICABLE。 */

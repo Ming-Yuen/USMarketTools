@@ -78,9 +78,13 @@ function ReferencePositionBar({ label, price, reference, currency }: {
     : price > high ? `高於上緣 ${formatSignedPct(diffPct)}` : "位於參考區間內";
   const tagColor = price < low ? "success.main" : price > high ? "warning.main" : "info.main";
 
+  const coverageSuffix = reference.kind === "HISTORICAL_MARKET" && reference.sampleCount != null && reference.windowSampleCount != null
+    ? ` · 有效 ${reference.sampleCount}/${reference.windowSampleCount} 月`
+    : "";
+
   return <Box sx={{ mt: 0.8 }}>
     <Stack direction="row" justifyContent="space-between" alignItems="baseline">
-      <Typography variant="caption" color="text.secondary">{label}（{formatNumber(low)}–{formatNumber(high)} {currency ?? ""}）</Typography>
+      <Typography variant="caption" color="text.secondary">{label}（{formatNumber(low)}–{formatNumber(high)} {currency ?? ""}{coverageSuffix}）</Typography>
       <Typography variant="caption" fontWeight={700} color={tagColor}>{tagText}</Typography>
     </Stack>
     <Box sx={{ position: "relative", height: 10, bgcolor: "action.hover", borderRadius: 5, mt: 0.5, overflow: "hidden" }}>

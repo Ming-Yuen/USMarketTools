@@ -229,7 +229,7 @@ export function ValuationHistoryPanel({ figi, initial }: { figi: string; initial
   };
   return <Paper component="section" aria-label="歷史估值" variant="outlined" sx={{ p: 2.5, mt: 2 }}>
     <Typography variant="h6" fontWeight={700}>歷史估值</Typography>
-    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>重算時沿用當日收盤價，並使用當時已公開報期的最新財報修訂。日期區間使用月末樣本。</Typography>
+    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>以當日收盤價配對同財季最新修訂財報計算（非當日投資者即時已知之 Point-in-Time 回測口徑）。日期區間採月末樣本，虧損或分母非正月份留空不補零。</Typography>
     <Stack component="form" onSubmit={submit} direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ my: 2 }}>
       <TextField label="開始日期" type="date" size="small" value={draft.from} InputLabelProps={{ shrink: true }} onChange={event => setDraft({ ...draft, from: event.target.value })} />
       <TextField label="結束日期" type="date" size="small" value={draft.through} InputLabelProps={{ shrink: true }} onChange={event => setDraft({ ...draft, through: event.target.value })} />

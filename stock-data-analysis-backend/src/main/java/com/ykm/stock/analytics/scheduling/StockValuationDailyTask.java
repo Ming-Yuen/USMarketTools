@@ -147,7 +147,10 @@ public class StockValuationDailyTask implements Job {
                             || previous.getIssuedShares() != snapshot.issuedShares()
                             || (snapshot.outstandingShares() != null
                                     && !Objects.equals(previous.getOutstandingShares(), snapshot.outstandingShares()));
-                    if (!sharesChanged && hasClosingSnapshot.contains(figi)) continue;
+                    boolean missingNativeMultiples = previous != null
+                            && previous.getPeTtmRate() == null && previous.getPbRate() == null
+                            && (snapshot.peTtmRate() != null || snapshot.pbRate() != null);
+                    if (!sharesChanged && !missingNativeMultiples && hasClosingSnapshot.contains(figi)) continue;
 
                     StockShareObservation observation = new StockShareObservation();
                     observation.setFigi(figi);

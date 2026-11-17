@@ -221,6 +221,29 @@ test("separates vertically adjacent support and resistance labels on the chart s
   expect(labels[2] - labels[1]).toBeGreaterThanOrEqual(14);
 });
 
+test("displays historical 5-year sample coverage, excluded loss months, same-day peer date, and non-Point-in-Time disclosure", () => {
+  report.valuation.historicalReference = {
+    kind: "HISTORICAL_MARKET", metricCode: "PE", status: "AVAILABLE", reasonCode: null,
+    multipleLow: 13.6, multipleMedian: 19.0, multipleHigh: 24.4, priceLow: 136.0, priceHigh: 244.0,
+    sampleCount: 10, windowSampleCount: 12, excludedSampleCount: 2,
+    sampleStartDate: "2025-02-28", sampleEndDate: "2026-11-05",
+  };
+  report.valuation.peerReference = {
+    kind: "PEER_MARKET", metricCode: "PE", status: "AVAILABLE", reasonCode: null,
+    multipleLow: 20.0, multipleMedian: 25.0, multipleHigh: 30.0, priceLow: 160.0, priceHigh: 240.0,
+    sampleCount: 5, sampleStartDate: "2026-11-05", sampleEndDate: "2026-11-05",
+  };
+  render(<StockAnalysisPage />);
+  const histPanel = screen.getByRole("region", { name: "歷史市場估值參考" });
+  expect(within(histPanel).getByText(/有效月份：10／12 個月/)).toBeInTheDocument();
+  expect(within(histPanel).getByText(/實際樣本起迄：2025-02-28 ～ 2026-11-05/)).toBeInTheDocument();
+  expect(within(histPanel).getByText(/已排除月份：2 個月/)).toBeInTheDocument();
+  expect(within(histPanel).getByText(/非當日投資者即時已知之 Point-in-Time 回測值/)).toBeInTheDocument();
+
+  const peerPanel = screen.getByRole("region", { name: "同業市場估值參考" });
+  expect(within(peerPanel).getByText(/同日有效公司數：5（2026-11-05）/)).toBeInTheDocument();
+});
+
 test("hides blank UNAVAILABLE trade plan cards while surfacing active support/resistance ladder and allowing SWING horizon switch", async () => {
   report.supportResistance = {
     status: "AVAILABLE", reasons: [],

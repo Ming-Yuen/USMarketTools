@@ -291,7 +291,7 @@ class ValuationBatchQueryJpaTests {
             session.flush();
 
             StockValuationLatestRepository repo = new JpaRepositoryFactory(session).getRepository(StockValuationLatestRepository.class);
-            List<Object[]> peers = repo.findActiveTrackedPeerSnapshots("I1");
+            List<Object[]> peers = repo.findActiveTrackedPeerSnapshots("I1", DAY);
             assertThat(peers).hasSize(3);
             assertThat(peers).extracting(row -> (String) row[0])
                     .containsExactlyInAnyOrder("0001652044", "0001652044", "SOLO");
@@ -361,14 +361,15 @@ class ValuationBatchQueryJpaTests {
                     ('GOOGL_F','GOOGL','ACTIVE','Common Stock','0001652044',true),
                     ('GOOG_F','GOOG','ACTIVE','Common Stock','0001652044',true),
                     ('NOCIK_F','FERG','ACTIVE','Common Stock','',true),
+                    ('STALE_F','UCFI','ACTIVE','Common Stock','0000333333',true),
                     ('UNTRACKED_F','OFF1','ACTIVE','Common Stock','0000111111',false),
                     ('INACTIVE_F','OFF2','INACTIVE','Common Stock','0000222222',true)
                     """).executeUpdate();
             Instant now = Instant.parse("2025-05-05T21:00:00Z");
-            for (String figi : List.of("GOOGL_F", "GOOG_F", "NOCIK_F", "UNTRACKED_F", "INACTIVE_F")) {
+            for (String figi : List.of("GOOGL_F", "GOOG_F", "NOCIK_F", "STALE_F", "UNTRACKED_F", "INACTIVE_F")) {
                 StockValuationLatest snap = new StockValuationLatest();
                 snap.setFigi(figi);
-                snap.setValuationDate(DAY);
+                snap.setValuationDate("STALE_F".equals(figi) ? DAY.minusDays(14) : DAY);
                 snap.setAnalysisAsOf(now);
                 snap.setCalculatedAt(now);
                 snap.setIndustryCode("I78");
@@ -385,7 +386,7 @@ class ValuationBatchQueryJpaTests {
             StockValuationLatestRepository latestRepo = new JpaRepositoryFactory(session)
                     .getRepository(StockValuationLatestRepository.class);
 
-            List<Object[]> rows = latestRepo.findActiveTrackedPeerSnapshots("I78");
+            List<Object[]> rows = latestRepo.findActiveTrackedPeerSnapshots("I78", DAY);
 
             assertThat(rows).hasSize(3);
             assertThat(rows).extracting(r -> (String) r[0])

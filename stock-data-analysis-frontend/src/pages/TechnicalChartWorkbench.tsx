@@ -240,7 +240,7 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
 
   const W = 960;
   const padL = 64;
-  const padR = 72;
+  const padR = 88;
   const plotW = W - padL - padR;
 
   const zoomByFactor = useCallback((factor: number, anchorRatio = 0.5) => {
@@ -398,6 +398,33 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
     }
   }
 
+  // 右側價位標籤防重疊演算法：當多個支撐／阻力帶距離接近時，自動上下錯開標籤並畫出導引線
+  const placedZoneLabels = (() => {
+    const minY = priceTop + 9;
+    const maxY = priceTop + priceH - 7;
+    const minGap = 15;
+    const items = visibleZones.map(zone => {
+      const yTop = Math.max(priceTop, yPrice(Math.min(zone.upper, pHigh)));
+      const yBot = Math.min(priceTop + priceH, yPrice(Math.max(zone.lower, pLow)));
+      const anchorY = (yTop + yBot) / 2;
+      return { zone, yTop, yBot, anchorY, labelY: Math.max(minY, Math.min(maxY, anchorY)) };
+    }).sort((a, b) => a.anchorY - b.anchorY);
+    for (let i = 1; i < items.length; i++) {
+      if (items[i].labelY - items[i - 1].labelY < minGap) {
+        items[i].labelY = items[i - 1].labelY + minGap;
+      }
+    }
+    if (items.length > 0 && items[items.length - 1].labelY > maxY) {
+      items[items.length - 1].labelY = maxY;
+      for (let i = items.length - 2; i >= 0; i--) {
+        if (items[i + 1].labelY - items[i].labelY < minGap) {
+          items[i].labelY = items[i + 1].labelY - minGap;
+        }
+      }
+    }
+    return items;
+  })();
+
   // 主圖滑鼠按住拖曳平移 ＋ 懸停十字準星
   const handleMainMouseDown = (event: React.MouseEvent<SVGSVGElement>) => {
     if (event.button !== 0) return;
@@ -504,10 +531,10 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
 
   return <Paper component="section" aria-label="股價與技術指標互動圖表" variant="outlined" sx={{ p: 2.5, mt: 2 }}>
     <Stack direction={{ xs: "column", lg: "row" }} justifyContent="space-between" alignItems={{ lg: "center" }} spacing={1.5}>
-      <Box>
+      <Box sx={{ minWidth: 0 }}>
         <Typography variant="h6" fontWeight={700}>股價走勢與技術指標圖表</Typography>
-        <Typography variant="caption" color="text.secondary">
-          顯示區間：{rangeStartLabel} ～ {rangeEndLabel}（共 {count}／{totalBars} 根 · 支援滑鼠滾輪縮放、按住左右拖曳平移、下方時間軸拉動）
+        <Typography variant="caption" color="text.secondary" display="block">
+          顯示區間：{rangeStartLabel} ～ {rangeEndLabel}（共 {count}／{totalBars} 根）· 滾輪縮放 · 拖曳平移 · 下方時間軸拉動
         </Typography>
       </Box>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
@@ -602,22 +629,29 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
           if (yBot <= yTop) return null;
           return <g>
             <rect x={padL} width={plotW} y={yTop} height={yBot - yTop} fill="rgba(79, 70, 229, 0.08)" stroke="#6366f1" strokeDasharray="4,4" />
-            <text x={W - padR + 4} y={(yTop + yBot) / 2 + 3} fontSize="10" fill="#4f46e5">歷史參考</text>
+            <text x={padL + 6} y={Math.min(yBot - 3, yTop + 12)} fontSize="10" fill="#4f46e5">歷史參考 ({formatNumber(histRef.priceLow, 1)}–{formatNumber(histRef.priceHigh, 1)})</text>
           </g>;
         })()}
 
-        {/* 支撐／阻力水平色帶 */}
-        {visibleZones.map(zone => {
-          const yTop = Math.max(priceTop, yPrice(Math.min(zone.upper, pHigh)));
-          const yBot = Math.min(priceTop + priceH, yPrice(Math.max(zone.lower, pLow)));
+        {/* 支撐／阻力水平色帶（右側標籤已做防重疊錯開與導引線） */}
+        {placedZoneLabels.map(({ zone, yTop, yBot, anchorY, labelY }) => {
           const h = Math.max(2, yBot - yTop);
           const isSup = zone.role === "SUPPORT";
-          return <g key={zone.id}>
+          const lineColor = isSup ? "#16a34a" : "#dc2626";
+          const textColor = isSup ? "#15803d" : "#b91c1c";
+          const edgeX = W - padR;
+          const labelX = edgeX + 7;
+          const needsLeader = Math.abs(labelY - anchorY) > 1.5;
+          return <g key={zone.id} data-zone-label={zone.id}>
             <rect x={padL} width={plotW} y={yTop} height={h}
               fill={isSup ? "rgba(22, 163, 74, 0.12)" : "rgba(220, 38, 38, 0.11)"} />
-            <line x1={padL} x2={W - padR} y1={isSup ? yTop : yBot} y2={isSup ? yTop : yBot}
-              stroke={isSup ? "#16a34a" : "#dc2626"} strokeWidth="1" strokeDasharray="4,3" opacity={0.75} />
-            <text x={W - padR + 4} y={(yTop + yBot) / 2 + 3} fontSize="10" fill={isSup ? "#15803d" : "#b91c1c"}>
+            <line x1={padL} x2={edgeX} y1={isSup ? yTop : yBot} y2={isSup ? yTop : yBot}
+              stroke={lineColor} strokeWidth="1" strokeDasharray="4,3" opacity={0.75} />
+            <line x1={edgeX} x2={labelX - 2} y1={anchorY} y2={labelY}
+              stroke={lineColor} strokeWidth={needsLeader ? "1" : "0.8"} opacity={0.7} />
+            <rect x={labelX - 2} y={labelY - 7} width={padR - 8} height={13} rx="2"
+              fill={isSup ? "rgba(240, 253, 244, 0.94)" : "rgba(254, 242, 242, 0.94)"} />
+            <text x={labelX} y={labelY + 3.5} fontSize="10" fontWeight={600} fill={textColor}>
               {isSup ? "支撐 " : "阻力 "}{formatNumber(zone.center ?? (zone.lower + zone.upper) / 2, 1)}
             </text>
           </g>;

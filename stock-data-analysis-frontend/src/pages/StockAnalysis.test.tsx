@@ -186,6 +186,41 @@ test("places interactive price workbench at the top and supports preset switchin
   expect(within(chartSection).getByText(/共 40／40 根/)).toBeInTheDocument();
 });
 
+test("separates vertically adjacent support and resistance labels on the chart so text never overlaps", () => {
+  const bars = Array.from({ length: 20 }, (_, i) => ({
+    sessionDate: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 340 + i, high: 365, low: 325, close: 350 + (i % 3),
+    volume: { status: "AVAILABLE", value: 5000000, reasons: [] },
+  }));
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      priceDataThrough: "2026-10-20",
+      timeframes: [{ timeframe: "DAILY", bars, majorTrend: { status: "AVAILABLE", value: { state: "UPTREND" }, reasons: [] }, atr14: { status: "AVAILABLE", value: { atr: 5 }, reasons: [] } }],
+    },
+  };
+  report.supportResistance = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      supports: [
+        { id: "sup-1", timeframe: "DAILY", role: "SUPPORT", lower: 334.5, upper: 335.5, center: 335.0, effectiveStrength: 40, strengthLabel: "MEDIUM", state: "ACTIVE", distanceLowerPercent: -4, distanceUpperPercent: -3.5 },
+        { id: "sup-2", timeframe: "WEEKLY", role: "SUPPORT", lower: 334.4, upper: 335.4, center: 334.9, effectiveStrength: 35, strengthLabel: "MEDIUM", state: "ACTIVE", distanceLowerPercent: -4.1, distanceUpperPercent: -3.6 },
+        { id: "sup-3", timeframe: "MONTHLY", role: "SUPPORT", lower: 334.2, upper: 335.2, center: 334.7, effectiveStrength: 30, strengthLabel: "MEDIUM", state: "ACTIVE", distanceLowerPercent: -4.2, distanceUpperPercent: -3.7 },
+      ],
+      resistances: [],
+    },
+  };
+  render(<StockAnalysisPage />);
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  const labels = ["sup-1", "sup-2", "sup-3"].map(id => {
+    const g = chartSection.querySelector(`g[data-zone-label="${id}"]`);
+    const text = g?.querySelector("text");
+    return Number(text?.getAttribute("y"));
+  }).sort((a, b) => a - b);
+  expect(labels[1] - labels[0]).toBeGreaterThanOrEqual(14);
+  expect(labels[2] - labels[1]).toBeGreaterThanOrEqual(14);
+});
+
 test("hides blank UNAVAILABLE trade plan cards while surfacing active support/resistance ladder and allowing SWING horizon switch", async () => {
   report.supportResistance = {
     status: "AVAILABLE", reasons: [],

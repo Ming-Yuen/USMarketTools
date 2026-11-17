@@ -1,0 +1,77 @@
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### 先忽略所有 jar
+*.jar
+
+### 再取消忽略特定 jar（要放在 *.jar 後面）
+!**/libs/twsapi-10.30.01.jar
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+target/
+*.log
+*.env
+.env.*
+*.zip
+*.tar.gz
+*.tar
+*.rar
+
+### SEC ###
+/data
+.env
+src/main/resources/config/third-party-api.local.properties
+
+/docs
+src/test/resources/sec
+*.html
+*.json
+*.csv
+
+# VMware/FUSE temporary tombstones
+.fuse_hidden*
+**/.fuse_hidden*
+
+# Hash-pinned SEC regression sources; JSON samples remain inline in Java.
+!src/test/resources/sec/
+src/test/resources/sec/*
+!src/test/resources/sec/acceptance/
+!src/test/resources/sec/header-binding/
+src/test/resources/sec/acceptance/*
+src/test/resources/sec/header-binding/*
+!src/test/resources/sec/acceptance/*.hdr.sgml.gz
+!src/test/resources/sec/header-binding/*.hdr.sgml.gz

@@ -1,0 +1,412 @@
+// pages/JobCreate.tsx
+import React from "react";
+import Grid from "@mui/material/Grid";
+import { Box, Button, TextField, Typography, Paper, Alert, Checkbox, Autocomplete } from "@mui/material";
+import { Save, Cancel } from "@mui/icons-material";
+import { useForm, Controller } from "react-hook-form";
+import { useMutate } from "../hooks/api/useApi";
+import { ApiResponse } from "../services/types/dto/apiResponse";
+import { Job, TaskGroup } from "../services/types/dto/batch";
+import { ActiveStatus } from "../services/types/enums/ActiveStatus";
+import { MenuTree } from "../services/types/dto/menu";
+import { useTranslation } from "react-i18next";
+import { hongKongDateInputValue } from "../utils/hongKongTime";
+
+interface JobCreatePageProps {
+  menuTree: MenuTree;
+  job?: Job;
+  onClose?: () => void;
+}
+
+interface CronSchedule {
+  selectedDays: number[];
+  dayOfMonth: string;
+  scheduleTime: string;
+  startDate: string;
+  frequency: "daily" | "weekly" | "monthly";
+  endDate?: string;
+}
+
+interface JobFormData {
+  taskCode: string;
+  taskGroup: TaskGroup | "";
+  jobParams: string;
+  jobClassPath: string;
+  cronSchedule: CronSchedule;
+  activeStatus: ActiveStatus;
+}
+
+const FormField = ({ label, required = false, error, children }: { label: string; required?: boolean; error?: string; children: React.ReactNode }) => (
+  <Box sx={{ display: "flex", gap: 1.5, alignItems: "flex-start" }}>
+    <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 100, pt: 1, whiteSpace: "nowrap" }}>
+      {label}
+      {required && <span style={{ color: "#d32f2f", marginLeft: 4 }}>*</span>}
+    </Typography>
+    <Box sx={{ flex: 1 }}>
+      {children}
+      {error && (
+        <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+          {error}
+        </Typography>
+      )}
+    </Box>
+  </Box>
+);
+
+const scheduleFromJob = (job?: Job): CronSchedule => {
+  const parts = job?.cronExpression?.trim().split(/\s+/) ?? [];
+  const dayOfMonth = parts[3];
+  const dayOfWeek = parts[5];
+  const frequency: CronSchedule["frequency"] =
+    dayOfWeek && dayOfWeek !== "?" && dayOfWeek !== "*"
+      ? "weekly"
+      : dayOfMonth && dayOfMonth !== "*" && dayOfMonth !== "?"
+        ? "monthly"
+        : "daily";
+  const selectedDays = frequency === "weekly"
+    ? dayOfWeek.split(",").map(Number).map((day) => day === 1 ? 0 : day - 1)
+    : [];
+
+  const cronTime = parts.length >= 3
+    ? `${String(parts[2]).padStart(2, "0")}:${String(parts[1]).padStart(2, "0")}`
+    : "12:00";
+
+  return {
+    selectedDays,
+    dayOfMonth: frequency === "monthly" ? dayOfMonth : "1",
+    scheduleTime: cronTime,
+    startDate: job?.startTime?.slice(0, 10) ?? hongKongDateInputValue(new Date()),
+    frequency,
+    endDate: job?.endTime?.slice(0, 10) ?? "",
+  };
+};
+
+export function JobCreatePage({ menuTree, job, onClose }: JobCreatePageProps) {
+  const { t } = useTranslation();
+  const isEditing = Boolean(job);
+  // ✅ 使用環境變數配置 API endpoint
+  const createJob = useMutate<ApiResponse>({
+    url: `${process.env.REACT_APP_API_BASE_URL}/job/update`,
+    method: "post",
+  });
+
+  const {
+    control,
+    handleSubmit,
+    formState: { errors },
+    watch,
+  } = useForm<JobFormData>({
+    defaultValues: {
+      taskCode: job?.taskCode ?? "",
+      taskGroup: job?.taskGroup ?? "",
+      jobParams: JSON.stringify(job?.jobParams ?? {}, null, 2),
+      jobClassPath: job?.jobClassPath ?? "",
+      cronSchedule: scheduleFromJob(job),
+      activeStatus: job?.activeStatus ?? ActiveStatus.ACTIVE,
+    },
+  });
+
+  const frequency = watch("cronSchedule.frequency");
+
+  const taskGroupOptions: { label: string; value: TaskGroup }[] = [
+    // 可以重新啟用這些選項
+    { label: "SCHEDULE", value: "SCHEDULE" },
+    { label: "BATCH", value: "BATCH" },
+    { label: "REPORT", value: "REPORT" },
+  ];
+
+  const generateCronExpression = (schedule: CronSchedule): string => {
+    if (!schedule.scheduleTime) return "";
+    const [hours, minutes] = schedule.scheduleTime.split(":").map(Number);
+    if (schedule.frequency === "daily") return `0 ${minutes} ${hours} * * ?`;
+    if (schedule.frequency === "weekly") {
+      if (schedule.selectedDays.length === 0) return "";
+      const quartzDays = schedule.selectedDays.map((day) => (day === 0 ? 1 : day + 1)).join(",");
+      return `0 ${minutes} ${hours} ? * ${quartzDays}`;
+    }
+    if (schedule.frequency === "monthly") return `0 ${minutes} ${hours} ${schedule.dayOfMonth} * ?`;
+    return "";
+  };
+
+  const onSubmit = async (data: JobFormData) => {
+    try {
+      // 解析 Job Params JSON
+      const jobParams = data.jobParams.trim() ? JSON.parse(data.jobParams) : {};
+
+      // Generate the persisted Quartz cron expression.
+      const cronExpression = generateCronExpression(data.cronSchedule);
+
+      // ✅ 組裝 POST body
+      const submitData = {
+        id: job?.id ?? null,
+        taskCode: data.taskCode,
+        taskGroup: data.taskGroup,
+        jobClassPath: data.jobClassPath,
+        jobParams: jobParams,
+        cronExpression,
+        startTime: data.cronSchedule.startDate
+          ? `${data.cronSchedule.startDate}T00:00:00`
+          : null,
+        endTime: data.cronSchedule.endDate ? `${data.cronSchedule.endDate}T23:59:59` : null,
+        activeStatus: data.activeStatus,
+      };
+
+      console.log("Submitting data:", submitData); // ✅ 調試用
+
+      // ✅ 發送 POST 請求到 backend
+      const response = await createJob.mutateAsync(submitData as any);
+
+      console.log("Response from backend:", response); // ✅ 調試用
+
+      // 成功後關閉表單
+      onClose?.();
+    } catch (error) {
+      console.error("Creation failed:", error);
+      // ✅ 錯誤處理（可以顯示更詳細的錯誤訊息）
+      if (error instanceof Error) {
+        console.error("Error details:", error.message);
+      }
+    }
+  };
+
+  const handleCancel = () => {
+    onClose?.();
+  };
+
+  return (
+    <Box sx={{ width: "100%", mx: "auto" }}>
+      <Typography variant="h5" gutterBottom>
+        {isEditing ? t("job.form.editTitle") : t("job.form.createTitle")}
+      </Typography>
+      {createJob.isError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {t("job.form.saveFailed")}
+        </Alert>
+      )}
+      {createJob.isSuccess && (
+        <Alert severity="success" sx={{ mb: 2 }}>
+          {t("job.form.saveSuccess")}
+        </Alert>
+      )}
+
+      {/* 修改这里：去除 Paper 组件的边框 */}
+      <Paper elevation={0} sx={{ p: 3, mt: 2, border: "none", boxShadow: "none" }}>
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <Grid container spacing={2}>
+            {/* Task Group */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <FormField label={t("job.columns.taskGroup")} required error={errors.taskGroup?.message}>
+                <Controller
+                  name="taskGroup"
+                  control={control}
+                  rules={{ required: t("job.validation.taskGroupRequired") }}
+                  render={({ field: { onChange, value, ...field } }) => (
+                    <Autocomplete
+                      {...field}
+                      value={value || null}
+                      onChange={(event, newValue) => {
+                        onChange(newValue || "");
+                      }}
+                      freeSolo
+                      options={taskGroupOptions.map((option) => option.value)}
+                      getOptionLabel={(option) => {
+                        const found = taskGroupOptions.find((opt) => opt.value === option);
+                        return found ? found.label : option;
+                      }}
+                      renderInput={(params) => <TextField {...params} error={!!errors.taskGroup} size="small" placeholder={t("job.form.selectOrEnter")} />}
+                    />
+                  )}
+                />
+              </FormField>
+            </Grid>
+
+            {/* Task Code */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <FormField label={t("job.columns.taskCode")} required error={errors.taskCode?.message}>
+                <Controller name="taskCode" control={control} rules={{ required: t("job.validation.taskCodeRequired"), pattern: { value: /^[A-Z][A-Z0-9_]*$/, message: t("job.validation.taskCodeFormat") } }} render={({ field }) => <TextField {...field} disabled={isEditing} error={!!errors.taskCode} size="small" fullWidth placeholder={t("job.form.taskCodePlaceholder")} />} />
+              </FormField>
+            </Grid>
+
+            {/* Job Class Path - 现在只占一格 */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <FormField label={t("job.form.jobPath")} required error={errors.jobClassPath?.message}>
+                <Controller name="jobClassPath" control={control} rules={{ required: t("job.validation.jobPathRequired") }} render={({ field }) => <TextField {...field} error={!!errors.jobClassPath} size="small" fullWidth placeholder={t("job.form.jobPathPlaceholder")} />} />
+              </FormField>
+            </Grid>
+
+            {/* Status - 现在与 Job Class Path 在同一行 */}
+            <Grid size={{ xs: 12, md: 6 }}>
+              <FormField label={t("job.form.status")}>
+                <Controller
+                  name="activeStatus"
+                  control={control}
+                  render={({ field }) => (
+                    <Box sx={{ display: "flex", alignItems: "center", height: "100%" }}>
+                      <Checkbox checked={field.value === ActiveStatus.ACTIVE} onChange={(e) => field.onChange(e.target.checked ? ActiveStatus.ACTIVE : ActiveStatus.INACTIVE)} />
+                      <Typography variant="body2">{t("job.status.active")}</Typography>
+                    </Box>
+                  )}
+                />
+              </FormField>
+            </Grid>
+
+            {/* Job Params */}
+            <Grid size={12}>
+              <FormField label={t("job.form.jobParams")} error={errors.jobParams?.message}>
+                <Controller
+                  name="jobParams"
+                  control={control}
+                  rules={{
+                    validate: (value) => {
+                      if (value.trim()) {
+                        try {
+                          JSON.parse(value);
+                          return true;
+                        } catch {
+                          return t("job.validation.validJson");
+                        }
+                      }
+                      return true;
+                    },
+                  }}
+                  render={({ field }) => (
+                    <>
+                      <TextField {...field} error={!!errors.jobParams} multiline rows={3} fullWidth placeholder='{"key": "value"}' />
+                      {!errors.jobParams && (
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                          {t("job.form.jsonHint")}
+                        </Typography>
+                      )}
+                    </>
+                  )}
+                />
+              </FormField>
+            </Grid>
+
+            {/* Frequency */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <FormField label={t("job.form.frequency")} required error={errors.cronSchedule?.frequency?.message}>
+                <Controller
+                  name="cronSchedule.frequency"
+                  control={control}
+                  rules={{ required: t("job.validation.frequencyRequired") }}
+                  render={({ field }) => (
+                    <Autocomplete
+                      value={field.value}
+                      onChange={(event, newValue) => {
+                        field.onChange(newValue || "daily");
+                      }}
+                      options={["daily", "weekly", "monthly"]}
+                      getOptionLabel={(option) => {
+                        if (option === "daily") return t("job.frequency.daily");
+                        if (option === "weekly") return t("job.frequency.weekly");
+                        if (option === "monthly") return t("job.frequency.monthly");
+                        return option;
+                      }}
+                      renderInput={(params) => <TextField {...params} error={!!errors.cronSchedule?.frequency} size="small" />}
+                    />
+                  )}
+                />
+              </FormField>
+            </Grid>
+
+            {/* Select Days */}
+            {frequency === "weekly" && (
+              <Grid size={12}>
+                <Controller
+                  name="cronSchedule.selectedDays"
+                  control={control}
+                  rules={{ validate: (value) => value.length > 0 || t("job.form.selectDays") }}
+                  render={({ field }) => (
+                    <Box sx={{ display: "flex", gap: 1.5, alignItems: "flex-start" }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 100, pt: 0.5 }}>
+                        {t("job.form.selectDays")}<span style={{ color: "#d32f2f", marginLeft: 4 }}>*</span>
+                      </Typography>
+                      <Box sx={{ flex: 1 }}>
+                        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                          {[
+                            { label: t("job.weekday.sun"), value: 0 },
+                            { label: t("job.weekday.mon"), value: 1 },
+                            { label: t("job.weekday.tue"), value: 2 },
+                            { label: t("job.weekday.wed"), value: 3 },
+                            { label: t("job.weekday.thu"), value: 4 },
+                            { label: t("job.weekday.fri"), value: 5 },
+                            { label: t("job.weekday.sat"), value: 6 },
+                          ].map((day) => {
+                            const checked = field.value.includes(day.value);
+                            return (
+                              <Box key={day.value} sx={{ display: "flex", alignItems: "center", border: "1px solid #e0e0e0", borderRadius: 1, px: 1.5, py: 0.5, cursor: "pointer", bgcolor: checked ? "#e3f2fd" : "transparent", "&:hover": { bgcolor: checked ? "#bbdefb" : "#f5f5f5" } }} onClick={() => field.onChange(checked ? field.value.filter((value) => value !== day.value) : [...field.value, day.value].sort())}>
+                                <Checkbox checked={checked} size="small" sx={{ p: 0, mr: 0.5 }} />
+                                <Typography variant="body2">{day.label}</Typography>
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                        {errors.cronSchedule?.selectedDays?.message && <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>{errors.cronSchedule.selectedDays.message}</Typography>}
+                      </Box>
+                    </Box>
+                  )}
+                />
+              </Grid>
+            )}
+
+            {/* Day of month */}
+            {frequency === "monthly" && (
+              <Grid size={{ xs: 12, md: 4 }}>
+                <FormField label={t("jobSchedule.dayOfMonth")} required error={errors.cronSchedule?.dayOfMonth?.message}>
+                  <Controller
+                    name="cronSchedule.dayOfMonth"
+                    control={control}
+                    rules={{
+                      required: t("jobSchedule.dayOfMonthRequired"),
+                      min: { value: 1, message: t("jobSchedule.dayOfMonthRange") },
+                      max: { value: 31, message: t("jobSchedule.dayOfMonthRange") },
+                    }}
+                    render={({ field }) => (
+                      <TextField {...field} type="number" slotProps={{ htmlInput: { min: 1, max: 31 } }} size="small" fullWidth error={!!errors.cronSchedule?.dayOfMonth} />
+                    )}
+                  />
+                </FormField>
+              </Grid>
+            )}
+
+            {/* Schedule Time */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <FormField label={t("job.form.scheduleTime")} required error={errors.cronSchedule?.scheduleTime?.message}>
+                <Controller name="cronSchedule.scheduleTime" control={control} rules={{ required: t("job.validation.scheduleTimeRequired") }} render={({ field }) => <TextField {...field} type="time" slotProps={{ inputLabel: { shrink: true } }} size="small" fullWidth error={!!errors.cronSchedule?.scheduleTime} />} />
+              </FormField>
+            </Grid>
+
+            {/* Start and end dates */}
+            <Grid size={12}>
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <FormField label={t("job.form.startDate")} required error={errors.cronSchedule?.startDate?.message}>
+                    <Controller name="cronSchedule.startDate" control={control} rules={{ required: t("job.validation.startDateRequired") }} render={({ field }) => <TextField {...field} type="date" slotProps={{ inputLabel: { shrink: true } }} size="small" fullWidth error={!!errors.cronSchedule?.startDate} />} />
+                  </FormField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <FormField label={t("job.form.endDateOptional")}>
+                    <Controller name="cronSchedule.endDate" control={control} render={({ field }) => <TextField {...field} type="date" slotProps={{ inputLabel: { shrink: true } }} size="small" fullWidth />} />
+                  </FormField>
+                </Grid>
+              </Grid>
+            </Grid>
+
+            {/* Buttons */}
+            <Grid size={12}>
+              <Box sx={{ display: "flex", gap: 2, justifyContent: "flex-end", pt: 2, borderTop: "1px solid #e0e0e0" }}>
+                <Button variant="outlined" startIcon={<Cancel />} onClick={handleCancel} disabled={createJob.isPending}>
+                  {t("common.cancel")}
+                </Button>
+                <Button type="submit" variant="contained" color="primary" startIcon={<Save />} disabled={createJob.isPending}>
+                  {createJob.isPending ? t("common.saving") : t("common.save")}
+                </Button>
+              </Box>
+            </Grid>
+          </Grid>
+        </form>
+      </Paper>
+    </Box>
+  );
+}

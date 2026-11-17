@@ -1,0 +1,14 @@
+docker stop oracle-dev
+docker rm oracle-dev
+docker volume rm oracle-dev-data
+
+docker volume create oracle-dev-data
+
+docker run -d \
+  --name oracle-dev \
+  -p 1521:1521 \
+  -e ORACLE_PASSWORD=SysPass123! \
+  -e APP_USER=trading \
+  -e APP_USER_PASSWORD=TradingPass123! \
+  -v oracle-dev-data:/opt/oracle/oradata \
+  gvenzl/oracle-xe:latest

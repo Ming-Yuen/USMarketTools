@@ -1,0 +1,32 @@
+<configuration>
+    <logger name="com.demo" level="DEBUG"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{35} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- 每天 rollover，一天一個檔 -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!-- 當天正在寫入的檔案名稱 -->
+        <file>demo-spring-boot.log</file>
+
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- 歸檔檔名：demo-spring-boot.2026-03-11.log 這樣 -->
+            <fileNamePattern>logs/demo-spring-boot.%d{yyyy-MM-dd}.log</fileNamePattern>
+
+            <!-- 可選：最多保留 30 天 -->
+            <maxHistory>730</maxHistory>
+        </rollingPolicy>
+
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{35} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="FILE" />
+    </root>
+</configuration>

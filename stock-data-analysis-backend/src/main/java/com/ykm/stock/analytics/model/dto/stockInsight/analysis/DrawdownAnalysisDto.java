@@ -1,0 +1,3 @@
+package com.ykm.stock.analytics.model.dto.stockInsight.analysis;
+import java.math.BigDecimal; import java.util.List;
+public record DrawdownAnalysisDto(MetricResult<BigDecimal> availableHistoryHighDrawdown, MetricResult<BigDecimal> drawdown252, MetricResult<BigDecimal> majorHighDrawdown, MetricResult<BigDecimal> maximumCloseDrawdown, MetricResult<BigDecimal> completedCorrectionMedian, List<CorrectionEpisodeDto> completedEpisodes, CorrectionEpisodeDto currentEpisode, List<AnalysisReasonDto> reasons) { public DrawdownAnalysisDto { completedEpisodes=completedEpisodes==null?List.of():List.copyOf(completedEpisodes); reasons=reasons==null?List.of():List.copyOf(reasons); } }

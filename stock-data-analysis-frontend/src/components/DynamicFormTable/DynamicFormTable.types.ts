@@ -1,0 +1,48 @@
+import React from "react";
+
+export interface Column {
+  id: string;
+  label: string;
+  type?: "text" | "number" | "select" | "date" | "datetime" | "checkbox";
+  translateValue?: boolean;
+  selectOptions?: { label: string; value: string | number }[];
+  width?: number | string;
+  render?: (
+    value: any,
+    row: any,
+    index: number,
+    extraProps?: any
+  ) => React.ReactNode;
+  filter?: (value: any, row: any) => boolean;
+  isActionColumn?: boolean;
+  sortable?: boolean;
+  sourceDateFormat?: string;
+  displayDateFormat?: string;
+  uppercase?: boolean;
+  onChange?: (value: any, row: Record<string, any>) => void | Promise<void>;
+}
+
+export interface DynamicFormTableProps {
+  columns: Column[];
+  initialRows?: Record<string, any>[];
+  onRowsChange?: (rows: Record<string, any>[]) => void;
+  data?: Record<string, any>[];
+  loading?: boolean;
+  error?: Error | null;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  maxHeight?: number | string;
+  enableInfiniteScroll?: boolean;
+  extraRenderProps?: any;
+  pageKey: string;
+  toolbarActions?: React.ReactNode;
+  onSearch?: (criteria: Record<string, any>) => void;
+  onRowDoubleClick?: (row: Record<string, any>) => void;
+
+  // 搜尋欄位變更時通知父層
+  onSearchFieldChange?: (
+    fieldId: string,
+    value: any,
+    allSearchValues: Record<string, any>
+  ) => void;
+}

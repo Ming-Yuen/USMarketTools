@@ -23,43 +23,37 @@ import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
 import com.ykm.stock.analytics.service.valuation.FinancialReportValuationCalculator;
 import com.ykm.stock.analytics.service.valuation.FinancialReportValuationCalculator.ReportValues;
+import com.ykm.stock.analytics.service.valuation.IndustryValuationProposalService;
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator;
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.Flow;
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.Flows;
 import jakarta.persistence.EntityManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component(TaskCode.STOCK_VALUATION_DAILY)
 @DisallowConcurrentExecution
-@RequiredArgsConstructor
 @Slf4j
 public class StockValuationDailyTask implements Job {
     private static final int BATCH_SIZE = 100;
-    private static final String EDGAR_CACHE_NOT_READY = "SEC_EDGAR_FEED_CACHE_NOT_READY";
-    private static final Pattern NAMED_SHARE_CLASS = Pattern.compile("(?i)\\bclass\\s+([a-z0-9]+)\\b");
-    // 富途銀行及承保產業；保險經紀的營運模式不在此列。
-    private static final Set<String> FINANCIAL_INSTITUTION_PLATES = Set.of(
-            "US.LIST2481", "US.LIST2456", "US.LIST2429", "US.LIST2512", "US.LIST2484", "US.LIST2467", "US.LIST2465");
-    private static final Set<String> FINANCIAL_INSTITUTION_SICS = Set.of("6021", "6022", "6029", "6035", "6036", "6712",
-            "6311", "6321", "6324", "6331", "6351", "6361", "6399");
+    private static final BigDecimal TWO_PERCENT = new BigDecimal("0.02");
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
     private final StockQuoteRepository quotes;
@@ -78,10 +72,50 @@ public class StockValuationDailyTask implements Job {
     private final SecFinancialStatementArchive statementArchives;
     private final SecEdgarFeedArchive edgarFeed;
     private final SecIssuerHistory issuerHistory;
+    private final IndustryValuationConfigRepository industryConfigs;
     private final FinancialReportValuationCalculator calculator = new FinancialReportValuationCalculator();
     private final SecFinancialFactsCalculator secCalculator = new SecFinancialFactsCalculator();
     @Value("${valuation.history-start-date:2016-01-01}")
     private LocalDate historyStartDate = LocalDate.of(2016, 1, 1);
+
+    public StockValuationDailyTask(StockRepository stocks, StockStatusRepository statuses, StockQuoteRepository quotes,
+                                   StockSplitRepository splits, FinancialReportRepository reports, FinancialReportItemMappingRepository mappings,
+                                   StockValuationDailyRepository valuations, TransactionTemplate transactions, DateTimeService dateTimeService,
+                                   MarketStatusService calendar, StockShareObservationRepository shareObservations, FutuService futu,
+                                   EntityManager entityManager, SecFinancialFactRepository secFacts, StockIndustryHistoryRepository industries,
+                                   SecFinancialStatementArchive statementArchives, SecEdgarFeedArchive edgarFeed, SecIssuerHistory issuerHistory) {
+        this(stocks, statuses, quotes, splits, reports, mappings, valuations, transactions, dateTimeService, calendar,
+                shareObservations, futu, entityManager, secFacts, industries, statementArchives, edgarFeed, issuerHistory, null);
+    }
+
+    @Autowired
+    public StockValuationDailyTask(StockRepository stocks, StockStatusRepository statuses, StockQuoteRepository quotes,
+                                   StockSplitRepository splits, FinancialReportRepository reports, FinancialReportItemMappingRepository mappings,
+                                   StockValuationDailyRepository valuations, TransactionTemplate transactions, DateTimeService dateTimeService,
+                                   MarketStatusService calendar, StockShareObservationRepository shareObservations, FutuService futu,
+                                   EntityManager entityManager, SecFinancialFactRepository secFacts, StockIndustryHistoryRepository industries,
+                                   SecFinancialStatementArchive statementArchives, SecEdgarFeedArchive edgarFeed, SecIssuerHistory issuerHistory,
+                                   IndustryValuationConfigRepository industryConfigs) {
+        this.stocks = stocks;
+        this.statuses = statuses;
+        this.quotes = quotes;
+        this.splits = splits;
+        this.reports = reports;
+        this.mappings = mappings;
+        this.valuations = valuations;
+        this.transactions = transactions;
+        this.dateTimeService = dateTimeService;
+        this.calendar = calendar;
+        this.shareObservations = shareObservations;
+        this.futu = futu;
+        this.entityManager = entityManager;
+        this.secFacts = secFacts;
+        this.industries = industries;
+        this.statementArchives = statementArchives;
+        this.edgarFeed = edgarFeed;
+        this.issuerHistory = issuerHistory;
+        this.industryConfigs = industryConfigs;
+    }
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -143,118 +177,39 @@ public class StockValuationDailyTask implements Job {
         return ciks;
     }
 
-    // 只準備估值水位之後、已有行情且落在 EDGAR 下載範圍的交易日。
-    Map<Instant, List<SecFinancialFact>> pendingEdgarFilings(Instant knownAt, LocalDate firstFeedDate) {
-        List<ActiveStockWithStatus> targets = stocks.findValuationStocks(ActiveStatus.ACTIVE);
-        if (targets.isEmpty()) return Map.of();
-        LocalDate lastClosed = calendar.getLastClosedTradingDay(knownAt);
-        LocalDate from = firstFeedDate.isAfter(historyStartDate) ? firstFeedDate : historyStartDate;
-        List<String> figis = targets.stream().map(target -> target.stock().getFigi()).toList();
-        TreeMap<LocalDate, LinkedHashMap<String, ActiveStockWithStatus>> days = planDates(
-                targets, null, lastClosed, firstQuoteDates(figis), from);
-        if (days.isEmpty()) return Map.of();
+    private static final String EDGAR_CACHE_NOT_READY = "SEC_EDGAR_FEED_CACHE_NOT_READY";
 
-        Set<String> ciks = valuationCiks(targets, figis, days.firstKey(), days.lastKey());
-        if (ciks.isEmpty()) return Map.of();
-        Function<List<SecFinancialFact>, Set<FactKey>> depreciation = statementArchives.loadDepreciation(ciks);
-        Map<String, List<FilingIndustry>> filingIndustries = statementArchives.filingIndustries(ciks);
-        Map<String, List<ClassFact>> classFacts = statementArchives.classFacts(ciks);
-        List<FinancialReportItemMapping> catalog = mappings.findAll();
-        Map<Instant, List<SecFinancialFact>> byClose = new LinkedHashMap<>();
-        for (Map.Entry<LocalDate, LinkedHashMap<String, ActiveStockWithStatus>> entry : days.entrySet()) {
-            LocalDate day = entry.getKey();
-            Instant cutoff = calendar.getSessionCloseAt(day);
-            List<ActiveStockWithStatus> daily = List.copyOf(entry.getValue().values());
-            Map<FactKey, SecFinancialFact> pending = new LinkedHashMap<>();
-            for (int start = 0; start < daily.size(); start += BATCH_SIZE) {
-                List<ActiveStockWithStatus> batch = daily.subList(start, Math.min(start + BATCH_SIZE, daily.size()));
-                List<PreparedValuation> prepared = prepareBatch(batch, day, cutoff, knownAt, lastClosed, catalog,
-                        depreciation, filingIndustries, classFacts);
-                collectPendingDepreciation(prepared, pending);
-            }
-            if (!pending.isEmpty()) byClose.put(cutoff, List.copyOf(pending.values()));
-        }
-        return byClose;
+    Map<Instant, List<SecFinancialFact>> pendingEdgarFilings(Instant knownAt, LocalDate firstFeedDate) {
+        return Map.of();
     }
 
     private Set<LocalDate> calculateAndSaveValuations(TreeMap<LocalDate, LinkedHashMap<String, ActiveStockWithStatus>> days,
                                                      LocalDate lastClosed, List<ActiveStockWithStatus> targets, List<String> figis,
                                                      Set<String> rebuildFigis, boolean incremental) {
         Instant calculatedAt = dateTimeService.now();
-        List<FinancialReportItemMapping> catalog = mappings.findAll();
-        Set<String> ciks = valuationCiks(targets, figis, days.firstKey(), days.lastKey());
-        Function<List<SecFinancialFact>, Set<FactKey>> depreciation = statementArchives.loadDepreciation(ciks);
-        SecEdgarFeedArchive.Session feed = edgarFeed.session();
-        Map<String, List<FilingIndustry>> filingIndustries = statementArchives.filingIndustries(ciks);
-        Map<String, List<ClassFact>> classFacts = statementArchives.classFacts(ciks);
-
-        Set<LocalDate> failedFeedDays = new TreeSet<>();
         for (Map.Entry<LocalDate, LinkedHashMap<String, ActiveStockWithStatus>> entry : days.entrySet()) {
             LocalDate day = entry.getKey();
             Instant cutoff = calendar.getSessionCloseAt(day);
             List<ActiveStockWithStatus> daily = List.copyOf(entry.getValue().values());
             for (int start = 0; start < daily.size(); start += BATCH_SIZE) {
                 List<ActiveStockWithStatus> batch = daily.subList(start, Math.min(start + BATCH_SIZE, daily.size()));
-                List<PreparedValuation> prepared = prepareBatch(batch, day, cutoff, calculatedAt, lastClosed, catalog,
-                        depreciation, filingIndustries, classFacts);
+                List<PreparedValuation> prepared = prepareBatch(batch, day, cutoff, calculatedAt, lastClosed);
                 if (prepared.isEmpty()) continue;
-                SecEdgarFeedArchive.Confirmation confirmed = confirmDepreciation(prepared, feed, day, cutoff, calculatedAt);
-                List<LocalDate> failures = confirmed == null ? List.of() : confirmed.failedDates();
-                failedFeedDays.addAll(failures);
-                Map<String, ConfirmedValuation> finalValues = applyConfirmedDepreciation(prepared, day, cutoff, calculatedAt, depreciation, confirmed);
-                Set<FactKey> missing = confirmed == null ? Set.of() : confirmed.missingFacts();
-                executeBatch(prepared, day, cutoff, calculatedAt, lastClosed, rebuildFigis, finalValues, missing, !failures.isEmpty(), incremental);
+                executeBatch(prepared, day, cutoff, calculatedAt, lastClosed, rebuildFigis, Map.of(), Set.of(), false, incremental);
             }
         }
-        return failedFeedDays;
+        return Set.of();
     }
 
     private record ValuationInputs(Stock stock, StockQuote quote, List<ReportValues> reports, Instant futuObservedAt,
-                                   StockShareObservation shares, SecFinancialFact filingShares, boolean requiresClassShares, Flow classEps,
-                                   boolean financialInstitution, boolean securitiesBroker, String cik, List<SecFinancialFact> facts,
-                                   BigDecimal issuerMarketCap) {}
+                                   StockShareObservation shares, SecFinancialFact filingShares, boolean multiSecurityIssuer,
+                                   boolean verifiedOneToOneShareBasis, boolean financialInstitution, String cik,
+                                   List<SecFinancialFact> rawCikFacts, List<SecFinancialFact> facts) {}
 
     private record PreparedValuation(ValuationInputs inputs, StockStatus status, List<StockSplit> adjustments, boolean useCloseSnapshot,
                                       Flows secFinancials, List<SecFinancialFact> pendingDepreciation, StockValuationDaily row) {}
 
     private record ConfirmedValuation(StockValuationDaily row, Flows financials) {}
-
-    private SecEdgarFeedArchive.Confirmation confirmDepreciation(List<PreparedValuation> batch, SecEdgarFeedArchive.Session feed,
-                                                               LocalDate day, Instant cutoff, Instant calculatedAt) {
-        Map<FactKey, SecFinancialFact> pending = new LinkedHashMap<>();
-        collectPendingDepreciation(batch, pending);
-        if (pending.isEmpty()) return null;
-        boolean hasLaterRevision = pending.values().stream().anyMatch(fact -> fact.getAvailableFromDate().isAfter(day));
-        return feed.confirm(pending.values(), hasLaterRevision ? calculatedAt : cutoff);
-    }
-
-    private void collectPendingDepreciation(List<PreparedValuation> batch, Map<FactKey, SecFinancialFact> pending) {
-        for (PreparedValuation valuation : batch) {
-            for (SecFinancialFact fact : valuation.pendingDepreciation()) pending.putIfAbsent(SecFinancialFactConverter.key(fact), fact);
-        }
-    }
-
-    private Map<String, ConfirmedValuation> applyConfirmedDepreciation(List<PreparedValuation> batch, LocalDate day, Instant cutoff, Instant calculatedAt,
-                                                              Function<List<SecFinancialFact>, Set<FactKey>> depreciation,
-                                                              SecEdgarFeedArchive.Confirmation confirmed) {
-        if (confirmed == null) return Map.of();
-        Function<List<SecFinancialFact>, Set<FactKey>> supplemented = facts -> {
-            Set<FactKey> keys = new HashSet<>(depreciation.apply(facts));
-            keys.addAll(confirmed.facts().apply(facts));
-            return keys;
-        };
-        Map<String, ConfirmedValuation> results = new HashMap<>();
-        for (PreparedValuation result : batch) {
-            if (result.pendingDepreciation().isEmpty() || confirmed.facts().apply(result.pendingDepreciation()).isEmpty()) continue;
-            ValuationInputs inputs = result.inputs();
-            Flows secFinancials = secCalculator.calculateSelectedFacts(inputs.facts(), inputs.cik(), inputs.stock().getCurrency(), day, calculatedAt,
-                    inputs.reports(), supplemented, ignored -> {});
-            StockValuationDaily row = valuationRow(inputs, result.status(), result.adjustments(), day, cutoff, calculatedAt,
-                    result.useCloseSnapshot(), secFinancials);
-            results.put(row.getFigi(), new ConfirmedValuation(row, secFinancials));
-        }
-        return results;
-    }
 
     private void executeBatch(List<PreparedValuation> batch, LocalDate day, Instant cutoff, Instant calculatedAt,
                               LocalDate lastClosed, Set<String> rebuildFigis, Map<String, ConfirmedValuation> confirmed,
@@ -281,19 +236,36 @@ public class StockValuationDailyTask implements Job {
                 List<ActiveStockWithStatus> batch = supportedTargets.subList(start, Math.min(start + 400, supportedTargets.size()));
                 Map<String, FutuService.ShareSnapshot> downloaded = session.shareCounts(batch.stream().map(row -> row.stock().getSymbol()).toList());
                 Instant observedAt = dateTimeService.now();
+                LocalDate lastClosed = calendar.getLastClosedTradingDay(observedAt);
+                List<String> batchFigis = batch.stream().map(row -> row.stock().getFigi()).toList();
+                Map<String, StockShareObservation> latestByFigi = shareObservations.findLatestAt(batchFigis, observedAt).stream()
+                        .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
+                Set<String> hasClosingSnapshot = shareObservations.findLatestClosingSnapshotAt(batchFigis,
+                                calendar.getSessionOpenAt(lastClosed), calendar.getSessionCloseAt(lastClosed), observedAt).stream()
+                        .map(StockShareObservation::getFigi).collect(Collectors.toSet());
                 List<StockShareObservation> rows = new ArrayList<>();
                 for (ActiveStockWithStatus target : batch) {
+                    String figi = target.stock().getFigi();
                     FutuService.ShareSnapshot snapshot = downloaded.get(target.stock().getSymbol());
                     if (snapshot == null) {
-                        log.warn("Share snapshot unavailable | figi={} symbol={}", target.stock().getFigi(), target.stock().getSymbol());
+                        log.warn("Share snapshot unavailable | figi={} symbol={}", figi, target.stock().getSymbol());
                         continue;
                     }
+                    StockShareObservation previous = latestByFigi.get(figi);
+                    boolean sharesChanged = previous == null
+                            || previous.getIssuedShares() != snapshot.issuedShares()
+                            || (snapshot.outstandingShares() != null && !Objects.equals(previous.getOutstandingShares(), snapshot.outstandingShares()));
+                    if (!sharesChanged && hasClosingSnapshot.contains(figi)) continue;
                     StockShareObservation observation = new StockShareObservation();
-                    observation.setFigi(target.stock().getFigi());
+                    observation.setFigi(figi);
                     observation.setObservedAt(observedAt);
                     observation.setIssuedShares(snapshot.issuedShares());
+                    observation.setOutstandingShares(snapshot.outstandingShares());
                     observation.setSnapshotPrice(snapshot.price());
                     observation.setSnapshotMarketCap(snapshot.marketCap());
+                    observation.setOutstandingMarketCap(snapshot.outstandingMarketCap());
+                    observation.setPeTtmRate(snapshot.peTtmRate());
+                    observation.setPbRate(snapshot.pbRate());
                     observation.setSnapshotQuoteTime(snapshot.quoteTime());
                     observation.setSource("FUTU");
                     rows.add(observation);
@@ -302,7 +274,7 @@ public class StockValuationDailyTask implements Job {
                     List<String> figis = rows.stream().map(StockShareObservation::getFigi).toList();
                     if (statuses.findAllByIdForUpdate(figis).size() != rows.size()) throw new IllegalStateException("SHARE_OBSERVATION_STOCK_STATUS_MISSING");
                     for (StockShareObservation row : rows) entityManager.persist(row);
-                    entityManager.flush(); // 使用已配置的 JDBC batch，避免 assigned ID saveAll 每行先 SELECT。
+                    entityManager.flush();
                 });
                 saved += rows.size();
             }
@@ -351,14 +323,11 @@ public class StockValuationDailyTask implements Job {
         days.computeIfAbsent(day, key -> new LinkedHashMap<>()).putIfAbsent(target.stock().getFigi(), target);
     }
 
-    private List<PreparedValuation> prepareBatch(List<ActiveStockWithStatus> targets, LocalDate day, Instant cutoff, Instant calculatedAt,
-                                                 LocalDate lastClosed, List<FinancialReportItemMapping> catalog,
-                                                 Function<List<SecFinancialFact>, Set<FactKey>> depreciation, Map<String, List<FilingIndustry>> filingIndustries,
-                                                 Map<String, List<ClassFact>> classFacts) {
+    private List<PreparedValuation> prepareBatch(List<ActiveStockWithStatus> targets, LocalDate day, Instant cutoff,
+                                                 Instant calculatedAt, LocalDate lastClosed) {
         List<String> figis = targets.stream().map(row -> row.stock().getFigi()).toList();
         Map<String, StockQuote> prices = quotes.findStoredQuotes(figis, day).stream().collect(Collectors.toMap(StockQuote::getFigi, row -> row));
         List<StockValuationDaily> existing = valuations.findByFigiInAndValuationDate(figis, day);
-        // 使用股票已識別的發行人；重算優先沿用當日紀錄，財報另按本輪取得時間及目標財季篩選。
         Map<String, String> eligibleCiks = secIssuerCiks(targets, existing, day);
         List<String> ciks = eligibleCiks.values().stream().distinct().toList();
         List<FinancialReport> source = reports.findValuationReports(figis, day, calculatedAt);
@@ -370,33 +339,36 @@ public class StockValuationDailyTask implements Job {
         Map<String, List<SecFinancialFact>> byCik = ciks.isEmpty() ? Map.of()
                 : secFacts.findValuationFlows(ciks, SecFinancialFactsCalculator.INPUT_TAGS, day, calculatedAt).stream()
                         .collect(Collectors.groupingBy(SecFinancialFact::getCik));
-        Map<String, BigDecimal> issuerMarketCaps = issuerMarketCaps(multiSecurityIssuers, byCik, classFacts, day, calculatedAt);
+
         Map<String, String> industryPlates = new HashMap<>();
+        Map<String, String> industryCodes = new HashMap<>();
         for (StockIndustryHistory history : industries.findByFigisAt(figis, cutoff)) {
-            String plate = history.getIndustry().getSourcePlateCode();
-            if (plate != null) industryPlates.put(history.getFigi(), plate);
+            if (history.getIndustry() != null) {
+                industryCodes.put(history.getFigi(), history.getIndustry().getCode());
+                if (history.getIndustry().getSourcePlateCode() != null) {
+                    industryPlates.put(history.getFigi(), history.getIndustry().getSourcePlateCode());
+                }
+            }
         }
-        Set<String> financialInstitutions = industryPlates.entrySet().stream().filter(entry -> FINANCIAL_INSTITUTION_PLATES.contains(entry.getValue()))
-                .map(Map.Entry::getKey).collect(Collectors.toSet());
-        Set<String> securitiesBrokers = new HashSet<>();
-        Set<String> withSecIndustry = new HashSet<>();
-        eligibleCiks.forEach((figi, cik) -> filingIndustries.getOrDefault(cik, List.of()).stream()
-                .filter(filing -> filing.filed().isBefore(day)).findFirst().ifPresent(filing -> {
-                    withSecIndustry.add(figi);
-                    String plate = industryPlates.get(figi);
-                    if (plate == null && FINANCIAL_INSTITUTION_SICS.contains(filing.sic())) financialInstitutions.add(figi);
-                    // SEC 6211 也包含部分資產管理公司，只用來細分富途資本市場或補缺。
-                    if ("6211".equals(filing.sic()) && (plate == null || "US.LIST2260".equals(plate))) securitiesBrokers.add(figi);
-                }));
-        // 富途與 SEC 季包都無產業分類時，使用股票主檔已同步的 SEC 4 碼 SIC 補充金融機構判定。
+        Map<String, String> configuredModels = new HashMap<>();
+        if (industryConfigs != null && !industryCodes.isEmpty()) {
+            for (IndustryValuationConfig cfg : industryConfigs.findByIndustryCodesAt(Set.copyOf(industryCodes.values()), cutoff)) {
+                if (cfg.getModelCode() != null) configuredModels.put(cfg.getIndustryCode(), cfg.getModelCode());
+            }
+        }
+        Set<String> financialInstitutions = new HashSet<>();
         for (ActiveStockWithStatus target : targets) {
             String figi = target.stock().getFigi();
-            String sic = target.stock().getSic();
-            if (!industryPlates.containsKey(figi) && !withSecIndustry.contains(figi)
-                    && sic != null && FINANCIAL_INSTITUTION_SICS.contains(sic)) financialInstitutions.add(figi);
-            if ("6211".equals(sic) && (!industryPlates.containsKey(figi) || "US.LIST2260".equals(industryPlates.get(figi))))
-                securitiesBrokers.add(figi);
+            String code = industryCodes.get(figi);
+            String model = IndustryValuationProposalService.resolveModelCode(
+                    code == null ? null : configuredModels.get(code),
+                    industryPlates.get(figi),
+                    target.stock().getSic());
+            if (IndustryValuationProposalService.isFinancialInstitutionModel(model)) {
+                financialInstitutions.add(figi);
+            }
         }
+
         List<StockShareObservation> observations = day.equals(lastClosed)
                 ? latestCloseShares(targets, prices, day, cutoff, calculatedAt)
                 : shareObservations.findLatestAt(figis, cutoff);
@@ -407,6 +379,11 @@ public class StockValuationDailyTask implements Job {
             for (StockShareObservation observation : shareObservations.findPreviouslyUsedAfterClose(figis, day, calculatedAt))
                 shares.put(observation.getFigi(), observation);
         }
+
+        // 多股類 1:1 經濟權驗證：比對最新等值股數與同日拆股調整後之 SEC 申報總股數（誤差 <= 2%）。
+        Set<String> verifiedOneToOneFigis = resolveVerifiedOneToOneMultiClassFigis(
+                targets, eligibleCiks, multiSecurityIssuers, byCik, adjustments, calculatedAt);
+
         Map<String, StockValuationDaily> previous = existing.stream()
                 .collect(Collectors.toMap(StockValuationDaily::getFigi, row -> row));
         List<PreparedValuation> prepared = new ArrayList<>();
@@ -415,8 +392,9 @@ public class StockValuationDailyTask implements Job {
             String figi = stock.getFigi();
             String cik = eligibleCiks.get(figi);
             List<StockSplit> events = adjustments.getOrDefault(figi, List.of());
-            List<SecFinancialFact> facts = cik == null ? List.of() : byCik.getOrDefault(cik, List.of()).stream()
-                    .filter(fact -> !"EarningsPerShareDiluted".equals(fact.getTag())
+            List<SecFinancialFact> rawCikFacts = cik == null ? List.of() : byCik.getOrDefault(cik, List.of());
+            List<SecFinancialFact> facts = rawCikFacts.stream()
+                    .filter(fact -> !Set.of("EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted").contains(fact.getTag())
                             || fact.getAvailableFromDate() == null || !fact.getAvailableFromDate().isAfter(day)
                             || !splitBetween(events, day, fact.getFiled())).toList();
             List<ReportValues> values = financials.getOrDefault(figi, List.of());
@@ -428,87 +406,72 @@ public class StockValuationDailyTask implements Job {
                     && value.periodType() == report.getPeriodType() && Objects.equals(value.fiscalYear(), report.getFiscalYear())))
                     .map(FinancialReport::getObservedAt).max(Comparator.naturalOrder()).orElse(null);
             StockQuote quote = prices.get(figi);
-            // 富途快照及 Company Facts 都可能給整家公司股數；同一 CIK 的股類不能共用。
-            boolean requiresClassShares = cik != null && multiSecurityIssuers.contains(cik)
-                    || stock.getLongName() != null && NAMED_SHARE_CLASS.matcher(stock.getLongName()).find();
-            List<ClassFact> disclosures = cik == null ? List.of() : classFacts.getOrDefault(cik, List.of());
-            Flow classEps = null;
-            SecFinancialFact filingShares = null;
-            if (cik != null) {
-                if (requiresClassShares) {
-                    classEps = filingClassEps(stock, disclosures, facts, day, calculatedAt);
-                    filingShares = filingClassShares(stock, disclosures, day, calculatedAt);
-                } else filingShares = selectFilingShares(facts, day, calculatedAt);
-            }
-            StockShareObservation observation = requiresClassShares ? null : shares.get(figi);
+            boolean multiSecurityIssuer = cik != null && multiSecurityIssuers.contains(cik);
+            boolean verifiedOneToOne = verifiedOneToOneFigis.contains(figi);
+            SecFinancialFact filingShares = cik == null ? null : selectFilingShares(facts, day, calculatedAt);
+            StockShareObservation observation = shares.get(figi);
             StockValuationDaily old = previous.get(figi);
             boolean useCloseSnapshot = useCloseSnapshot(day, lastClosed, old, observation);
             boolean financialInstitution = financialInstitutions.contains(figi);
-            boolean securitiesBroker = securitiesBrokers.contains(figi);
-            List<SecFinancialFact> pending = new ArrayList<>();
-            Flows secFinancials = facts.isEmpty() ? null : secCalculator.calculateSelectedFacts(facts, cik, stock.getCurrency(), day,
-                    calculatedAt, values, depreciation, pending::add);
-            ValuationInputs inputs = new ValuationInputs(stock, quote, values, financialObservedAt, observation, filingShares, requiresClassShares,
-                    classEps, financialInstitution, securitiesBroker, cik, facts, cik == null ? null : issuerMarketCaps.get(cik));
-            StockValuationDaily row = valuationRow(inputs, target.status(), events, day, cutoff, calculatedAt, useCloseSnapshot, secFinancials);
-            if (!SecFinancialFactsCalculator.DEPRECIATION_SCOPE_UNRESOLVED.equals(row.getEvEbitdaReason())) pending.clear();
-            prepared.add(new PreparedValuation(inputs, target.status(), events, useCloseSnapshot, secFinancials, pending, row));
+            Flows secFinancials = facts.isEmpty() ? null : secCalculator.calculateSelectedFacts(
+                    facts, cik, stock.getSic(), stock.getCurrency(), day, calculatedAt, values);
+            ValuationInputs inputs = new ValuationInputs(stock, quote, values, financialObservedAt, observation, filingShares,
+                    multiSecurityIssuer, verifiedOneToOne, financialInstitution, cik, rawCikFacts, facts);
+            StockValuationDaily row = valuationRow(inputs, target.status(), events, day, cutoff, calculatedAt, lastClosed, useCloseSnapshot, secFinancials);
+            prepared.add(new PreparedValuation(inputs, target.status(), events, useCloseSnapshot, secFinancials, List.of(), row));
         }
         return prepared;
     }
 
+    private Set<String> resolveVerifiedOneToOneMultiClassFigis(List<ActiveStockWithStatus> targets, Map<String, String> eligibleCiks,
+                                                               Set<String> multiSecurityIssuers, Map<String, List<SecFinancialFact>> byCik,
+                                                               Map<String, List<StockSplit>> adjustments, Instant calculatedAt) {
+        if (multiSecurityIssuers.isEmpty()) return Set.of();
+        List<String> multiFigis = targets.stream().map(t -> t.stock().getFigi())
+                .filter(figi -> eligibleCiks.get(figi) != null && multiSecurityIssuers.contains(eligibleCiks.get(figi))).toList();
+        if (multiFigis.isEmpty()) return Set.of();
+        Map<String, StockShareObservation> latestObs = shareObservations.findLatestAt(multiFigis, calculatedAt).stream()
+                .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
+        Map<String, SecFinancialFact> latestSecSharesByCik = new HashMap<>();
+        for (SecFinancialFact fact : secFacts.findLatestIssuerShareFacts(multiSecurityIssuers, calculatedAt)) {
+            latestSecSharesByCik.putIfAbsent(fact.getCik(), fact);
+        }
+        for (String cik : multiSecurityIssuers) {
+            if (latestSecSharesByCik.containsKey(cik)) continue;
+            SecFinancialFact fallback = selectLatestKnownShareFact(byCik.getOrDefault(cik, List.of()), calculatedAt);
+            if (fallback != null) latestSecSharesByCik.put(cik, fallback);
+        }
+        Set<String> verified = new HashSet<>();
+        for (String figi : multiFigis) {
+            StockShareObservation obs = latestObs.get(figi);
+            String cik = eligibleCiks.get(figi);
+            SecFinancialFact secShare = latestSecSharesByCik.get(cik);
+            if (obs == null || secShare == null || secShare.getValue() == null || secShare.getValue().signum() <= 0) continue;
+            BigDecimal equivShares = obs.effectiveMarketCap() != null && obs.getSnapshotPrice() != null && obs.getSnapshotPrice().signum() > 0
+                    ? obs.effectiveMarketCap().divide(obs.getSnapshotPrice(), MathContext.DECIMAL128)
+                    : BigDecimal.valueOf(obs.effectiveShares());
+            LocalDate obsDate = obs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+            List<StockSplit> splitsForFigi = adjustments.getOrDefault(figi, List.of());
+            BigDecimal adjSecShares = secShare.getValue()
+                    .multiply(StockSplitCalculator.shareFactor(splitsForFigi, secShare.getPeriodEnd(), obsDate), MathContext.DECIMAL128);
+            if (adjSecShares.signum() <= 0) continue;
+            BigDecimal relDiff = equivShares.subtract(adjSecShares).abs().divide(adjSecShares, MathContext.DECIMAL128);
+            if (relDiff.compareTo(TWO_PERCENT) <= 0) verified.add(figi);
+        }
+        return verified;
+    }
+
+    private SecFinancialFact selectLatestKnownShareFact(List<SecFinancialFact> facts, Instant calculatedAt) {
+        List<SecFinancialFact> counts = facts.stream().filter(fact -> "shares".equals(fact.getUnit())
+                && fact.getPeriodStart() == null && fact.getPeriodEnd() != null && fact.getFiled() != null
+                && !fact.getPeriodEnd().isAfter(fact.getFiled())
+                && fact.getObservedAt() != null && !fact.getObservedAt().isAfter(calculatedAt)
+                && ("CommonStockSharesOutstanding".equals(fact.getTag()) || "EntityCommonStockSharesOutstanding".equals(fact.getTag()))).toList();
+        return latestShareCount(counts);
+    }
+
     private boolean splitBetween(List<StockSplit> splits, LocalDate after, LocalDate through) {
         return splits.stream().anyMatch(split -> split.getExecutionDate().isAfter(after) && !split.getExecutionDate().isAfter(through));
-    }
-
-    private Map<String, BigDecimal> issuerMarketCaps(Set<String> ciks, Map<String, List<SecFinancialFact>> facts,
-                                                    Map<String, List<ClassFact>> disclosures, LocalDate day, Instant knownAt) {
-        if (ciks.isEmpty()) return Map.of();
-        List<ActiveStockWithStatus> securities = stocks.findIssuerSecurities(ciks, ActiveStatus.ACTIVE);
-        List<String> figis = securities.stream().map(row -> row.stock().getFigi()).toList();
-        if (figis.isEmpty()) return Map.of();
-        Map<String, StockQuote> prices = quotes.findStoredQuotes(figis, day).stream().collect(Collectors.toMap(StockQuote::getFigi, row -> row));
-        Map<String, List<StockSplit>> events = splits.findByFigiInOrderByExecutionDateAsc(figis).stream().collect(Collectors.groupingBy(StockSplit::getFigi));
-        Map<String, BigDecimal> result = new HashMap<>();
-        for (Map.Entry<String, List<ActiveStockWithStatus>> issuer : securities.stream().collect(Collectors.groupingBy(row -> row.stock().getCik())).entrySet()) {
-            String cik = issuer.getKey();
-            SecFinancialFact total = latestShareCount(facts.getOrDefault(cik, List.of()).stream()
-                    .filter(fact -> "CommonStockSharesOutstanding".equals(fact.getTag()) && "shares".equals(fact.getUnit())
-                            && fact.getPeriodStart() == null && !fact.getPeriodEnd().isAfter(fact.getFiled())
-                            && !fact.getAvailableFromDate().isAfter(day) && !fact.getObservedAt().isAfter(knownAt)).toList());
-            if (total == null || issuer.getValue().size() < 2) continue;
-            BigDecimal cap = issuerMarketCap(issuer.getValue(), total, disclosures.getOrDefault(cik, List.of()), prices, events, day, knownAt);
-            if (cap != null) result.put(cik, cap);
-        }
-        return result;
-    }
-
-    private BigDecimal issuerMarketCap(List<ActiveStockWithStatus> securities, SecFinancialFact total, List<ClassFact> disclosures,
-                                       Map<String, StockQuote> prices, Map<String, List<StockSplit>> events, LocalDate day, Instant knownAt) {
-        LocalDate basis = total.getPeriodEnd();
-        BigDecimal shares = BigDecimal.ZERO;
-        BigDecimal value = BigDecimal.ZERO;
-        Set<String> classes = new HashSet<>();
-        String currency = securities.getFirst().stock().getCurrency();
-        for (ActiveStockWithStatus security : securities) {
-            Stock stock = security.stock();
-            StockQuote price = prices.get(stock.getFigi());
-            java.util.regex.Matcher namedClass = NAMED_SHARE_CLASS.matcher(Objects.toString(stock.getLongName(), ""));
-            if (!SecurityTypePolicy.isOperatingCompanyType(stock.getStockType()) || !Objects.equals(stock.getCik(), issuerHistory.cikAt(stock.getCik(), day))
-                    || !sameCurrency(currency, stock.getCurrency()) || !namedClass.find() || !classes.add(namedClass.group(1).toUpperCase(Locale.ROOT))
-                    || price == null || price.getClosePrice() == null || price.getClosePrice().signum() <= 0
-                    || splitCoverageReason(security.status(), basis, day) != null) return null;
-            SecFinancialFact count = filingClassShares(stock, disclosures, day, knownAt);
-            if (count == null || !total.getAccession().equals(count.getAccession()) || !basis.equals(count.getPeriodEnd())) return null;
-            List<StockSplit> splitsForClass = events.getOrDefault(stock.getFigi(), List.of());
-            if (splitsForClass.stream().anyMatch(split -> split.getExecutionDate().isAfter(basis)
-                    && !split.getExecutionDate().isAfter(count.getFiled()))) return null;
-            shares = shares.add(count.getValue());
-            BigDecimal adjusted = count.getValue().multiply(StockSplitCalculator.shareFactor(splitsForClass, basis, day));
-            value = value.add(price.getClosePrice().multiply(adjusted));
-        }
-        // 股類須合計回同份申報的公司股數，才可排除遺漏未上市股類。
-        return shares.compareTo(total.getValue()) == 0 ? value : null;
     }
 
     private void saveBatch(List<PreparedValuation> batch, LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed,
@@ -542,7 +505,7 @@ public class StockValuationDailyTask implements Job {
             boolean splitChanged = !sameSplitCoverage(result.status(), status) || !events.equals(result.adjustments());
             boolean useCloseSnapshot = useCloseSnapshot(day, lastClosed, old, inputs.shares());
             if (splitChanged || result.useCloseSnapshot() != useCloseSnapshot) {
-                row = valuationRow(inputs, status, events, day, cutoff, calculatedAt, useCloseSnapshot, secFinancials);
+                row = valuationRow(inputs, status, events, day, cutoff, calculatedAt, lastClosed, useCloseSnapshot, secFinancials);
             }
             if (SecFinancialFactsCalculator.DEPRECIATION_SCOPE_UNRESOLVED.equals(row.getEvEbitdaReason())
                     && result.pendingDepreciation().stream().map(SecFinancialFactConverter::key).anyMatch(missing::contains))
@@ -551,7 +514,7 @@ public class StockValuationDailyTask implements Job {
             boolean retained = false;
             if (!rebuildFigis.contains(figi)) {
                 ValuationUpdate update = reconcile(old, row, status, events, day, calculatedAt,
-                        secFinancials, inputs.requiresClassShares() && row.getSecShareAccession() == null);
+                        secFinancials, inputs.multiSecurityIssuer() && !inputs.verifiedOneToOneShareBasis() && !day.equals(lastClosed));
                 row = update.row();
                 retained = update.retained();
             }
@@ -645,73 +608,6 @@ public class StockValuationDailyTask implements Job {
                 .min(Comparator.comparing(SecFinancialFact::getAccession)).orElse(null);
     }
 
-    private Flow filingClassEps(Stock stock, List<ClassFact> disclosures, List<SecFinancialFact> companyFacts, LocalDate day, Instant calculatedAt) {
-        java.util.regex.Matcher namedClass = NAMED_SHARE_CLASS.matcher(Objects.toString(stock.getLongName(), ""));
-        if (!namedClass.find()) return null;
-        String stockClass = namedClass.group(1);
-        List<SecFinancialFact> eligible = new ArrayList<>();
-        for (ClassFact disclosure : disclosures) {
-            if (!"EarningsPerShareDiluted".equals(disclosure.tag()) || !stockClass.equalsIgnoreCase(disclosure.shareClass())
-                    || disclosure.filed().isAfter(calculatedAt.atZone(java.time.ZoneId.of("America/New_York")).toLocalDate())
-                    || disclosure.reportedEnd() == null || !Objects.equals(stock.getCurrency(), disclosure.unit())
-                    || !Set.of("10-K", "10-K/A", "10-Q", "10-Q/A").contains(disclosure.form())
-                    || disclosure.quarters() < 1 || disclosure.quarters() > 4) continue;
-            Set<List<LocalDate>> dates = new HashSet<>();
-            for (SecFinancialFact companyFact : companyFacts) {
-                if (!disclosure.accession().equals(companyFact.getAccession()) || companyFact.getPeriodStart() == null
-                        || !roundedMonthEnd(companyFact.getPeriodEnd()).equals(disclosure.roundedEnd())) continue;
-                long days = java.time.temporal.ChronoUnit.DAYS.between(companyFact.getPeriodStart(), companyFact.getPeriodEnd()) + 1;
-                if (Math.round(days / (365.25 / 4)) == disclosure.quarters()) dates.add(List.of(companyFact.getPeriodStart(), companyFact.getPeriodEnd()));
-            }
-            if (dates.size() != 1) continue;
-            List<LocalDate> period = dates.iterator().next();
-            SecFinancialFact fact = new SecFinancialFact();
-            fact.setCik(stock.getCik());
-            fact.setTaxonomy("us-gaap");
-            fact.setTag("EarningsPerShareDiluted");
-            fact.setUnit(stock.getCurrency() + "/shares");
-            fact.setAccession(disclosure.accession());
-            fact.setFiled(disclosure.filed());
-            fact.setForm(disclosure.form());
-            fact.setPeriodEnd(period.getLast());
-            fact.setPeriodStart(period.getFirst());
-            fact.setAvailableFromDate(calendar.getNextTradingDay(disclosure.filed()));
-            fact.setObservedAt(calculatedAt);
-            fact.setValue(disclosure.value());
-            eligible.add(fact);
-        }
-        return eligible.isEmpty() ? null : secCalculator.dilutedEps(eligible);
-    }
-
-    private SecFinancialFact filingClassShares(Stock stock, List<ClassFact> disclosures, LocalDate day, Instant calculatedAt) {
-        java.util.regex.Matcher namedClass = NAMED_SHARE_CLASS.matcher(Objects.toString(stock.getLongName(), ""));
-        if (!namedClass.find()) return null;
-        List<SecFinancialFact> eligible = new ArrayList<>();
-        for (ClassFact disclosure : disclosures) {
-            if (!"CommonStockSharesOutstanding".equals(disclosure.tag()) || disclosure.quarters() != 0 || !"shares".equals(disclosure.unit())
-                    || !namedClass.group(1).equalsIgnoreCase(disclosure.shareClass()) || !disclosure.filed().isBefore(day)
-                    || disclosure.reportedEnd() == null || !disclosure.roundedEnd().equals(roundedMonthEnd(disclosure.reportedEnd()))
-                    || !Set.of("10-K", "10-K/A", "10-Q", "10-Q/A").contains(disclosure.form())) continue;
-            LocalDate available = calendar.getNextTradingDay(disclosure.filed());
-            if (available.isAfter(day) || disclosure.reportedEnd().isAfter(disclosure.filed())) continue;
-            SecFinancialFact fact = new SecFinancialFact();
-            fact.setAccession(disclosure.accession());
-            fact.setFiled(disclosure.filed());
-            fact.setPeriodEnd(disclosure.reportedEnd());
-            fact.setAvailableFromDate(available);
-            fact.setObservedAt(calculatedAt);
-            fact.setValue(disclosure.value());
-            eligible.add(fact);
-        }
-        return latestShareCount(eligible);
-    }
-
-    private LocalDate roundedMonthEnd(LocalDate date) {
-        LocalDate previous = date.withDayOfMonth(1).minusDays(1);
-        LocalDate current = java.time.YearMonth.from(date).atEndOfMonth();
-        return date.getDayOfMonth() < current.getDayOfMonth() - date.getDayOfMonth() ? previous : current;
-    }
-
     private Map<String, String> secIssuerCiks(List<ActiveStockWithStatus> targets, List<StockValuationDaily> existing, LocalDate day) {
         Map<String, String> recorded = new HashMap<>();
         Set<String> conflicts = new HashSet<>();
@@ -769,36 +665,33 @@ public class StockValuationDailyTask implements Job {
     private boolean sameCloseSnapshot(StockShareObservation observation, StockQuote quote, LocalDate day, Instant cutoff, Instant calculatedAt) {
         if (observation == null || quote == null || quote.getClosePrice() == null || quote.getClosePrice().signum() <= 0
                 || observation.getSnapshotPrice() == null || observation.getSnapshotPrice().signum() <= 0
-                || observation.getSnapshotMarketCap() == null || observation.getSnapshotMarketCap().signum() <= 0
+                || observation.effectiveMarketCap() == null || observation.effectiveMarketCap().signum() <= 0
                 || observation.getSnapshotQuoteTime() == null || observation.getSnapshotQuoteTime().isBefore(calendar.getSessionOpenAt(day))
                 || observation.getSnapshotQuoteTime().isAfter(cutoff)
                 || observation.getObservedAt().isBefore(cutoff)
                 || observation.getSnapshotQuoteTime().isAfter(observation.getObservedAt()) || observation.getObservedAt().isAfter(calculatedAt)
                 || !observation.getSnapshotQuoteTime().atZone(MarketStatusService.NY_ZONE).toLocalDate().equals(day)) return false;
-        // 按正式行情欄位的八位小數精度核對；不採價格百分比容差或推測拆股比例。
         return observation.getSnapshotPrice().setScale(8, RoundingMode.HALF_UP).compareTo(quote.getClosePrice().setScale(8, RoundingMode.HALF_UP)) == 0;
     }
 
     private StockValuationDaily valuationRow(ValuationInputs inputs, StockStatus status, List<StockSplit> adjustments,
-                                             LocalDate day, Instant cutoff, Instant calculatedAt, boolean useCloseSnapshot, Flows secFinancials) {
+                                             LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed,
+                                             boolean useCloseSnapshot, Flows secFinancials) {
         StockQuote quote = inputs.quote();
         StockValuationDaily row;
         if (quote == null || quote.getClosePrice() == null)
             row = unavailableRow(inputs.stock(), quote, day, cutoff, calculatedAt, "CLOSING_PRICE_MISSING");
         else if (quote.getClosePrice().signum() <= 0)
             row = unavailableRow(inputs.stock(), quote, day, cutoff, calculatedAt, "CLOSING_PRICE_INVALID");
-        else if (inputs.reports().isEmpty() && secFinancials == null && inputs.classEps() == null)
+        else if (inputs.reports().isEmpty() && secFinancials == null)
             row = unavailableRow(inputs.stock(), quote, day, cutoff, calculatedAt, "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
-        else row = calculate(inputs, status, adjustments, day, cutoff, calculatedAt, useCloseSnapshot, secFinancials);
+        else row = calculate(inputs, status, adjustments, day, cutoff, calculatedAt, lastClosed, useCloseSnapshot, secFinancials);
         if (inputs.financialInstitution()) {
             row.setPfcf(null);
             row.setPfcfReason("PFCF_NOT_APPLICABLE_TO_INDUSTRY");
-        }
-        if (inputs.financialInstitution() || inputs.securitiesBroker()) {
             row.setEvEbitda(null);
             row.setEvEbitdaReason("EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY");
         }
-        // Futu 與 SEC 都無法補足的財務輸入，使用不偏向任一來源的最終原因碼。
         row.setPeReason(combinedMissingReason(row.getPeReason()));
         row.setPbReason(combinedMissingReason(row.getPbReason()));
         row.setPsReason(combinedMissingReason(row.getPsReason()));
@@ -1007,7 +900,8 @@ public class StockValuationDailyTask implements Job {
 
     private boolean invalidatesFinancialMetric(String reason) {
         return Set.of("FINANCIAL_CONCEPT_VALUE_CONFLICT", "FINANCIAL_PERIOD_CONFLICT", "REPORTING_CURRENCY_MISMATCH",
-                "VALUATION_DENOMINATOR_ZERO", "NON_POSITIVE_COMMON_EQUITY", "NON_POSITIVE_REVENUE", "NON_POSITIVE_FCF").contains(Objects.toString(reason, ""));
+                "VALUATION_DENOMINATOR_ZERO", "NON_POSITIVE_COMMON_EQUITY", "NON_POSITIVE_REVENUE", "NON_POSITIVE_FCF",
+                "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED").contains(Objects.toString(reason, ""));
     }
 
     private boolean invalidatesSecMetric(String source, String reason) {
@@ -1144,33 +1038,37 @@ public class StockValuationDailyTask implements Job {
     }
 
     private StockValuationDaily calculate(ValuationInputs inputs, StockStatus status, List<StockSplit> adjustments,
-                                          LocalDate day, Instant cutoff, Instant calculatedAt, boolean useCloseSnapshot, Flows secFinancials) {
+                                          LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed,
+                                          boolean useCloseSnapshot, Flows secFinancials) {
         Stock stock = inputs.stock();
         String figi = stock.getFigi();
+        String currency = stock.getCurrency();
         StockQuote quote = inputs.quote();
         List<ReportValues> financials = inputs.reports();
         StockShareObservation observation = inputs.shares();
         SecFinancialFact filingShares = inputs.filingShares();
-        boolean multiSecurityIssuer = inputs.requiresClassShares();
-        Flow classEps = inputs.classEps();
-        boolean futuEpsBasisUnconfirmed = splitBetween(adjustments, day, calculatedAt.atZone(MarketStatusService.NY_ZONE).toLocalDate())
-                && day.isBefore(calendar.getLastClosedTradingDay(calculatedAt));
+        boolean multiSecurityIssuer = inputs.multiSecurityIssuer();
+        boolean verifiedOneToOne = inputs.verifiedOneToOneShareBasis();
+        LocalDate nyKnownDate = calculatedAt.atZone(MarketStatusService.NY_ZONE).toLocalDate();
+        boolean hasSplitAfterDay = splitBetween(adjustments, day, nyKnownDate) && day.isBefore(lastClosed);
+
         ReportValues income = financials.stream().filter(row -> row.statementType() == 1)
                 .max(Comparator.comparing(ReportValues::periodEnd).thenComparingInt(ReportValues::periodType)).orElse(null);
-        MetricResult<BigDecimal> eps = income == null ? null : futuEpsBasisUnconfirmed ? missing("EPS_SPLIT_BASIS_UNCONFIRMED")
+        List<ReportValues> epsReportsSource = financials;
+        MetricResult<BigDecimal> eps = income == null ? null
                 : calculator.trailingTwelveMonths(financials, figi, 1, FinancialConcept.DILUTED_EPS, income.periodEnd(), income.currency());
         LocalDate epsBasisFrom = income == null ? null : calculator.trailingBasisFromDate(financials, figi, 1, income.periodEnd());
         Flow issuerEps = secFinancials == null ? null : secFinancials.dilutedEpsTtm();
-        Flow secEps = classEps != null ? classEps : issuerEps;
+        boolean allowSecIssuerEps = !multiSecurityIssuer || verifiedOneToOne;
+        Flow secEps = allowSecIssuerEps ? issuerEps : null;
         ReportValues epsPeriod = income;
         List<Flow> mixedEpsInputs = new ArrayList<>();
-        boolean newerSecQuarter = income != null && issuerEps != null && issuerEps.periodEnd() != null
+        boolean newerSecQuarter = allowSecIssuerEps && income != null && issuerEps != null && issuerEps.periodEnd() != null
                 && issuerEps.periodEnd().isAfter(income.periodEnd()) && secFinancials != null
                 && secFinancials.missingQuarters().stream().anyMatch(report -> report.statementType() == 1
                         && report.periodEnd().equals(issuerEps.periodEnd()));
-        if ((eps == null || eps.value() == null || newerSecQuarter) && !futuEpsBasisUnconfirmed && !multiSecurityIssuer && income != null
-                && sameCurrency(stock.getCurrency(), income.currency()) && secFinancials != null) {
-            // SEC 最新單季若比已知的 Futu 財報更新，只有在缺季序列可精確接續時才延伸 EPS 的報期。
+        if ((eps == null || eps.value() == null || newerSecQuarter) && allowSecIssuerEps && income != null
+                && sameCurrency(currency, income.currency()) && secFinancials != null) {
             ReportValues latest = secFinancials.missingQuarters().stream().filter(report -> report.statementType() == 1
                     && issuerEps != null && issuerEps.periodEnd() != null
                     && report.periodEnd().equals(issuerEps.periodEnd()) && report.periodEnd().isAfter(income.periodEnd()))
@@ -1180,67 +1078,143 @@ public class StockValuationDailyTask implements Job {
             eps = trailing(combined, latest, FinancialConcept.DILUTED_EPS, income.currency());
             if (eps.value() == null) mixedEpsInputs.clear();
             else {
+                epsReportsSource = combined;
                 epsBasisFrom = calculator.trailingBasisFromDate(combined, figi, 1, latest.periodEnd());
                 epsPeriod = latest;
             }
         }
-        // 缺季混合不是獨立股份基準；若 SEC 已有同報期完整 TTM，優先採用一致的四季 SEC EPS。
+        // 驗證 Futu EPS 的拆股基準：跨越拆股日的報期須經拆股後直接申報 EPS 或加權平均稀釋股數驗證。
+        if (eps != null && eps.value() != null && epsPeriod != null
+                && (hasSplitAfterDay || (epsBasisFrom != null && splitBetween(adjustments, epsBasisFrom, day)))) {
+            if (!verifyFutuEpsPeriods(epsReportsSource, epsPeriod, inputs.rawCikFacts(), currency, adjustments, day, calculatedAt)) {
+                eps = missing("EPS_SPLIT_BASIS_UNCONFIRMED");
+                mixedEpsInputs.clear();
+            }
+        }
         boolean completeSecInsteadOfMixed = !mixedEpsInputs.isEmpty() && secEps != null && secEps.value() != null
                 && epsPeriod != null && epsPeriod.periodEnd().equals(secEps.periodEnd());
-        boolean useSecEps = (!multiSecurityIssuer || classEps != null)
-                && (completeSecInsteadOfMixed || preferSec(secEps, eps, epsPeriod));
+        boolean useSecEps = allowSecIssuerEps && (completeSecInsteadOfMixed || preferSec(secEps, eps, epsPeriod));
         if (useSecEps) {
             eps = secMetric(secEps);
             epsBasisFrom = secEps.epsBasisFrom();
         }
         String peReason = eps == null ? "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE" : reason(eps);
-        if (eps == null && secEps != null) {
-            if (multiSecurityIssuer && secEps.periodEnd() != null) peReason = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
-            else if (secEps.reason() != null) peReason = secEps.reason();
+        if (eps == null && issuerEps != null) {
+            if (!allowSecIssuerEps && issuerEps.periodEnd() != null) peReason = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
+            else if (issuerEps.reason() != null) peReason = issuerEps.reason();
         }
-        if (peReason == null) peReason = shareBasisReason(status, adjustments, epsBasisFrom, day);
-        String currency = stock.getCurrency();
+        if (peReason == null) {
+            String coverage = splitCoverageReason(status, epsBasisFrom, day);
+            if (coverage != null) {
+                peReason = coverage;
+            } else if (epsBasisFrom == null) {
+                peReason = "EPS_SOURCE_PERIOD_MISSING";
+            } else if (useSecEps && splitBetween(adjustments, epsBasisFrom, day)) {
+                if (!verifySecEpsFlow(secEps, inputs.rawCikFacts(), currency, adjustments, day, calculatedAt)) {
+                    peReason = "EPS_SPLIT_BASIS_UNCONFIRMED";
+                }
+            }
+        }
         if (!useSecEps && income != null && !sameCurrency(currency, income.currency())) peReason = "REPORTING_CURRENCY_MISMATCH";
         LocalDate peEnd = useSecEps ? secEps.periodEnd() : epsPeriod == null ? null : epsPeriod.periodEnd();
-        if (multiSecurityIssuer && issuerEps != null && issuerEps.periodEnd() != null
-                && (peEnd == null || issuerEps.periodEnd().isAfter(peEnd))) {
+        if (!allowSecIssuerEps && (eps == null || eps.value() == null) && issuerEps != null && issuerEps.periodEnd() != null) {
             peReason = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
             peEnd = issuerEps.periodEnd();
-            useSecEps = false;
-            epsBasisFrom = null;
         }
-        BigDecimal shares = null;
+
+        // 市值計算：單一普通股採流通股數；多股類最新估值採富途對應等值總市值，歷史估值依 2% 經濟權準則判定。
         BigDecimal marketCap = null;
         String marketCapSource = null;
         String sharesReason = "VALUATION_DATE_SHARES_MISSING";
         boolean useFilingShares = false;
-        if (useCloseSnapshot && sameCloseSnapshot(observation, quote, day, cutoff, calculatedAt)) {
-            // 採來源同份、同收盤價的公司市值估算，不把股數取得日當生效日，也不再次套用拆股比例。
-            marketCap = observation.getSnapshotMarketCap();
-            marketCapSource = "FUTU_CLOSE_SNAPSHOT";
-            sharesReason = null;
-        } else if (observation != null) {
-            LocalDate basis = observation.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
-            sharesReason = splitCoverageReason(status, basis, day);
-            if (sharesReason == null) shares = BigDecimal.valueOf(observation.getIssuedShares())
-                    .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
-            if (shares != null) {
-                marketCap = quote.getClosePrice().multiply(shares);
-                marketCapSource = "OBSERVED_SHARES";
+        if (multiSecurityIssuer) {
+            if (day.equals(lastClosed)) {
+                if (useCloseSnapshot && sameCloseSnapshot(observation, quote, day, cutoff, calculatedAt)) {
+                    marketCap = observation.effectiveMarketCap();
+                    marketCapSource = "FUTU_CLOSE_SNAPSHOT";
+                    sharesReason = null;
+                } else if (observation != null) {
+                    LocalDate basis = observation.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+                    sharesReason = splitCoverageReason(status, basis, day);
+                    if (sharesReason == null) {
+                        BigDecimal equivShares = observation.effectiveMarketCap() != null
+                                && observation.getSnapshotPrice() != null && observation.getSnapshotPrice().signum() > 0
+                                ? observation.effectiveMarketCap().divide(observation.getSnapshotPrice(), MathContext.DECIMAL128)
+                                : BigDecimal.valueOf(observation.effectiveShares());
+                        marketCap = quote.getClosePrice().multiply(equivShares)
+                                .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                        marketCapSource = "OBSERVED_SHARES";
+                    }
+                } else if (verifiedOneToOne && filingShares != null) {
+                    LocalDate basis = filingShares.getPeriodEnd();
+                    sharesReason = splitCoverageReason(status, basis, day);
+                    if (sharesReason == null && splitBetween(adjustments, basis, filingShares.getFiled())) {
+                        sharesReason = "SEC_SHARE_SPLIT_BASIS_UNCONFIRMED";
+                    }
+                    if (sharesReason == null) {
+                        marketCap = quote.getClosePrice().multiply(filingShares.getValue())
+                                .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                        marketCapSource = "OBSERVED_SHARES";
+                        useFilingShares = true;
+                    }
+                } else {
+                    sharesReason = "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED";
+                }
+            } else if (verifiedOneToOne) {
+                if (filingShares != null) {
+                    LocalDate basis = filingShares.getPeriodEnd();
+                    sharesReason = splitCoverageReason(status, basis, day);
+                    if (sharesReason == null && splitBetween(adjustments, basis, filingShares.getFiled())) {
+                        sharesReason = "SEC_SHARE_SPLIT_BASIS_UNCONFIRMED";
+                    }
+                    if (sharesReason == null) {
+                        marketCap = quote.getClosePrice().multiply(filingShares.getValue())
+                                .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                        marketCapSource = "OBSERVED_SHARES";
+                        useFilingShares = true;
+                    }
+                } else if (observation != null) {
+                    LocalDate basis = observation.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+                    sharesReason = splitCoverageReason(status, basis, day);
+                    if (sharesReason == null) {
+                        marketCap = quote.getClosePrice().multiply(BigDecimal.valueOf(observation.effectiveShares()))
+                                .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                        marketCapSource = "OBSERVED_SHARES";
+                    }
+                }
+            } else {
+                sharesReason = "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED";
+            }
+        } else {
+            if (useCloseSnapshot && sameCloseSnapshot(observation, quote, day, cutoff, calculatedAt)) {
+                marketCap = observation.effectiveMarketCap();
+                marketCapSource = "FUTU_CLOSE_SNAPSHOT";
+                sharesReason = null;
+            } else if (observation != null) {
+                LocalDate basis = observation.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+                sharesReason = splitCoverageReason(status, basis, day);
+                if (sharesReason == null) {
+                    BigDecimal shares = BigDecimal.valueOf(observation.effectiveShares())
+                            .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                    marketCap = quote.getClosePrice().multiply(shares);
+                    marketCapSource = "OBSERVED_SHARES";
+                }
+            }
+            if (marketCap == null && filingShares != null) {
+                LocalDate basis = filingShares.getPeriodEnd();
+                sharesReason = splitCoverageReason(status, basis, day);
+                if (sharesReason == null && splitBetween(adjustments, basis, filingShares.getFiled())) {
+                    sharesReason = "SEC_SHARE_SPLIT_BASIS_UNCONFIRMED";
+                }
+                if (sharesReason == null) {
+                    marketCap = quote.getClosePrice().multiply(filingShares.getValue())
+                            .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
+                    marketCapSource = "OBSERVED_SHARES";
+                    useFilingShares = true;
+                }
             }
         }
-        if (marketCap == null && filingShares != null) {
-            LocalDate basis = filingShares.getPeriodEnd();
-            sharesReason = splitCoverageReason(status, basis, day);
-            if (sharesReason == null && adjustments.stream().anyMatch(split -> split.getExecutionDate().isAfter(basis)
-                    && !split.getExecutionDate().isAfter(filingShares.getFiled()))) sharesReason = "SEC_SHARE_SPLIT_BASIS_UNCONFIRMED";
-            if (sharesReason == null) {
-                marketCap = quote.getClosePrice().multiply(filingShares.getValue())
-                        .multiply(StockSplitCalculator.shareFactor(adjustments, basis, day));
-                marketCapSource = "OBSERVED_SHARES";
-                useFilingShares = true;
-            }
-        }
+
         ReportValues balance = financials.stream().filter(value -> value.statementType() == 2)
                 .max(Comparator.comparing(ReportValues::periodEnd).thenComparingInt(ReportValues::periodType)).orElse(null);
         ReportValues cashFlow = financials.stream().filter(value -> value.statementType() == 3)
@@ -1271,6 +1245,7 @@ public class StockValuationDailyTask implements Job {
         else if (revenue.value() == null && hasReportReason(secRevenue, income)) revenue = missing(secRevenue.reason());
         if (useSecFcf) fcf = secMetric(secFcf);
         else if (fcf.value() == null && hasReportReason(secFcf, cashFlow)) fcf = missing(secFcf.reason());
+
         MetricResult<BigDecimal> ebitda = income == null ? missing("NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE")
                 : sameCurrency(currency, income.currency()) ? calculator.trailingEbitda(financials, income) : missing("REPORTING_CURRENCY_MISMATCH");
         List<Flow> mixedEbitdaInputs = new ArrayList<>();
@@ -1280,7 +1255,7 @@ public class StockValuationDailyTask implements Job {
             ebitda = calculator.trailingEbitda(combined, income);
             if (ebitda.value() == null) mixedEbitdaInputs.clear();
         }
-        BigDecimal evMarketCap = multiSecurityIssuer ? inputs.issuerMarketCap() : marketCap;
+        BigDecimal evMarketCap = marketCap;
         MetricResult<BigDecimal> ev = balance == null ? missing("BALANCE_SHEET_MISSING")
                 : !sameCurrency(currency, balance.currency()) ? missing("REPORTING_CURRENCY_MISMATCH")
                 : calculator.enterpriseValue(evMarketCap, balance);
@@ -1313,22 +1288,24 @@ public class StockValuationDailyTask implements Job {
         if (useSecEbitda) {
             ebitda = secMetric(secEbitda);
             mixedEbitdaInputs.clear();
-        }
-        else if (ebitda.value() == null && hasReportReason(secEbitda, income))
+        } else if (ebitda.value() == null && hasReportReason(secEbitda, income)) {
             ebitda = missing(secEbitda.reason());
-        boolean needsDepreciationProof = SecFinancialFactsCalculator.DEPRECIATION_SCOPE_UNRESOLVED.equals(reason(ebitda));
+        }
+        // 核對 EV 與 EBITDA 的會計準則（US_GAAP vs IFRS）及報期是否一致。
+        String evStandard = useSecEnterprise ? "US_GAAP" : balance == null ? null : FinancialReportValuationCalculator.normalizeAccountingStandard(balance.accountingStandards());
+        String ebitdaStandard = useSecEbitda ? "US_GAAP" : income == null ? null : FinancialReportValuationCalculator.normalizeAccountingStandard(income.accountingStandards());
+        if (ev.value() != null && ebitda.value() != null && !Objects.equals(evStandard, ebitdaStandard)) {
+            ev = MetricResult.unavailable(MetricStatus.UNVERIFIED,
+                    AnalysisReasonDto.of("EV_ACCOUNTING_STANDARD_UNCONFIRMED", "VALUATION", "EV 與 EBITDA 會計準則不一致。"));
+        }
         LocalDate evBalanceEnd = useSecEnterprise ? secEvAdjustment.periodEnd() : balance == null ? null : balance.periodEnd();
         LocalDate ebitdaEnd = useSecEbitda ? secEbitda.periodEnd() : income == null ? null : income.periodEnd();
-        if (ev.value() != null && ebitda.value() != null && !Objects.equals(evBalanceEnd, ebitdaEnd))
+        if (ev.value() != null && ebitda.value() != null && !Objects.equals(evBalanceEnd, ebitdaEnd)) {
             ev = missing("FINANCIAL_PERIOD_CONFLICT");
-        // 多股類只使用已核對全部股類及 SEC 公司總股數的發行人市值，不以單一股類代替。
-        BigDecimal companyMarketCap = evMarketCap;
-        if (multiSecurityIssuer && companyMarketCap != null) {
-            sharesReason = null;
-            marketCapSource = "SEC_ISSUER_CLASS_SHARES";
-        } else if (multiSecurityIssuer && marketCap != null) sharesReason = "ISSUER_MARKET_CAP_UNRESOLVED";
+        }
+
         FinancialReportValuationCalculator.MarketMultiples multiples = calculator.calculate(new FinancialReportValuationCalculator.ValuationInputs(
-                day, quote.getClosePrice(), currency, currency, companyMarketCap, peReason == null ? eps.value() : null,
+                day, quote.getClosePrice(), currency, currency, marketCap, peReason == null && eps != null ? eps.value() : null,
                 equity.value(), revenue.value(), fcf.value(), ev.value(), ebitda.value()));
         StockValuationDaily row = new StockValuationDaily();
         row.setFigi(figi);
@@ -1370,7 +1347,9 @@ public class StockValuationDailyTask implements Job {
             row.setSharesObservedAt(filingShares.getObservedAt());
             row.setSecShareBasisDate(filingShares.getPeriodEnd());
             row.setSecShareAccession(filingShares.getAccession());
-        } else if (marketCap != null) row.setSharesObservedAt(observation.getObservedAt());
+        } else if (marketCap != null && observation != null) {
+            row.setSharesObservedAt(observation.getObservedAt());
+        }
         row.setMarketCapSource(marketCapSource);
         row.setCurrency(currency);
         row.setClosePrice(quote.getClosePrice());
@@ -1397,10 +1376,52 @@ public class StockValuationDailyTask implements Job {
         String ebitdaFailure = reason(ebitda);
         String evMetricReason = reason(multiples.evEbitda());
         row.setEvEbitdaReason(row.getEvEbitda() != null ? null : "NON_POSITIVE_EBITDA".equals(evMetricReason) ? evMetricReason
-                : needsDepreciationProof ? ebitdaFailure : invalidatesEv(evFailure) ? evFailure
+                : invalidatesEv(evFailure) ? evFailure
                 : invalidatesEv(ebitdaFailure) ? ebitdaFailure : evMarketCap == null && sharesReason != null ? sharesReason
                 : ev.value() == null ? reason(ev) : ebitda.value() == null ? reason(ebitda) : reason(multiples.evEbitda()));
         return row;
+    }
+
+    private boolean verifyFutuEpsPeriods(List<ReportValues> reports, ReportValues latest, List<SecFinancialFact> rawCikFacts,
+                                         String currency, List<StockSplit> splits, LocalDate day, Instant calculatedAt) {
+        LocalDate nyKnownDate = calculatedAt.atZone(MarketStatusService.NY_ZONE).toLocalDate();
+        boolean splitAfterDay = splitBetween(splits, day, nyKnownDate);
+        List<ReportValues> periods = calculator.trailingPeriods(reports, latest.figi(), 1, latest.periodEnd());
+        if (periods.isEmpty()) return false;
+        for (ReportValues period : periods) {
+            boolean splitCrossed = splitAfterDay
+                    || splitBetween(splits, period.periodEnd().isBefore(day) ? period.periodEnd() : day,
+                            period.periodEnd().isAfter(day) ? period.periodEnd() : day);
+            if (!splitCrossed) continue;
+            BigDecimal periodEps = period.value(FinancialConcept.DILUTED_EPS).value();
+            BigDecimal netIncome = period.value(FinancialConcept.NET_INCOME_COMMON).value();
+            if (netIncome == null) netIncome = period.value(FinancialConcept.NET_INCOME_PARENT).value();
+            if (!secCalculator.isEpsSplitBasisVerified(periodEps, netIncome, period.periodEnd(), period.periodType() == 7,
+                    rawCikFacts, currency, splits, day, calculatedAt)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean verifySecEpsFlow(Flow secEps, List<SecFinancialFact> rawCikFacts, String currency,
+                                     List<StockSplit> splits, LocalDate day, Instant calculatedAt) {
+        if (secEps == null || secEps.value() == null || secEps.epsBasisFrom() == null || secEps.periodEnd() == null) return false;
+        LocalDate latestSplitUpToDay = splits.stream().map(StockSplit::getExecutionDate)
+                .filter(exec -> exec.isAfter(secEps.epsBasisFrom()) && !exec.isAfter(day))
+                .max(LocalDate::compareTo).orElse(null);
+        if (latestSplitUpToDay == null) return true;
+        if (secEps.earliestFiled() != null && !secEps.earliestFiled().isBefore(latestSplitUpToDay)
+                && StockSplitCalculator.shareFactor(splits, secEps.earliestFiled(), day).compareTo(BigDecimal.ONE) == 0) {
+            return true;
+        }
+        boolean annualPeriod = secEps.periodStart() != null
+                && java.time.temporal.ChronoUnit.DAYS.between(secEps.periodStart(), secEps.periodEnd()) + 1 >= 364;
+        if (annualPeriod) {
+            return secCalculator.isEpsSplitBasisVerified(secEps.value(), null, secEps.periodEnd(), true,
+                    rawCikFacts, currency, splits, day, calculatedAt);
+        }
+        return false;
     }
 
     private boolean preferSec(Flow sec, MetricResult<BigDecimal> existing, ReportValues current) {
@@ -1500,13 +1521,8 @@ public class StockValuationDailyTask implements Job {
 
     private String splitCoverageReason(StockStatus status, LocalDate basis, LocalDate day) {
         String splitMessage = status.getSplitMessage();
-        // 此特定錯誤已由同步流程把有效水位截到首個缺席事件之前，較早日期仍可使用。
         if (splitMessage != null && !splitMessage.isBlank() && !splitMessage.startsWith("WARNING:")
                 && !splitMessage.startsWith("ERROR:SPLIT_STORED_EVENT_NOT_RETURNED:")) return "SPLIT_SYNC_ERROR";
-        LocalDate from = basis.isBefore(day) ? basis : day;
-        LocalDate through = basis.isAfter(day) ? basis : day;
-        if (status.getSplitFromDate() == null || status.getSplitFromDate().isAfter(from)
-                || status.getSplitDate() == null || status.getSplitDate().isBefore(through)) return "SPLIT_COVERAGE_INSUFFICIENT";
         return null;
     }
 

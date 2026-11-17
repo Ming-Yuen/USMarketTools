@@ -24,10 +24,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class IndustryValuationProposalService {
+    public static final String MODEL_NON_FINANCIAL = "NON_FINANCIAL_OPERATING";
+    public static final String MODEL_BANK = "BANK";
+    public static final String MODEL_INSURANCE = "INSURANCE";
+    private static final Set<String> BANK_PLATES = Set.of("US.LIST2481", "US.LIST2456");
+    private static final Set<String> INSURANCE_PLATES = Set.of("US.LIST2429", "US.LIST2512", "US.LIST2484", "US.LIST2467", "US.LIST2465");
+    private static final Set<String> AMBIGUOUS_FINANCIAL_PLATES = Set.of("US.LIST2260", "US.LIST2261", "US.LIST2479", "US.LIST2495");
     private static final Map<String, List<String>> SUPPORTED_METRICS = supportedMetrics();
     private final StockIndustryRepository industries;
     private final IndustryValuationConfigRepository configurations;
@@ -118,11 +125,45 @@ public class IndustryValuationProposalService {
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static ResponseStatusException failure(HttpStatus status, String message) { return new ResponseStatusException(status, message); }
 
+    /** 統一判定產業估值模型：優先採用已生效設定，其次依富途銀行／保險板塊與 SEC 4 碼 SIC 判定銀行、保險與證券經紀業。 */
+    public static String resolveModelCode(String configuredModelCode, String sourcePlateCode, String sic) {
+        if (MODEL_BANK.equals(configuredModelCode) || MODEL_INSURANCE.equals(configuredModelCode)
+                || MODEL_NON_FINANCIAL.equals(configuredModelCode)) {
+            return configuredModelCode;
+        }
+        if (sourcePlateCode != null && BANK_PLATES.contains(sourcePlateCode)) return MODEL_BANK;
+        if (sourcePlateCode != null && INSURANCE_PLATES.contains(sourcePlateCode)) return MODEL_INSURANCE;
+        if (sourcePlateCode == null || sourcePlateCode.isBlank() || AMBIGUOUS_FINANCIAL_PLATES.contains(sourcePlateCode)) {
+            int code = parseSic(sic);
+            if ((code >= 6000 && code <= 6199) || code == 6712 || (code >= 6200 && code <= 6219)) return MODEL_BANK;
+            if (code >= 6300 && code <= 6399) return MODEL_INSURANCE;
+        }
+        return MODEL_NON_FINANCIAL;
+    }
+
+    public static boolean isFinancialInstitutionModel(String modelCode) {
+        return MODEL_BANK.equals(modelCode) || MODEL_INSURANCE.equals(modelCode);
+    }
+
+    /** SEC 合約收入排除範圍：銀行（60xx-61xx、6712）、證券經紀與投資業（62xx）、保險（63xx-64xx）。 */
+    public static boolean isFinancialSicExcludedFromContractRevenue(String sic) {
+        int code = parseSic(sic);
+        return (code >= 6000 && code <= 6499) || code == 6712;
+    }
+
+    private static int parseSic(String sic) {
+        if (sic == null || sic.length() != 4) return -1;
+        for (int i = 0; i < 4; i++) {
+            if (!Character.isDigit(sic.charAt(i))) return -1;
+        }
+        return Integer.parseInt(sic);
+    }
+
     private static Map<String, List<String>> supportedMetrics() {
         Map<String, List<String>> result = new LinkedHashMap<>();
-        result.put("NON_FINANCIAL_OPERATING", List.of("PE", "PS", "PFCF", "EV_EBITDA"));
-        result.put("BANK", List.of("PE", "PB"));
-        result.put("INSURANCE", List.of("PE", "PB"));
+        result.put(MODEL_NON_FINANCIAL, List.of("PE", "PB", "PS", "PFCF", "EV_EBITDA"));
+        result.put(MODEL_BANK, List.of("PE", "PB"));
+        result.put(MODEL_INSURANCE, List.of("PE", "PB"));
         return java.util.Collections.unmodifiableMap(result);
     }
 }

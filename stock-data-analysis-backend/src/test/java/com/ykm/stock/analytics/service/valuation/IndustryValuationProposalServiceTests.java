@@ -67,7 +67,14 @@ class IndustryValuationProposalServiceTests {
         assertThat(result.current().effectiveAt()).isEqualTo(current.getEffectiveAt());
         assertThat(result.current().assumedMultipleLow()).isEqualByComparingTo("10");
         assertThat(result.canPropose()).isTrue();
+        assertThat(result.supportedMetrics().get("NON_FINANCIAL_OPERATING")).containsExactly("PE", "PB", "PS", "PFCF", "EV_EBITDA");
         assertThat(result.supportedMetrics().get("BANK")).containsExactly("PE", "PB");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, "US.LIST2481", "7370")).isEqualTo("BANK");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, null, "6021")).isEqualTo("BANK");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, "US.LIST2260", "6211")).isEqualTo("BANK");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, "US.LIST2249", "6282")).isEqualTo("NON_FINANCIAL_OPERATING");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, null, "6331")).isEqualTo("INSURANCE");
+        assertThat(IndustryValuationProposalService.resolveModelCode(null, "US.LIST2230", "6411")).isEqualTo("NON_FINANCIAL_OPERATING");
         verify(ai, never()).propose(any());
         verify(configurations).findFirstByIndustryCodeAndEffectiveAtLessThanEqualOrderByEffectiveAtDesc(eq("I43"), any(Instant.class));
         verifyNoMoreInteractions(configurations);

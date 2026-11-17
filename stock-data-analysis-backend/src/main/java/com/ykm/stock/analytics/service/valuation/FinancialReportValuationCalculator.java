@@ -30,7 +30,9 @@ public class FinancialReportValuationCalculator {
             FinancialConcept.NET_PROFIT, FinancialConcept.OPERATING_PROFIT, FinancialConcept.OPERATING_CASH_FLOW, FinancialConcept.CAPITAL_EXPENDITURE,
             FinancialConcept.FREE_CASH_FLOW, FinancialConcept.INCOME_TAX_EXPENSE, FinancialConcept.INTEREST_EXPENSE_AS_REPORTED,
             FinancialConcept.NONOPERATING_INTEREST_EXPENSE, FinancialConcept.INCOME_DEPRECIATION,
-            FinancialConcept.INCOME_AMORTIZATION, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION);
+            FinancialConcept.INCOME_AMORTIZATION, FinancialConcept.INCOME_DEPLETION,
+            FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION,
+            FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION);
 
     private record ItemKey(int statementType, String name) {}
 
@@ -163,6 +165,11 @@ public class FinancialReportValuationCalculator {
         registerNames(map, 3, FinancialConcept.NET_PPE_CASH_FLOW, "Net PPE Purchase and Sale");
         registerNames(map, 3, FinancialConcept.NET_INTANGIBLES_CASH_FLOW, "Net Intangibles Purchase and Sale");
         registerNames(map, 3, FinancialConcept.FREE_CASH_FLOW, "Free Cash Flow");
+        for (FinancialConcept concept : FinancialConcept.values()) {
+            for (int statementType : new int[]{1, 2, 3}) {
+                map.putIfAbsent(new ItemKey(statementType, concept.name()), concept);
+            }
+        }
         return Map.copyOf(map);
     }
 
@@ -322,107 +329,150 @@ public class FinancialReportValuationCalculator {
         return trailingPeriods(reports, figi, statementType, periodEnd).stream().map(ReportValues::periodEnd).min(LocalDate::compareTo).orElse(null);
     }
 
-    /** 已列示優先股須扣除；未列示時，僅在完整普通股組成與母公司權益核對相符才採用。 */
+    /** 正規化財報會計準則：支援 US_GAAP 與 IFRS（含富途對跨國 IFRS 報表標記的 NonUS_GAAP）；空白或未知準則回傳 null。 */
+    public static String normalizeAccountingStandard(String accountingStandards) {
+        if (accountingStandards == null || accountingStandards.isBlank()) return null;
+        String trimmed = accountingStandards.trim();
+        if ("US_GAAP".equalsIgnoreCase(trimmed)) return "US_GAAP";
+        if ("IFRS".equalsIgnoreCase(trimmed) || "NonUS_GAAP".equalsIgnoreCase(trimmed)) return "IFRS";
+        return null;
+    }
+
+    /** 優先股帳面值缺失或為 0 時直接採母公司股東權益（缺母公司權益時採總權益減非控權益）；優先股 > 0 時扣除帳面值。 */
     public MetricResult<BigDecimal> commonEquity(ReportValues balance) {
         MetricResult<BigDecimal> equity = balance.value(FinancialConcept.STOCKHOLDERS_EQUITY);
-        MetricResult<BigDecimal> preferred = balance.value(FinancialConcept.PREFERRED_STOCK_CAPITAL);
-        if (equity.value() == null) return equity;
-        if (preferred.status() == MetricStatus.UNVERIFIED) return preferred;
-        if (preferred.value() == null) {
-            if (balance.values().containsKey(FinancialConcept.PREFERRED_STOCK_CAPITAL)) return missing("PREFERRED_EQUITY_BOOK_VALUE_MISSING");
-            BigDecimal common = BigDecimal.ZERO;
-            for (FinancialConcept component : List.of(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED,
-                    FinancialConcept.RETAINED_EARNINGS, FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED)) {
-                MetricResult<BigDecimal> value = balance.value(component);
-                if (value.status() == MetricStatus.UNVERIFIED) return value;
-                if (value.value() == null) return missing("PREFERRED_EQUITY_BOOK_VALUE_MISSING");
-                common = common.add(value.value(), MC);
-            }
-            // 普通股股本可能已包含 APIC；原組合能對平時不再次加上資本公積或扣除庫藏股。
-            if (common.compareTo(equity.value()) == 0) return equity;
-            MetricResult<BigDecimal> paidIn = balance.value(FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED);
-            MetricResult<BigDecimal> treasury = balance.value(FinancialConcept.TREASURY_STOCK_AS_REPORTED);
-            if (paidIn.status() == MetricStatus.UNVERIFIED) return paidIn;
-            if (treasury.status() == MetricStatus.UNVERIFIED) return treasury;
-            if (paidIn.value() != null) common = common.add(paidIn.value(), MC);
-            // 「Less: Treasury Stock」為權益抵減項，來源金額可能已帶負號。
-            if (treasury.value() != null) common = common.subtract(treasury.value().abs(), MC);
-            return common.compareTo(equity.value()) == 0 ? equity : unverified("COMMON_EQUITY_COMPONENTS_MISMATCH");
+        if (equity.status() == MetricStatus.UNVERIFIED) return equity;
+        if (equity.value() == null) {
+            MetricResult<BigDecimal> total = balance.value(FinancialConcept.TOTAL_EQUITY);
+            MetricResult<BigDecimal> minority = balance.value(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
+            if (total.status() == MetricStatus.UNVERIFIED) return total;
+            if (minority.status() == MetricStatus.UNVERIFIED) return minority;
+            if (total.value() == null) return equity;
+            BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
+            equity = MetricResult.available(total.value().subtract(minorityVal, MC));
         }
+        MetricResult<BigDecimal> preferred = balance.value(FinancialConcept.PREFERRED_STOCK_CAPITAL);
+        if (preferred.status() == MetricStatus.UNVERIFIED) return preferred;
+        if (preferred.value() == null || preferred.value().signum() == 0) return equity;
+        if (preferred.value().signum() < 0) return unverified("PREFERRED_EQUITY_NEGATIVE");
         return MetricResult.available(equity.value().subtract(preferred.value(), MC));
     }
 
-    /** 同一財報期間優先採純折舊攤銷合計，缺合計才加總該期的純折舊及純攤銷。 */
+    /** 同一財報期間取數：營收缺報告總額時退回營業收入；損益表 D&A 優先採 DD&A 總額或 D&A 合計，缺合計才加總折舊與攤銷。 */
     public MetricResult<BigDecimal> flowInput(ReportValues report, FinancialConcept concept) {
-        MetricResult<BigDecimal> value = report.value(concept);
-        if (concept != FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION || value.status() != MetricStatus.INSUFFICIENT_DATA) return value;
+        if (concept == FinancialConcept.REVENUE_AS_REPORTED) {
+            MetricResult<BigDecimal> reported = report.value(FinancialConcept.REVENUE_AS_REPORTED);
+            if (reported.value() != null || reported.status() == MetricStatus.UNVERIFIED) return reported;
+            MetricResult<BigDecimal> operating = report.value(FinancialConcept.OPERATING_REVENUE);
+            return operating.value() != null || operating.status() == MetricStatus.UNVERIFIED ? operating : reported;
+        }
+        if (concept != FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION) return report.value(concept);
+        MetricResult<BigDecimal> dda = report.value(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION);
+        if (dda.status() == MetricStatus.UNVERIFIED || dda.value() != null) return dda;
+        MetricResult<BigDecimal> value = report.value(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION);
+        if (value.status() != MetricStatus.INSUFFICIENT_DATA) return value;
         MetricResult<BigDecimal> depreciation = report.value(FinancialConcept.INCOME_DEPRECIATION);
         MetricResult<BigDecimal> amortization = report.value(FinancialConcept.INCOME_AMORTIZATION);
+        if (depreciation.status() == MetricStatus.UNVERIFIED) return depreciation;
+        if (amortization.status() == MetricStatus.UNVERIFIED) return amortization;
         return depreciation.value() != null && amortization.value() != null
                 ? MetricResult.available(depreciation.value().add(amortization.value(), MC)) : value;
     }
 
-    /** 營運口徑 EBITDA 為 TTM 營業利益加同期間純折舊攤銷。 */
+    /** 營運口徑 EBITDA 為 TTM 營業利益加同期間 DD&A（損益表缺 D&A 時讀取富途同期間現金流量表 DD&A），支援 US_GAAP 與 IFRS。 */
     public MetricResult<BigDecimal> trailingEbitda(List<ReportValues> reports, ReportValues income) {
-        if (trailingPeriods(reports, income.figi(), 1, income.periodEnd()).stream()
-                .anyMatch(period -> !"US_GAAP".equals(period.accountingStandards()))) return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        String standard = normalizeAccountingStandard(income.accountingStandards());
+        List<ReportValues> incomePeriods = trailingPeriods(reports, income.figi(), 1, income.periodEnd());
+        if (standard == null || incomePeriods.isEmpty() || incomePeriods.stream()
+                .anyMatch(period -> !standard.equals(normalizeAccountingStandard(period.accountingStandards())))) {
+            return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        }
         MetricResult<BigDecimal> operatingProfit = trailingTwelveMonths(reports, income.figi(), 1,
                 FinancialConcept.OPERATING_PROFIT, income.periodEnd(), income.currency());
         if (operatingProfit.value() == null) return operatingProfit;
         MetricResult<BigDecimal> depreciation = trailingTwelveMonths(reports, income.figi(), 1,
                 FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, income.periodEnd(), income.currency());
+        if (depreciation.value() == null && depreciation.status() == MetricStatus.INSUFFICIENT_DATA) {
+            List<ReportValues> cashFlowPeriods = trailingPeriods(reports, income.figi(), 3, income.periodEnd());
+            if (!cashFlowPeriods.isEmpty() && cashFlowPeriods.stream()
+                    .allMatch(period -> standard.equals(normalizeAccountingStandard(period.accountingStandards())))) {
+                MetricResult<BigDecimal> cashFlowDda = trailingTwelveMonths(reports, income.figi(), 3,
+                        FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION, income.periodEnd(), income.currency());
+                if (cashFlowDda.value() != null || cashFlowDda.status() == MetricStatus.UNVERIFIED) depreciation = cashFlowDda;
+            }
+        }
         return depreciation.value() == null ? depreciation : MetricResult.available(operatingProfit.value().add(depreciation.value(), MC));
     }
 
-    /** US GAAP 現金口徑 EV，排除營運租賃，非控權益採帳面估算；未識別投資扣項不盲扣。 */
+    /** 營運企業 EV：US_GAAP 優先排除營運租賃（缺拆分時退回純借款），IFRS 納入全部租賃負債；優先股與非控權益採帳面近似，缺值視為 0。 */
     public MetricResult<BigDecimal> enterpriseValue(BigDecimal marketCap, ReportValues balance) {
-        if (!"US_GAAP".equals(balance.accountingStandards())) return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
-        // 此混合標籤實際含權益外可贖回 NCI；未確認資本歸屬及市值，不可遺漏或直接加上帳面值。
-        for (FinancialReport.Item item : balance.pendingItems()) {
-            if ("Convertible preferred securities".equalsIgnoreCase(item.name()) && (item.value() == null || item.value().signum() != 0))
-                return missing("EV_FINANCING_SCOPE_UNRESOLVED");
-        }
-        // 存款、回購與證券借貸確實屬於待拆分的融資；泛用其他負債項目不據此判定。
+        String standard = normalizeAccountingStandard(balance.accountingStandards());
+        if (standard == null) return unverified("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        // 存款、回購與證券借貸屬於金融機構負債結構，不套用一般營運企業 EV 公式。
         for (FinancialConcept financing : List.of(FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES,
                 FinancialConcept.SECURITIES_LENDING_AND_REPO_PAYABLES_AS_REPORTED, FinancialConcept.BANK_DEPOSITS)) {
             MetricResult<BigDecimal> value = balance.value(financing);
             if (value.status() == MetricStatus.UNVERIFIED) return value;
             if (value.value() != null && value.value().signum() != 0) return missing("EV_FINANCING_SCOPE_UNRESOLVED");
         }
-        if (balance.pendingNames().stream().anyMatch(name -> name.equalsIgnoreCase("Derivative liabilities")))
-            return missing("EV_FINANCING_SCOPE_UNRESOLVED");
         MetricResult<BigDecimal> preferred = balance.value(FinancialConcept.PREFERRED_STOCK_CAPITAL);
         if (preferred.status() == MetricStatus.UNVERIFIED) return preferred;
-        if (preferred.value() != null && preferred.value().signum() != 0) return missing("PREFERRED_EQUITY_MARKET_VALUE_MISSING");
-        MetricResult<BigDecimal> debt = totalDebt(balance);
-        if (debt.status() == MetricStatus.UNVERIFIED) return debt;
-        if (preferred.value() == null) return missing("PREFERRED_EQUITY_MARKET_VALUE_UNRESOLVED");
+        if (preferred.value() != null && preferred.value().signum() < 0) return unverified("PREFERRED_EQUITY_NEGATIVE");
+        BigDecimal preferredVal = preferred.value() == null ? BigDecimal.ZERO : preferred.value();
+
         MetricResult<BigDecimal> minority = balance.value(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
         if (minority.status() == MetricStatus.UNVERIFIED) return minority;
-        if (minority.value() == null && minority.status() == MetricStatus.INSUFFICIENT_DATA) {
+        BigDecimal minorityVal = minority.value();
+        if (minorityVal == null) {
             MetricResult<BigDecimal> total = balance.value(FinancialConcept.TOTAL_EQUITY);
             MetricResult<BigDecimal> parent = balance.value(FinancialConcept.STOCKHOLDERS_EQUITY);
             if (total.status() == MetricStatus.UNVERIFIED) return total;
             if (parent.status() == MetricStatus.UNVERIFIED) return parent;
-            if (total.value() != null && parent.value() != null) minority = MetricResult.available(total.value().subtract(parent.value(), MC));
+            minorityVal = total.value() != null && parent.value() != null
+                    ? total.value().subtract(parent.value(), MC) : BigDecimal.ZERO;
         }
-        if (minority.value() == null) return missing("NONCONTROLLING_INTEREST_BOOK_VALUE_MISSING");
+
+        MetricResult<BigDecimal> debt = totalDebt(balance, "IFRS".equals(standard));
+        if (debt.status() == MetricStatus.UNVERIFIED) return debt;
         MetricResult<BigDecimal> cash = balance.value(FinancialConcept.CASH_AND_EQUIVALENTS);
         if (cash.status() == MetricStatus.UNVERIFIED) return cash;
         if (marketCap == null) return missing("VALUATION_DATE_SHARES_MISSING");
         if (debt.value() == null) return debt;
         if (cash.value() == null) return cash;
-        return MetricResult.available(marketCap.add(debt.value(), MC).add(minority.value(), MC).subtract(cash.value(), MC));
+        return MetricResult.available(marketCap.add(debt.value(), MC).add(preferredVal, MC).add(minorityVal, MC).subtract(cash.value(), MC));
     }
 
-    private MetricResult<BigDecimal> totalDebt(ReportValues balance) {
+    private MetricResult<BigDecimal> totalDebt(ReportValues balance, boolean ifrs) {
+        boolean anchored = hasBalanceAnchor(balance);
+        if (ifrs) {
+            MetricResult<BigDecimal> current = ifrsDebt(balance, FinancialConcept.CURRENT_DEBT_AND_LEASES,
+                    FinancialConcept.CURRENT_DEBT, FinancialConcept.CURRENT_CAPITAL_LEASES,
+                    FinancialConcept.CURRENT_FINANCE_LEASES, FinancialConcept.CURRENT_OPERATING_LEASES, anchored);
+            MetricResult<BigDecimal> longTerm = ifrsDebt(balance, FinancialConcept.LONG_TERM_DEBT_AND_LEASES,
+                    FinancialConcept.LONG_TERM_DEBT, FinancialConcept.LONG_TERM_CAPITAL_LEASES,
+                    FinancialConcept.LONG_TERM_FINANCE_LEASES, FinancialConcept.LONG_TERM_OPERATING_LEASES, anchored);
+            if (current.status() == MetricStatus.UNVERIFIED) return current;
+            if (longTerm.status() == MetricStatus.UNVERIFIED) return longTerm;
+            if (current.value() == null) return current;
+            if (longTerm.value() == null) return longTerm;
+            return MetricResult.available(current.value().add(longTerm.value(), MC));
+        }
         MetricResult<BigDecimal> finance = balance.value(FinancialConcept.TOTAL_FINANCE_LEASES);
         MetricResult<BigDecimal> borrowingCurrent = balance.value(FinancialConcept.CURRENT_DEBT);
         MetricResult<BigDecimal> borrowingLongTerm = balance.value(FinancialConcept.LONG_TERM_DEBT);
-        if (finance.value() != null && finance.value().signum() >= 0 && borrowingCurrent.value() != null && borrowingLongTerm.value() != null)
-            return MetricResult.available(borrowingCurrent.value().add(borrowingLongTerm.value(), MC).add(finance.value(), MC));
-        MetricResult<BigDecimal> current = debt(balance, FinancialConcept.CURRENT_DEBT_AND_LEASES, FinancialConcept.CURRENT_DEBT, FinancialConcept.CURRENT_CAPITAL_LEASES);
-        MetricResult<BigDecimal> longTerm = debt(balance, FinancialConcept.LONG_TERM_DEBT_AND_LEASES, FinancialConcept.LONG_TERM_DEBT, FinancialConcept.LONG_TERM_CAPITAL_LEASES);
+        if (finance.status() == MetricStatus.UNVERIFIED) return finance;
+        if (borrowingCurrent.status() == MetricStatus.UNVERIFIED) return borrowingCurrent;
+        if (borrowingLongTerm.status() == MetricStatus.UNVERIFIED) return borrowingLongTerm;
+        if (finance.value() != null && finance.value().signum() >= 0
+                && (borrowingCurrent.value() != null || borrowingLongTerm.value() != null || anchored)) {
+            BigDecimal cur = borrowingCurrent.value() == null ? BigDecimal.ZERO : borrowingCurrent.value();
+            BigDecimal lt = borrowingLongTerm.value() == null ? BigDecimal.ZERO : borrowingLongTerm.value();
+            return MetricResult.available(cur.add(lt, MC).add(finance.value(), MC));
+        }
+        MetricResult<BigDecimal> current = usGaapDebt(balance, FinancialConcept.CURRENT_DEBT_AND_LEASES,
+                FinancialConcept.CURRENT_DEBT, FinancialConcept.CURRENT_CAPITAL_LEASES, anchored);
+        MetricResult<BigDecimal> longTerm = usGaapDebt(balance, FinancialConcept.LONG_TERM_DEBT_AND_LEASES,
+                FinancialConcept.LONG_TERM_DEBT, FinancialConcept.LONG_TERM_CAPITAL_LEASES, anchored);
         if (current.status() == MetricStatus.UNVERIFIED) return current;
         if (longTerm.status() == MetricStatus.UNVERIFIED) return longTerm;
         if (current.value() == null) return current;
@@ -430,24 +480,70 @@ public class FinancialReportValuationCalculator {
         return MetricResult.available(current.value().add(longTerm.value(), MC));
     }
 
-    private MetricResult<BigDecimal> debt(ReportValues balance, FinancialConcept aggregate, FinancialConcept debt, FinancialConcept leases) {
+    private boolean hasBalanceAnchor(ReportValues balance) {
+        for (FinancialConcept anchor : List.of(FinancialConcept.TOTAL_ASSETS, FinancialConcept.TOTAL_LIABILITIES,
+                FinancialConcept.STOCKHOLDERS_EQUITY, FinancialConcept.TOTAL_EQUITY, FinancialConcept.CASH_AND_EQUIVALENTS,
+                FinancialConcept.CURRENT_DEBT_AND_LEASES, FinancialConcept.LONG_TERM_DEBT_AND_LEASES,
+                FinancialConcept.CURRENT_DEBT, FinancialConcept.LONG_TERM_DEBT)) {
+            if (balance.value(anchor).value() != null) return true;
+        }
+        return false;
+    }
+
+    private MetricResult<BigDecimal> ifrsDebt(ReportValues balance, FinancialConcept aggregate, FinancialConcept debt,
+                                              FinancialConcept capitalLeases, FinancialConcept financeLeases,
+                                              FinancialConcept operatingLeases, boolean anchored) {
         MetricResult<BigDecimal> combined = balance.value(aggregate);
-        if (combined.status() == MetricStatus.UNVERIFIED) return combined;
+        if (combined.status() == MetricStatus.UNVERIFIED || combined.value() != null) return combined;
+        MetricResult<BigDecimal> borrowing = balance.value(debt);
+        MetricResult<BigDecimal> leaseTotal = balance.value(capitalLeases);
+        MetricResult<BigDecimal> finance = balance.value(financeLeases);
+        MetricResult<BigDecimal> operating = balance.value(operatingLeases);
+        for (MetricResult<BigDecimal> item : List.of(borrowing, leaseTotal, finance, operating)) {
+            if (item.status() == MetricStatus.UNVERIFIED) return item;
+        }
+        if (borrowing.value() == null && leaseTotal.value() == null && finance.value() == null && operating.value() == null) {
+            return anchored ? MetricResult.available(BigDecimal.ZERO) : combined;
+        }
+        BigDecimal debtVal = borrowing.value() == null ? BigDecimal.ZERO : borrowing.value();
+        BigDecimal leaseVal = leaseTotal.value() != null ? leaseTotal.value()
+                : (finance.value() == null ? BigDecimal.ZERO : finance.value())
+                        .add(operating.value() == null ? BigDecimal.ZERO : operating.value(), MC);
+        return MetricResult.available(debtVal.add(leaseVal, MC));
+    }
+
+    private MetricResult<BigDecimal> usGaapDebt(ReportValues balance, FinancialConcept aggregate, FinancialConcept debt,
+                                                FinancialConcept leases, boolean anchored) {
+        MetricResult<BigDecimal> combined = balance.value(aggregate);
         boolean current = debt == FinancialConcept.CURRENT_DEBT;
         MetricResult<BigDecimal> operating = balance.value(current ? FinancialConcept.CURRENT_OPERATING_LEASES : FinancialConcept.LONG_TERM_OPERATING_LEASES);
         MetricResult<BigDecimal> finance = balance.value(current ? FinancialConcept.CURRENT_FINANCE_LEASES : FinancialConcept.LONG_TERM_FINANCE_LEASES);
         MetricResult<BigDecimal> borrowing = balance.value(debt);
+        MetricResult<BigDecimal> lease = balance.value(leases);
+        for (MetricResult<BigDecimal> item : List.of(combined, operating, finance, borrowing, lease)) {
+            if (item.status() == MetricStatus.UNVERIFIED) return item;
+        }
+        if (lease.value() != null && lease.value().signum() < 0) return unverified("EV_LEASE_SCOPE_UNRESOLVED");
         if (borrowing.value() != null && finance.value() != null)
             return MetricResult.available(borrowing.value().add(finance.value(), MC));
         if (combined.value() != null && operating.value() != null && combined.value().compareTo(operating.value()) >= 0) {
             BigDecimal net = combined.value().subtract(operating.value(), MC);
             if (borrowing.value() == null || net.compareTo(borrowing.value()) >= 0) return MetricResult.available(net);
         }
-        MetricResult<BigDecimal> lease = balance.value(leases);
-        if (lease.status() == MetricStatus.UNVERIFIED) return lease;
-        // Futu 的 Capital Lease 樣本實為融資＋營運租賃；缺乏分拆時不能全加，也不能只取 Debt 漏掉融資租賃。
-        if (lease.value() == null || lease.value().signum() != 0) return unverified("EV_LEASE_SCOPE_UNRESOLVED");
-        return combined.value() != null ? combined : balance.value(debt);
+        if (lease.value() != null && lease.value().signum() == 0) {
+            if (combined.value() != null) return combined;
+            if (borrowing.value() != null) return borrowing;
+            return anchored ? MetricResult.available(BigDecimal.ZERO) : combined;
+        }
+        // 缺租賃拆分明細時，優先採不含租賃之純借款；若僅列總額且等於／大於租賃項（如無借款僅有租賃），扣除租賃得純借款。
+        if (borrowing.value() != null) return borrowing;
+        if (combined.value() != null && lease.value() != null && combined.value().compareTo(lease.value()) >= 0) {
+            return MetricResult.available(combined.value().subtract(lease.value(), MC));
+        }
+        if (combined.value() == null && lease.value() == null && operating.value() == null && finance.value() == null) {
+            return anchored ? MetricResult.available(BigDecimal.ZERO) : borrowing;
+        }
+        return unverified("EV_LEASE_SCOPE_UNRESOLVED");
     }
 
     /** 只計算市場倍數；輸入不足各自留空，不回推股數、不推算未知 EV，也不產生買賣訊號。 */

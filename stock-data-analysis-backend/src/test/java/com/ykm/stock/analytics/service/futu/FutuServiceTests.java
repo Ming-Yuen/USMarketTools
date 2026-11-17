@@ -38,17 +38,26 @@ class FutuServiceTests {
     }
 
     @Test
-    void shareSnapshotUsesIssuedSharesRatherThanFloatAndKeepsMissingValuesMissing() {
+    void shareSnapshotPreservesOutstandingSharesMarketCapAndNativeMultiples() {
         QotGetSecuritySnapshot.Snapshot valid = QotGetSecuritySnapshot.Snapshot.newBuilder()
                 .setBasic(QotGetSecuritySnapshot.SnapshotBasicData.newBuilder().setSecurity(security(US, "AAPL")).setUpdateTime("2026-11-12 16:00:00").setCurPrice(100).buildPartial())
-                .setEquityExData(QotGetSecuritySnapshot.EquitySnapshotExData.newBuilder().setIssuedShares(100).setOutstandingShares(60).setIssuedMarketVal(10000).buildPartial()).buildPartial();
+                .setEquityExData(QotGetSecuritySnapshot.EquitySnapshotExData.newBuilder()
+                        .setIssuedShares(100).setOutstandingShares(60)
+                        .setIssuedMarketVal(10000).setOutstandingMarketVal(6000)
+                        .setPeTTMRate(28.5).setPbRate(35.2).buildPartial()).buildPartial();
         QotGetSecuritySnapshot.Snapshot empty = QotGetSecuritySnapshot.Snapshot.newBuilder()
                 .setBasic(QotGetSecuritySnapshot.SnapshotBasicData.newBuilder().setSecurity(security(US, "JPM")).buildPartial()).buildPartial();
         when(client.getSecuritySnapshots(List.of("AAPL", "JPM"))).thenReturn(QotGetSecuritySnapshot.Response.newBuilder().setRetType(0)
                 .setS2C(QotGetSecuritySnapshot.S2C.newBuilder().addSnapshotList(valid).addSnapshotList(empty).buildPartial()).buildPartial());
         try (FutuService.ObservationSession session = service.openObservationSession()) {
-            assertThat(session.shareCounts(List.of("AAPL", "JPM"))).containsExactlyEntriesOf(Map.of("AAPL", new FutuService.ShareSnapshot(100,
-                    new java.math.BigDecimal("100.0"), new java.math.BigDecimal("10000.0"), java.time.Instant.parse("2026-11-12T21:00:00Z"))));
+            FutuService.ShareSnapshot expected = new FutuService.ShareSnapshot(100L, 60L,
+                    new java.math.BigDecimal("100.0"), new java.math.BigDecimal("10000.0"),
+                    new java.math.BigDecimal("6000.0"), new java.math.BigDecimal("28.5"),
+                    new java.math.BigDecimal("35.2"), java.time.Instant.parse("2026-11-12T21:00:00Z"));
+            Map<String, FutuService.ShareSnapshot> actual = session.shareCounts(List.of("AAPL", "JPM"));
+            assertThat(actual).containsExactlyEntriesOf(Map.of("AAPL", expected));
+            assertThat(actual.get("AAPL").effectiveShares()).isEqualTo(60L);
+            assertThat(actual.get("AAPL").effectiveMarketCap()).isEqualByComparingTo("6000.0");
             assertThatThrownBy(() -> session.shareCounts(java.util.Collections.nCopies(401, "AAPL"))).hasMessage("FUTU_SNAPSHOT_SCOPE_INVALID");
         }
         verify(client).close();

@@ -123,16 +123,15 @@ class SecFinancialFactsCalculatorTests {
     }
 
     @Test
-    void newerSoftwareInvestmentAnchorsCashFlowDespiteMissingOperatingAndTotalCapitalCashFlows() {
+    void softwareCapitalizationDetailAloneDoesNotAnchorOrConflictWithCompleteCapitalExpenditure() {
         String oldEnd = "2025-12-31";
         List<SecFinancialFact> facts = List.of(fact("NetCashProvidedByUsedInOperatingActivities", "2025-01-01", oldEnd, "200"),
                 fact("PaymentsToAcquirePropertyPlantAndEquipment", "2025-01-01", oldEnd, "20"),
                 fact("PaymentsToDevelopSoftware", "2026-01-01", "2026-09-30", "7"));
         SecFinancialFactsCalculator.Flow fcf = calculate(facts).freeCashFlow();
 
-        assertThat(fcf.value()).isNull();
-        assertThat(fcf.periodEnd()).isEqualTo(LocalDate.parse("2026-09-30"));
-        assertThat(fcf.reason()).isEqualTo("SEC_FCF_COMPONENTS_MISSING");
+        assertThat(fcf.value()).isEqualByComparingTo("180");
+        assertThat(fcf.periodEnd()).isEqualTo(LocalDate.parse(oldEnd));
     }
 
     @Test
@@ -175,44 +174,21 @@ class SecFinancialFactsCalculatorTests {
     }
 
     @Test
-    void separatedCommonCapitalCannotUseDifferentFilingOrInexactEquityOrPositivePreferred() {
+    void commonEquityDirectlyUsesStockholdersEquityWhenPreferredAbsentOrZeroAndDeductsPositivePreferredBookValue() {
         String end = "2026-09-30";
-        List<SecFinancialFact> parts = List.of(
-                fact("StockholdersEquity", null, end, "531451000"),
-                fact("CommonStockValue", null, end, "773000"),
-                fact("AdditionalPaidInCapitalCommonStock", null, end, "334296000"),
-                fact("RetainedEarningsAccumulatedDeficit", null, end, "357304000"),
-                fact("AccumulatedOtherComprehensiveIncomeLossNetOfTax", null, end, "-3360000"),
-                fact("TreasuryStockCommonValue", null, end, "157562000"));
-        parts.forEach(part -> part.setAccession(parts.getFirst().getAccession()));
-        assertThat(calculate(parts).equity().value()).isEqualByComparingTo("531451000");
-
-        parts.get(2).setAccession("0000000001-26-999999");
-        assertThat(calculate(parts).equity().value()).isNull();
-        parts.get(2).setAccession(parts.getFirst().getAccession());
-        parts.get(2).setValue(new BigDecimal("334296001"));
-        assertThat(calculate(parts).equity().value()).isNull();
-        parts.get(2).setValue(new BigDecimal("334296000"));
+        SecFinancialFact parentOnly = fact("StockholdersEquity", null, end, "531451000");
+        assertThat(calculate(List.of(parentOnly)).equity().value()).isEqualByComparingTo("531451000");
 
         SecFinancialFact preferred = fact("PreferredStockValue", null, end, "100");
-        preferred.setAccession(parts.getFirst().getAccession());
-        List<SecFinancialFact> withPreferred = new ArrayList<>(parts);
-        withPreferred.add(preferred);
-        assertThat(calculate(withPreferred).equity().value()).isNull();
+        assertThat(calculate(List.of(parentOnly, preferred)).equity().value()).isEqualByComparingTo("531450900");
     }
 
     @Test
-    void treasuryStockReconcilesParentEquityUsingTheSameFiling() {
+    void treasuryStockDoesNotRequireSubcomponentReconciliationToAcceptParentEquity() {
         String end = "2026-09-30";
         List<SecFinancialFact> facts = List.of(fact("StockholdersEquity", null, end, "35537"),
-                fact("CommonStocksIncludingAdditionalPaidInCapital", null, end, "65137"),
-                fact("RetainedEarningsAccumulatedDeficit", null, end, "156576"),
-                fact("AccumulatedOtherComprehensiveIncomeLossNetOfTax", null, end, "-14985"),
                 fact("TreasuryStockCommonValue", null, end, "171191"));
-        facts.forEach(fact -> fact.setAccession(facts.getFirst().getAccession()));
         assertThat(calculate(facts).equity().value()).isEqualByComparingTo("35537");
-        facts.getLast().setAccession("0000000001-26-999999");
-        assertThat(calculate(facts).equity().value()).isNull();
     }
 
     @Test
@@ -246,51 +222,32 @@ class SecFinancialFactsCalculatorTests {
     }
 
     @Test
-    void usesReportedParentEquityWhenTheSameFilingConfirmsNoPreferredStock() {
+    void usesReportedParentEquityDirectlyWithoutRequiringPreferredLineInSameFiling() {
         SecFinancialFact equity = fact("StockholdersEquity", null, "2026-09-30", "19285");
-        SecFinancialFact preferred = fact("PreferredStockSharesOutstanding", null, "2026-09-30", "0");
-        preferred.setUnit("shares");
-        preferred.setAccession(equity.getAccession());
-        assertThat(calculate(List.of(equity, preferred)).equity().value()).isEqualByComparingTo("19285");
-        preferred.setAccession("0000000001-26-999999");
-        assertThat(calculate(List.of(equity, preferred)).equity().value()).isNull();
+        assertThat(calculate(List.of(equity)).equity().value()).isEqualByComparingTo("19285");
     }
 
     @Test
-    void totalEquityLessNoncontrollingInterestDerivesParentCommonEquityOnlyWhenSameFilingProvesNoPreferred() {
+    void totalEquityLessNoncontrollingInterestDerivesParentCommonEquityAndDeductsPreferredBookValue() {
         SecFinancialFact total = fact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", null, "2026-09-30", "1000");
         SecFinancialFact minority = fact("MinorityInterest", null, "2026-09-30", "100");
-        SecFinancialFact preferred = fact("PreferredStockSharesOutstanding", null, "2026-09-30", "0");
-        preferred.setUnit("shares");
-        minority.setAccession(total.getAccession());
-        preferred.setAccession(total.getAccession());
+        assertThat(calculate(List.of(total, minority)).equity().value()).isEqualByComparingTo("900");
 
-        assertThat(calculate(List.of(total, minority, preferred)).equity().value()).isEqualByComparingTo("900");
-        minority.setAccession("0000000001-26-999999");
-        assertThat(calculate(List.of(total, minority, preferred)).equity().value()).isNull();
-        minority.setAccession(total.getAccession());
-        preferred.setValue(BigDecimal.TEN);
-        assertThat(calculate(List.of(total, minority, preferred)).equity().value()).isNull();
+        SecFinancialFact preferredVal = fact("PreferredStockValue", null, "2026-09-30", "40");
+        assertThat(calculate(List.of(total, minority, preferredVal)).equity().value()).isEqualByComparingTo("860");
     }
 
     @Test
-    void zeroOutstandingPreferredSharesAllowNonzeroIssuedShares() {
-        SecFinancialFact equity = fact("StockholdersEquity", null, "2026-09-30", "56695000");
-        SecFinancialFact outstanding = fact("PreferredStockSharesOutstanding", null, "2026-09-30", "0");
-        SecFinancialFact issued = fact("PreferredStockSharesIssued", null, "2026-09-30", "100000");
-        SecFinancialFact preferredValue = fact("PreferredStockValue", null, "2026-09-30", "0");
-        outstanding.setUnit("shares");
-        issued.setUnit("shares");
-        for (SecFinancialFact fact : List.of(outstanding, issued, preferredValue)) fact.setAccession(equity.getAccession());
-
-        assertThat(calculate(List.of(equity, outstanding, issued, preferredValue)).equity().value())
-                .isEqualByComparingTo("56695000");
-
-        preferredValue.setValue(BigDecimal.TEN);
-        assertThat(calculate(List.of(equity, outstanding, issued, preferredValue)).equity().value()).isNull();
-        preferredValue.setValue(BigDecimal.ZERO);
-        outstanding.setValue(BigDecimal.ONE);
-        assertThat(calculate(List.of(equity, outstanding, issued, preferredValue)).equity().value()).isNull();
+    void positivePreferredBookValueIsDeductedForCommonEquityAndAddedInEvAdjustment() {
+        String end = "2026-09-30";
+        SecFinancialFact equity = fact("StockholdersEquity", null, end, "56695000");
+        SecFinancialFact preferredValue = fact("PreferredStockValue", null, end, "10");
+        SecFinancialFact cash = fact("CashAndCashEquivalentsAtCarryingValue", null, end, "1000");
+        SecFinancialFact ltDebt = fact("LongTermDebt", null, end, "5000");
+        SecFinancialFactsCalculator.Flows flows = calculate(List.of(equity, preferredValue, cash, ltDebt));
+        assertThat(flows.equity().value()).isEqualByComparingTo("56694990");
+        // EV 調整項 = 5000(Debt) + 10(Preferred) + 0(NCI) - 1000(Cash) = 4010
+        assertThat(flows.enterpriseValueAdjustment().value()).isEqualByComparingTo("4010");
     }
 
     @Test
@@ -301,180 +258,55 @@ class SecFinancialFactsCalculatorTests {
         assertThat(calculate(List.of(equity, preferred)).equity().value()).isEqualByComparingTo("228122");
     }
 
-    @TempDir Path archiveDirectory;
-
     @Test
-    void apple2015DecemberDoesNotUseAmbiguousCompanyFactsAsDepreciation() {
+    void apple2015DecemberEbitdaDirectlyAcceptsStandardCashFlowDepreciationWithoutQuarterlyZip() {
         List<SecFinancialFact> facts = apple2015DecemberFacts();
-        assertThat(calculate(facts).ebitda().value()).isNull();
-        assertThat(calculate(facts).ebitda().reason()).isEqualTo("SEC_DEPRECIATION_AMORTIZATION_SCOPE_UNRESOLVED");
+        SecFinancialFactsCalculator.Flow ebitda = calculate(facts).ebitda();
+        assertThat(ebitda.value()).isEqualByComparingTo("82791000000");
+        assertThat(ebitda.note()).contains("DepreciationAmortizationAndAccretionNet");
     }
 
     @Test
-    void apple2015DecemberEbitdaUsesCashFlowDepreciationIdentifiedInTheQuarterlyData() throws IOException {
-        writeQuarter("2015q4.zip", "0000320193-15-000113", "20151028", "10-K", "Depreciation and amortization", List.of("20150930\t4\t11257000000"));
-        writeQuarter("2016q1.zip", "0001193125-16-439878", "20160127", "10-Q", "Depreciation and amortization",
-                List.of("20151231\t1\t2954000000", "20141231\t1\t2575000000"));
-        SecFinancialStatementArchive archive = new SecFinancialStatementArchive(RestClient.builder(), "Testing tester@example.com", archiveDirectory.toString());
-        List<SecFinancialFact> facts = apple2015DecemberFacts();
-        assertThat(calculator.calculate(facts, CIK, "USD", LocalDate.of(2016, 3, 11), NOW, List.of(),
-                archive.loadDepreciation(Set.of(CIK))).ebitda().value()).isEqualByComparingTo("82791000000");
-        assertThat(calculator.calculate(facts, CIK, "USD", LocalDate.of(2016, 1, 27), NOW, List.of(),
-                archive.loadDepreciation(Set.of(CIK))).ebitda().value()).isEqualByComparingTo("82791000000");
-        writeQuarter("2015q4.zip", "0000320193-15-000113", "20151028", "10-K", "Depreciation, amortization and accretion", List.of("20150930\t4\t11257000000"));
-        assertThat(calculator.calculate(facts, CIK, "USD", LocalDate.of(2016, 3, 11), NOW, List.of(),
-                archive.loadDepreciation(Set.of(CIK))).ebitda().value()).isNull();
-    }
-
-    private void writeQuarter(String file, String accession, String filed, String form, String label, List<String> values) throws IOException {
-        String tag = "DepreciationAmortizationAndAccretionNet\tus-gaap/2015";
-        String numbers = "adsh\ttag\tversion\tddate\tqtrs\tuom\tcoreg\tsegments\tvalue\n";
-        for (String value : values) {
-            String[] columns = value.split("\t");
-            numbers += accession + "\t" + tag + "\t" + columns[0] + "\t" + columns[1] + "\tUSD\t\t\t" + columns[2] + "\n";
-        }
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archiveDirectory.resolve(file)))) {
-            writeTable(zip, "sub.txt", "adsh\tcik\tfiled\tform\n" + accession + "\t1\t" + filed + "\t" + form + "\n");
-            writeTable(zip, "pre.txt", "adsh\tstmt\tinpth\ttag\tversion\tplabel\tnegating\n" + accession + "\tCF\t0\t" + tag + "\t" + label + "\t0\n");
-            writeTable(zip, "num.txt", numbers);
-        }
-    }
-
-    private void writeTable(ZipOutputStream zip, String file, String data) throws IOException {
-        zip.putNextEntry(new ZipEntry(file));
-        zip.write(data.getBytes(StandardCharsets.UTF_8));
-        zip.closeEntry();
-    }
-
-    private List<SecFinancialFact> apple2015DecemberFacts() {
-        List<SecFinancialFact> facts = new ArrayList<>();
-        for (String[] amounts : List.of(
-                new String[]{"OperatingIncomeLoss", "71230000000", "24171000000", "24246000000"},
-                new String[]{"DepreciationAmortizationAndAccretionNet", "11257000000", "2954000000", "2575000000"})) {
-            facts.add(fact(amounts[0], "2014-09-28", "2015-09-26", amounts[1]));
-            facts.add(fact(amounts[0], "2015-09-27", "2015-12-26", amounts[2]));
-            facts.add(fact(amounts[0], "2014-09-28", "2014-12-27", amounts[3]));
-        }
-        SecFinancialFact note = fact("DepreciationAndAmortization", "2014-09-28", "2015-09-26", "9200000000");
-        facts.add(note);
-        for (SecFinancialFact fact : facts) {
-            boolean annual = fact.getPeriodEnd().equals(LocalDate.of(2015, 9, 26));
-            fact.setAccession(annual ? "0000320193-15-000113" : "0001193125-16-439878");
-            fact.setFiled(annual ? LocalDate.of(2015, 10, 28) : LocalDate.of(2016, 1, 27));
-            fact.setAvailableFromDate(fact.getFiled().plusDays(1));
-            fact.setForm(annual ? "10-K" : "10-Q");
-        }
-        return facts;
-    }
-
-    @Test
-    void spokAccretionIsSubtractedOnlyWithinTheSameFilingAndPeriod() {
-        SecFinancialFact combined = fact("DepreciationAmortizationAndAccretionNet", "2015-01-01", "2015-03-31", "3747000");
-        combined.setAccession("0001289945-15-000020");
-        SecFinancialFact accretion = fact("AccretionExpense", "2015-01-01", "2015-03-31", "165000");
-        SecFinancialFact priorYearAccretion = fact("AccretionExpense", "2014-01-01", "2014-03-31", "187000");
-        priorYearAccretion.setAccession(combined.getAccession());
-        ReportValues period = new ReportValues("TEST", 1, combined.getPeriodEnd(), 1, 2015, "USD", "US_GAAP", Map.of(), List.of(), List.of());
-        SecFinancialFact depreciation = fact("Depreciation", "2015-01-01", "2015-03-31", "2207000");
-        SecFinancialFact amortization = fact("AdjustmentForAmortization", "2015-01-01", "2015-03-31", "1375000");
-        depreciation.setAccession(combined.getAccession());
-        amortization.setAccession(combined.getAccession());
-        List<SecFinancialFact> facts = List.of(combined, accretion, priorYearAccretion, depreciation, amortization);
-
-        assertThat(calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(period))
-                .input(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, period).value()).isNull();
-        accretion.setAccession(combined.getAccession());
-        assertThat(calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(period))
-                .input(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, period).value()).isEqualByComparingTo("3582000");
-        accretion.setAvailableFromDate(DAY.plusDays(1));
-        assertThat(calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(period))
-                .input(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, period).value()).isEqualByComparingTo("3582000");
-        accretion.setObservedAt(NOW.plusSeconds(1));
-        assertThat(calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(period))
-                .input(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, period).value()).isNull();
-    }
-
-    @Test
-    void republicServicesNonCashInterestIsNotPartOfCombinedDepreciation() {
-        String start = "2022-01-01";
-        String end = "2022-03-31";
-        List<SecFinancialFact> facts = List.of(fact("DepreciationAmortizationAndAccretionNet", start, end, "332100000"),
-                fact("AccretionExpense", start, end, "18800000"),
-                fact("DepreciationDepletionAndAmortization", start, end, "310400000"));
-        facts.forEach(fact -> fact.setAccession("0001060391-22-000014"));
-
-        ReportValues period = new ReportValues("TEST", 1, LocalDate.parse(end), 1, 2022, "USD", "US_GAAP", Map.of(), List.of(), List.of());
-        SecFinancialFactsCalculator.Flow depreciation = calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(period))
-                .input(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, period);
-        assertThat(depreciation.value()).isNull();
-        assertThat(depreciation.reason()).isEqualTo("SEC_DEPRECIATION_AMORTIZATION_SCOPE_UNRESOLVED");
-    }
-
-    @Test
-    void unexplainedCombinedDepreciationLeavesEbitdaNullWithSpecificReason() {
+    void standardDdaPriorityOrderHandlesMiningDepletionAndUtilityAccretionWithCalculationNotes() {
         String start = "2025-01-01";
         String end = "2025-12-31";
-        List<SecFinancialFact> facts = List.of(fact("OperatingIncomeLoss", start, end, "100"),
-                fact("DepreciationAmortizationAndAccretionNet", start, end, "40"),
-                fact("DepreciationAndAmortization", start, end, "30"));
+        // 優先序：DepreciationDepletionAndAmortization > DepreciationAmortizationAndAccretionNet > DepreciationAndAmortization
+        List<SecFinancialFact> rsgFacts = List.of(
+                fact("OperatingIncomeLoss", start, end, "500000000"),
+                fact("DepreciationAmortizationAndAccretionNet", start, end, "332100000"),
+                fact("DepreciationDepletionAndAmortization", start, end, "310400000"),
+                fact("DepreciationAndAmortization", start, end, "290000000"));
+        SecFinancialFactsCalculator.Flows rsg = calculate(rsgFacts);
+        assertThat(rsg.ebitda().value()).isEqualByComparingTo("810400000");
+        assertThat(rsg.ebitda().note()).contains("DepreciationDepletionAndAmortization");
 
-        assertThat(calculate(facts).ebitda().value()).isNull();
-        assertThat(calculate(facts).ebitda().reason()).isEqualTo("SEC_DEPRECIATION_AMORTIZATION_SCOPE_UNRESOLVED");
+        // 公用事業（如 NEE）僅列示 DepreciationAmortizationAndAccretionNet 時直接採用並標註
+        List<SecFinancialFact> utilityFacts = List.of(
+                fact("OperatingIncomeLoss", start, end, "8020000000"),
+                fact("DepreciationAmortizationAndAccretionNet", start, end, "6941000000"));
+        SecFinancialFactsCalculator.Flows utility = calculate(utilityFacts);
+        assertThat(utility.ebitda().value()).isEqualByComparingTo("14961000000");
+        assertThat(utility.ebitda().note()).contains("DepreciationAmortizationAndAccretionNet");
+
+        // 礦業（如 NEM）列示 DepreciationDepletionAndAmortization 時直接採用含折耗總額
+        List<SecFinancialFact> miningFacts = List.of(
+                fact("OperatingIncomeLoss", start, end, "11023000000"),
+                fact("DepreciationDepletionAndAmortization", start, end, "2521000000"));
+        SecFinancialFactsCalculator.Flows mining = calculate(miningFacts);
+        assertThat(mining.ebitda().value()).isEqualByComparingTo("13544000000");
+        assertThat(mining.ebitda().note()).contains("DepreciationDepletionAndAmortization");
     }
 
     @Test
-    void combinedDepletionMustReconcileToDisclosedDepreciationAndAmortization() {
-        SecFinancialFact combined = fact("DepreciationDepletionAndAmortization", "2025-01-01", "2025-12-31", "40");
-        SecFinancialFact depletion = fact("Depletion", "2025-01-01", "2025-12-31", "7");
-        depletion.setAccession(combined.getAccession());
-        SecFinancialFact depreciation = fact("Depreciation", "2025-01-01", "2025-12-31", "30");
-        SecFinancialFact amortization = fact("AdjustmentForAmortization", "2025-01-01", "2025-12-31", "3");
-        depreciation.setAccession(combined.getAccession());
-        amortization.setAccession(combined.getAccession());
-        assertThat(calculate(List.of(combined, depletion)).inputs().get(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION).value()).isNull();
-        List<SecFinancialFact> facts = List.of(combined, depletion, depreciation, amortization);
-        assertThat(calculate(facts).inputs().get(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION).value()).isEqualByComparingTo("33");
-        depletion.setValue(new BigDecimal("6"));
-        assertThat(calculate(facts).inputs().get(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION).value()).isNull();
-    }
-
-    @Test
-    void unconfirmedReportedTotalCannotBeReplacedByPartialNotesFromTheSameFiling() {
-        String start = "2025-01-01";
-        String end = "2025-12-31";
-        List<SecFinancialFact> facts = List.of(fact("DepreciationDepletionAndAmortization", start, end, "30"),
-                fact("Depreciation", start, end, "20"), fact("AmortizationOfIntangibleAssets", start, end, "12"),
-                fact("OperatingIncomeLoss", start, end, "90"));
-        matchDepreciationFiling(facts);
-        assertThat(calculate(facts).ebitda().value()).isNull();
-        assertThat(calculate(facts).ebitda().reason()).isEqualTo(SecFinancialFactsCalculator.DEPRECIATION_SCOPE_UNRESOLVED);
-        assertThat(calculator.calculate(facts, CIK, "USD", DAY, NOW, List.of(),
-                eligible -> Set.of(com.ykm.stock.analytics.converter.sec.SecFinancialFactConverter.key(eligible.getFirst())))
-                .ebitda().value()).isEqualByComparingTo("120");
-    }
-
-    @Test
-    void appleQuarterBalanceReconcilesDisclosedLiabilitiesWithoutAnExtraLeaseLine() {
+    void appleQuarterBalanceResolvesPureBorrowingsWithoutRequiringLiabilitySublineZeroErrorReconciliation() {
         String end = "2015-12-26";
         List<SecFinancialFact> facts = new ArrayList<>(List.of(
-                fact("Liabilities", null, end, "165017"),
-                fact("LiabilitiesCurrent", null, end, "76092"),
-                fact("AccountsPayableCurrent", null, end, "33312"),
-                fact("AccruedLiabilitiesCurrent", null, end, "24032"),
-                fact("DeferredRevenueCurrent", null, end, "8989"),
-                fact("DeferredRevenueNoncurrent", null, end, "3546"),
-                fact("OtherLiabilitiesNoncurrent", null, end, "32175"),
                 fact("CommercialPaper", null, end, "7259"),
                 fact("LongTermDebtCurrent", null, end, "2500"),
                 fact("LongTermDebtNoncurrent", null, end, "53204"),
                 fact("CashAndCashEquivalentsAtCarryingValue", null, end, "16689"),
-                fact("StockholdersEquity", null, end, "128267"),
-                fact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", null, end, "128267"),
-                fact("PreferredStockValue", null, end, "0")));
-        facts.forEach(fact -> fact.setAccession("0001193125-16-439878"));
+                fact("StockholdersEquity", null, end, "128267")));
         assertThat(calculate(facts).enterpriseValueAdjustment().value()).isEqualByComparingTo("46274");
-        facts.stream().filter(fact -> "OtherLiabilitiesNoncurrent".equals(fact.getTag())).findFirst().orElseThrow().setValue(new BigDecimal("30000"));
-        assertThat(calculate(facts).enterpriseValueAdjustment().value()).isNull();
     }
 
     @Test
@@ -541,12 +373,33 @@ class SecFinancialFactsCalculatorTests {
         assertThat(calculate(facts).freeCashFlow().value()).isEqualByComparingTo("180");
     }
 
+    private List<SecFinancialFact> apple2015DecemberFacts() {
+        List<SecFinancialFact> facts = new ArrayList<>();
+        for (String[] amounts : List.of(
+                new String[]{"OperatingIncomeLoss", "71230000000", "24171000000", "24246000000"},
+                new String[]{"DepreciationAmortizationAndAccretionNet", "11257000000", "2954000000", "2575000000"})) {
+            facts.add(fact(amounts[0], "2014-09-28", "2015-09-26", amounts[1]));
+            facts.add(fact(amounts[0], "2015-09-27", "2015-12-26", amounts[2]));
+            facts.add(fact(amounts[0], "2014-09-28", "2014-12-27", amounts[3]));
+        }
+        SecFinancialFact note = fact("DepreciationAndAmortization", "2014-09-28", "2015-09-26", "9200000000");
+        facts.add(note);
+        for (SecFinancialFact fact : facts) {
+            boolean annual = fact.getPeriodEnd().equals(LocalDate.of(2015, 9, 26));
+            fact.setAccession(annual ? "0000320193-15-000113" : "0001193125-16-439878");
+            fact.setFiled(annual ? LocalDate.of(2015, 10, 28) : LocalDate.of(2016, 1, 27));
+            fact.setAvailableFromDate(fact.getFiled().plusDays(1));
+            fact.setForm(annual ? "10-K" : "10-Q");
+        }
+        return facts;
+    }
+
     @Test
-    void ppeCapitalSpendingIsNotRestrictedToOneAppleAccession() {
+    void ppeCapitalSpendingUsesCompletePpeTagWithoutAddingSeparateSoftwareLine() {
         List<SecFinancialFact> facts = List.of(fact("NetCashProvidedByUsedInOperatingActivities", "2025-01-01", "2025-12-31", "200"),
                 fact("PaymentsToAcquirePropertyPlantAndEquipment", "2025-01-01", "2025-12-31", "20"),
                 fact("PaymentsToDevelopSoftware", "2025-01-01", "2025-12-31", "5"));
-        assertThat(calculate(facts).freeCashFlow().value()).isEqualByComparingTo("175");
+        assertThat(calculate(facts).freeCashFlow().value()).isEqualByComparingTo("180");
     }
 
     private static final String CIK = "0000000001";
@@ -594,7 +447,7 @@ class SecFinancialFactsCalculatorTests {
         assertThat(result.revenue().value()).isEqualByComparingTo("478834");
         assertThat(result.freeCashFlow().value()).isEqualByComparingTo("136056");
         assertThat(result.equity().value()).isEqualByComparingTo("112093");
-        assertThat(result.ebitda().reason()).isEqualTo(SecFinancialFactsCalculator.DEPRECIATION_SCOPE_UNRESOLVED);
+        assertThat(result.ebitda().value()).isEqualByComparingTo("171486");
         assertThat(result.enterpriseValueAdjustment().value()).isEqualByComparingTo("45262");
 
         SecFinancialFactsCalculator.Flows historical = calculator.calculate(facts, "0000320193", "USD", LocalDate.parse("2026-11-03"), NOW);
@@ -699,13 +552,17 @@ class SecFinancialFactsCalculatorTests {
     }
 
     @Test
-    void currentContractRevenueCannotSelectOldTotalRevenueOrReplaceMetTotal() {
+    void nonFinancialContractRevenueIsAcceptedDirectlyWhileFinancialInstitutionSicExcludesContractOnlyRevenue() {
         List<SecFinancialFact> appleShape = List.of(fact("Revenues", "2017-10-01", "2018-09-30", "100"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2025-10-01", "2026-09-30", "200"));
-        assertThat(calculate(appleShape).revenue().value()).isNull();
+        assertThat(calculator.calculate(appleShape, CIK, "3571", "USD", DAY, NOW).revenue().value()).isEqualByComparingTo("200");
+        // 銀行（6021）、券商（6211）、保險（6311）不得將合約收入單獨當作總收入
+        for (String financialSic : List.of("6021", "6211", "6311")) {
+            assertThat(calculator.calculate(appleShape, CIK, financialSic, "USD", DAY, NOW).revenue().value()).isNull();
+        }
         List<SecFinancialFact> metShape = List.of(fact("Revenues", "2025-01-01", "2025-12-31", "77084000000"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2025-01-01", "2025-12-31", "2436000000"));
-        assertThat(calculate(metShape).revenue().value()).isEqualByComparingTo("77084000000");
+        assertThat(calculator.calculate(metShape, CIK, "6311", "USD", DAY, NOW).revenue().value()).isEqualByComparingTo("77084000000");
     }
 
     @Test
@@ -726,30 +583,53 @@ class SecFinancialFactsCalculatorTests {
     }
 
     @Test
-    void contractRevenueUsesOneConsistentCumulativeTtmBasisWhenQuarterlyAndYtdVersionsDiffer() {
-        List<SecFinancialFact> facts = new ArrayList<>();
-        addYtd(facts, "RevenueFromContractWithCustomerExcludingAssessedTax", "723515000", "773550000", "524082000");
-        addYtd(facts, "GrossProfit", "158086000", "144974000", "111334000");
-        addYtd(facts, "CostOfGoodsAndServicesSold", "565429000", "628576000", "412748000");
-        facts.addAll(List.of(
+    void contractRevenueDirectlyUsesFourConsecutiveQuartersWithoutRequiringCostOfSalesReconciliation() {
+        List<SecFinancialFact> facts = List.of(
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2025-10-01", "2025-12-31", "199434000"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2026-01-01", "2026-03-31", "214952000"),
                 fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2026-04-01", "2026-06-30", "249962000"),
-                fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2026-07-01", "2026-09-30", "308636000"),
-                fact("GrossProfit", "2025-10-01", "2025-12-31", "46752000"),
-                fact("GrossProfit", "2026-01-01", "2026-03-31", "36414000"),
-                fact("GrossProfit", "2026-04-01", "2026-06-30", "49847000"),
-                fact("GrossProfit", "2026-07-01", "2026-09-30", "58713000")));
-        // 四季合計為 972984000，但同套 FY + YTD - prior YTD 為 972983000。
-        // 毛利 + 銷售成本只與後者精確對平，不使用來源間百分比容差。
+                fact("RevenueFromContractWithCustomerExcludingAssessedTax", "2026-07-01", "2026-09-30", "308636000"));
         SecFinancialFactsCalculator.Flow result = calculate(facts).revenue();
-        assertThat(result.value()).isEqualByComparingTo("972983000");
+        assertThat(result.value()).isEqualByComparingTo("972984000");
         assertThat(result.periodStart()).isEqualTo(LocalDate.of(2025, 10, 1));
         assertThat(result.periodEnd()).isEqualTo(LocalDate.of(2026, 9, 30));
-        facts.stream().filter(fact -> "CostOfGoodsAndServicesSold".equals(fact.getTag())
-                && LocalDate.of(2025, 12, 31).equals(fact.getPeriodEnd()))
-                .findFirst().orElseThrow().setValue(new BigDecimal("565428000"));
-        assertThat(calculate(facts).revenue().value()).isNull();
+    }
+
+    @Test
+    void cashFlowMissingQuartersExtendTrailingFcfAndSplitCrossingEpsVerifiesViaDilutedWeightedShares() {
+        ReportValues q3Cash = new ReportValues("NVDA", 3, LocalDate.of(2024, 4, 28), 1, 2025, "USD", "US_GAAP", Map.of(), List.of(), List.of());
+        SecFinancialFact q2Cfo = fact("NetCashProvidedByUsedInOperatingActivities", "2024-04-29", "2024-07-28", "14489000000");
+        SecFinancialFact q2Capex = fact("PaymentsToAcquirePropertyPlantAndEquipment", "2024-04-29", "2024-07-28", "977000000");
+        SecFinancialFactsCalculator.Flows flows = calculator.calculate(List.of(q2Cfo, q2Capex), CIK, "3674", "USD", DAY, NOW, List.of(q3Cash));
+        assertThat(flows.missingQuarters()).anySatisfy(missing -> {
+            assertThat(missing.statementType()).isEqualTo(3);
+            assertThat(missing.periodEnd()).isEqualTo(LocalDate.of(2024, 7, 28));
+        });
+
+        // NVDA 2024-06-10 10拆1：Q1 FY25（2024-04-28）Futu 重述後 EPS 0.60，以原申報稀釋加權平均股數 2.489B × 拆股因子 10 驗證通過
+        com.ykm.stock.analytics.model.entity.StockSplit nvdaSplit = new com.ykm.stock.analytics.model.entity.StockSplit();
+        nvdaSplit.setSourceEventId("NVDA:2024-06-10");
+        nvdaSplit.setFigi("NVDA");
+        nvdaSplit.setExecutionDate(LocalDate.of(2024, 6, 10));
+        nvdaSplit.setSplitFrom(BigDecimal.ONE);
+        nvdaSplit.setSplitTo(BigDecimal.TEN);
+        SecFinancialFact dilutedShares = fact("WeightedAverageNumberOfDilutedSharesOutstanding", "2024-01-29", "2024-04-28", "2489000000");
+        dilutedShares.setUnit("shares");
+        dilutedShares.setFiled(LocalDate.of(2024, 5, 29));
+        dilutedShares.setAvailableFromDate(LocalDate.of(2024, 5, 30));
+
+        // 拆股後交易日（2024-06-14）：重述後 EPS 0.60 通過驗證，未重述之舊值 5.98 不通過
+        assertThat(calculator.isEpsSplitBasisVerified(new BigDecimal("0.60"), new BigDecimal("14881000000"),
+                LocalDate.of(2024, 4, 27), false, List.of(dilutedShares), "USD", List.of(nvdaSplit),
+                LocalDate.of(2024, 6, 14), NOW)).isTrue();
+        assertThat(calculator.isEpsSplitBasisVerified(new BigDecimal("5.98"), new BigDecimal("14881000000"),
+                LocalDate.of(2024, 4, 27), false, List.of(dilutedShares), "USD", List.of(nvdaSplit),
+                LocalDate.of(2024, 6, 14), NOW)).isFalse();
+
+        // 拆股前交易日（2024-05-31，未復權股價 ~$1,096）：重述後 EPS 0.60 被攔截，避免算出 10 倍錯誤 P/E
+        assertThat(calculator.isEpsSplitBasisVerified(new BigDecimal("0.60"), new BigDecimal("14881000000"),
+                LocalDate.of(2024, 4, 27), false, List.of(dilutedShares), "USD", List.of(nvdaSplit),
+                LocalDate.of(2024, 5, 31), NOW)).isFalse();
     }
 
     @Test

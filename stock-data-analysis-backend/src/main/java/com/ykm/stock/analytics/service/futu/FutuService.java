@@ -210,8 +210,21 @@ public class FutuService {
         return new ObservationSession(clients.get());
     }
 
-    /** 同份快照的公司股數、價格及總市值；行情時間不是股數生效時間。 */
-    public record ShareSnapshot(long issuedShares, BigDecimal price, BigDecimal marketCap, Instant quoteTime) {}
+    /** 同份快照的公司流通／已發行股數、價格、市值及原生估值倍數；行情時間不是股數生效時間。 */
+    public record ShareSnapshot(long issuedShares, Long outstandingShares, BigDecimal price, BigDecimal marketCap,
+                                BigDecimal outstandingMarketCap, BigDecimal peTtmRate, BigDecimal pbRate, Instant quoteTime) {
+        public ShareSnapshot(long issuedShares, BigDecimal price, BigDecimal marketCap, Instant quoteTime) {
+            this(issuedShares, null, price, marketCap, null, null, null, quoteTime);
+        }
+
+        public long effectiveShares() {
+            return outstandingShares != null && outstandingShares > 0 ? outstandingShares : issuedShares;
+        }
+
+        public BigDecimal effectiveMarketCap() {
+            return outstandingMarketCap != null && outstandingMarketCap.signum() > 0 ? outstandingMarketCap : marketCap;
+        }
+    }
 
     public final class ObservationSession implements AutoCloseable {
         private final FutuQuoteClient client;
@@ -251,15 +264,29 @@ public class FutuService {
                 String symbol = security.getCode();
                 if (security.getMarket() != US || !remaining.contains(symbol) || !seen.add(symbol))
                     throw new IllegalStateException("FUTU_SHARE_SNAPSHOT_SECURITY_MISMATCH:" + symbol);
-                if (item.hasEquityExData() && item.getEquityExData().getIssuedShares() > 0) {
-                    double price = item.getBasic().getCurPrice();
-                    double marketCap = item.getEquityExData().getIssuedMarketVal();
-                    Instant quoteTime = item.getBasic().getUpdateTime().isBlank() ? null
-                            : LocalDateTime.parse(item.getBasic().getUpdateTime(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-                            .atZone(ZoneId.of("America/New_York")).toInstant();
-                    shares.put(symbol, new ShareSnapshot(item.getEquityExData().getIssuedShares(),
-                            Double.isFinite(price) && price > 0 ? BigDecimal.valueOf(price) : null,
-                            Double.isFinite(marketCap) && marketCap > 0 ? BigDecimal.valueOf(marketCap) : null, quoteTime));
+                if (item.hasEquityExData()) {
+                    QotGetSecuritySnapshot.EquitySnapshotExData ex = item.getEquityExData();
+                    long issued = ex.getIssuedShares();
+                    Long outstanding = ex.hasOutstandingShares() && ex.getOutstandingShares() > 0 ? ex.getOutstandingShares() : null;
+                    if (issued > 0 || outstanding != null) {
+                        long effectiveIssued = issued > 0 ? issued : outstanding;
+                        double price = item.getBasic().getCurPrice();
+                        double marketCap = ex.getIssuedMarketVal();
+                        double outstandingMarketVal = ex.getOutstandingMarketVal();
+                        BigDecimal peTtm = ex.hasPeTTMRate() && Double.isFinite(ex.getPeTTMRate())
+                                ? BigDecimal.valueOf(ex.getPeTTMRate()) : null;
+                        BigDecimal pb = ex.hasPbRate() && Double.isFinite(ex.getPbRate())
+                                ? BigDecimal.valueOf(ex.getPbRate()) : null;
+                        Instant quoteTime = item.getBasic().getUpdateTime().isBlank() ? null
+                                : LocalDateTime.parse(item.getBasic().getUpdateTime(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                                .atZone(ZoneId.of("America/New_York")).toInstant();
+                        shares.put(symbol, new ShareSnapshot(effectiveIssued, outstanding,
+                                Double.isFinite(price) && price > 0 ? BigDecimal.valueOf(price) : null,
+                                Double.isFinite(marketCap) && marketCap > 0 ? BigDecimal.valueOf(marketCap) : null,
+                                ex.hasOutstandingMarketVal() && Double.isFinite(outstandingMarketVal) && outstandingMarketVal > 0
+                                        ? BigDecimal.valueOf(outstandingMarketVal) : null,
+                                peTtm, pb, quoteTime));
+                    }
                 }
             }
             return Map.copyOf(shares);

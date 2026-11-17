@@ -268,43 +268,35 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
-    void commonEquityRequiresPreferredBookAmountAndEvRequiresItsMarketAmountWhenNonZero() {
+    void commonEquityDeductsPositivePreferredBookValueAndAcceptsStockholdersEquityDirectlyWhenPreferredAbsentOrZero() {
         FinancialReportValuationCalculator.ReportValues balance = values(2, java.util.Map.of(
-                FinancialConcept.STOCKHOLDERS_EQUITY, "500", FinancialConcept.PREFERRED_STOCK_CAPITAL, "20"));
+                FinancialConcept.STOCKHOLDERS_EQUITY, "500", FinancialConcept.PREFERRED_STOCK_CAPITAL, "20",
+                FinancialConcept.CURRENT_DEBT, "100", FinancialConcept.LONG_TERM_DEBT, "150",
+                FinancialConcept.CASH_AND_EQUIVALENTS, "50"));
         assertThat(calculator.commonEquity(balance).value()).isEqualByComparingTo("480");
-        assertReason(calculator.enterpriseValue(decimal("1000"), balance), "PREFERRED_EQUITY_MARKET_VALUE_MISSING");
-        assertReason(calculator.commonEquity(values(2, java.util.Map.of(FinancialConcept.STOCKHOLDERS_EQUITY, "500"))),
-                "PREFERRED_EQUITY_BOOK_VALUE_MISSING");
+        // EV 以優先股帳面值（20）作標準近似，缺少數股東權益視為 0：1000 + (100+150) + 20 + 0 - 50 = 1220。
+        assertThat(calculator.enterpriseValue(decimal("1000"), balance).value()).isEqualByComparingTo("1220");
+        assertThat(calculator.commonEquity(values(2, java.util.Map.of(FinancialConcept.STOCKHOLDERS_EQUITY, "500"))).value())
+                .isEqualByComparingTo("500");
     }
 
     @Test
-    void commonEquityCanBeReconciledFromCommonComponentsWithoutAnAbsentPreferredLine() {
+    void commonEquityDoesNotRejectAuthoritativeStockholdersEquityOverSubcomponentRoundingOrMissingLines() {
         java.util.Map<FinancialConcept, String> components = new java.util.EnumMap<>(FinancialConcept.class);
         components.put(FinancialConcept.STOCKHOLDERS_EQUITY, "107520000000");
         components.put(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "100702000000");
-        components.put(FinancialConcept.RETAINED_EARNINGS, "11326000000");
+        components.put(FinancialConcept.RETAINED_EARNINGS, "1");
         components.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED, "-4508000000");
         assertThat(calculator.commonEquity(values(2, components)).value()).isEqualByComparingTo("107520000000");
-        components.put(FinancialConcept.RETAINED_EARNINGS, "1");
-        assertReason(calculator.commonEquity(values(2, components)), "COMMON_EQUITY_COMPONENTS_MISMATCH");
     }
 
     @Test
-    void commonEquityReconcilesSeparatePaidInCapitalWithoutDoubleCountingExistingCombinedCapital() {
+    void commonEquityFallbackUsesTotalEquityMinusMinorityWhenStockholdersEquityMissing() {
         java.util.Map<FinancialConcept, String> components = new java.util.EnumMap<>(FinancialConcept.class);
-        components.put(FinancialConcept.STOCKHOLDERS_EQUITY, "1113234000");
-        components.put(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "31000");
-        components.put(FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED, "542467000");
-        components.put(FinancialConcept.RETAINED_EARNINGS, "573803000");
-        components.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED, "-3067000");
-        assertThat(calculator.commonEquity(values(2, components)).value()).isEqualByComparingTo("1113234000");
-
-        components.put(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "542498000");
-        assertThat(calculator.commonEquity(values(2, components)).value()).isEqualByComparingTo("1113234000");
-
-        components.put(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "31000");
-        components.put(FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED, "542467001");
-        assertReason(calculator.commonEquity(values(2, components)), "COMMON_EQUITY_COMPONENTS_MISMATCH");
+        components.put(FinancialConcept.TOTAL_EQUITY, "1100");
+        components.put(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, "100");
+        components.put(FinancialConcept.PREFERRED_STOCK_CAPITAL, "50");
+        assertThat(calculator.commonEquity(values(2, components)).value()).isEqualByComparingTo("950");
     }
 
     @Test
@@ -313,42 +305,20 @@ class FinancialReportValuationCalculatorTests {
                 item("Stockholders' Equity", "1113234000"), item("-Common Stock", "31000"),
                 item("Additional Paid-In Capital", "542467000"), item("Retained Earnings", "573803000"),
                 item("Gains/Losses Not Affecting Retained Earnings", "-3067000"));
-        List<FinancialReportItemMapping> catalog = List.of(
-                mapping(2, "Stockholders' Equity", FinancialConcept.STOCKHOLDERS_EQUITY),
-                mapping(2, "-Common Stock", FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED),
-                mapping(2, "Additional Paid-In Capital", FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED),
-                mapping(2, "Retained Earnings", FinancialConcept.RETAINED_EARNINGS),
-                mapping(2, "Gains/Losses Not Affecting Retained Earnings", FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED));
-        FinancialReportValuationCalculator.ReportValues extracted = calculator.extract(List.of(report), catalog).getFirst();
+        FinancialReportValuationCalculator.ReportValues extracted = calculator.extract(List.of(report)).getFirst();
         assertThat(calculator.commonEquity(extracted).value()).isEqualByComparingTo("1113234000");
     }
 
     @Test
-    void commonEquityReconcilesTreasuryStockAsAContraEquityComponent() {
-        java.util.Map<FinancialConcept, String> components = new java.util.EnumMap<>(FinancialConcept.class);
-        components.put(FinancialConcept.STOCKHOLDERS_EQUITY, "558400000");
-        components.put(FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "100000");
-        components.put(FinancialConcept.ADDITIONAL_PAID_IN_CAPITAL_AS_REPORTED, "1267800000");
-        components.put(FinancialConcept.RETAINED_EARNINGS, "-214000000");
-        components.put(FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED, "-392800000");
-        components.put(FinancialConcept.TREASURY_STOCK_AS_REPORTED, "102700000");
-        assertThat(calculator.commonEquity(values(2, components)).value()).isEqualByComparingTo("558400000");
-
-        components.put(FinancialConcept.TREASURY_STOCK_AS_REPORTED, "112700000");
-        assertReason(calculator.commonEquity(values(2, components)), "COMMON_EQUITY_COMPONENTS_MISMATCH");
-    }
-
-    @Test
-    void disclosedNullPreferredCapitalIsNotTheSameAsAnAbsentLine() {
+    void disclosedNullPreferredCapitalAcceptsStockholdersEquityWithoutBlocking() {
         FinancialReportValuationCalculator.ReportValues base = values(2, java.util.Map.of(
-                FinancialConcept.STOCKHOLDERS_EQUITY, "500", FinancialConcept.COMMON_STOCK_CAPITAL_AS_REPORTED, "300",
-                FinancialConcept.RETAINED_EARNINGS, "220", FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED, "-20"));
+                FinancialConcept.STOCKHOLDERS_EQUITY, "500"));
         java.util.Map<FinancialConcept, MetricResult<BigDecimal>> inputs = new java.util.EnumMap<>(base.values());
         inputs.put(FinancialConcept.PREFERRED_STOCK_CAPITAL, MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                 com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto.of("FINANCIAL_INPUT_MISSING", "VALUATION", "null")));
         FinancialReportValuationCalculator.ReportValues disclosed = new FinancialReportValuationCalculator.ReportValues(base.figi(), 2,
                 base.periodEnd(), base.periodType(), base.fiscalYear(), base.currency(), base.accountingStandards(), inputs, List.of(), List.of());
-        assertReason(calculator.commonEquity(disclosed), "PREFERRED_EQUITY_BOOK_VALUE_MISSING");
+        assertThat(calculator.commonEquity(disclosed).value()).isEqualByComparingTo("500");
     }
 
     @Test
@@ -362,25 +332,22 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
-    void onlyExplicitZeroLeasesPermitDebtAggregatesWithoutDoubleCounting() {
+    void usGaapPureBorrowingsFallbackResolvesLeaseUnresolvedSamplesWhileUnsplitTotalWithoutPureDebtBlocks() {
         java.util.Map<FinancialConcept, String> inputs = new java.util.EnumMap<>(FinancialConcept.class);
-        inputs.put(FinancialConcept.PREFERRED_STOCK_CAPITAL, "0");
-        inputs.put(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, "0");
         inputs.put(FinancialConcept.CASH_AND_EQUIVALENTS, "50");
         inputs.put(FinancialConcept.CURRENT_DEBT, "100");
         inputs.put(FinancialConcept.CURRENT_CAPITAL_LEASES, "20");
         inputs.put(FinancialConcept.LONG_TERM_DEBT, "200");
         inputs.put(FinancialConcept.LONG_TERM_CAPITAL_LEASES, "30");
-        assertReason(calculator.enterpriseValue(decimal("1000"), values(2, inputs)), "EV_LEASE_SCOPE_UNRESOLVED");
-        inputs.put(FinancialConcept.CURRENT_CAPITAL_LEASES, "0");
-        inputs.put(FinancialConcept.LONG_TERM_CAPITAL_LEASES, "0");
+        // 有純借款（100 + 200）時直接採純借款計算 US_GAAP EV：1000 + 300 - 50 = 1250。
         assertThat(calculator.enterpriseValue(decimal("1000"), values(2, inputs)).value()).isEqualByComparingTo("1250");
-        inputs.put(FinancialConcept.CURRENT_DEBT_AND_LEASES, "100");
-        inputs.put(FinancialConcept.LONG_TERM_DEBT_AND_LEASES, "200");
-        assertThat(calculator.enterpriseValue(decimal("1000"), values(2, inputs)).value()).isEqualByComparingTo("1250");
-        inputs.remove(FinancialConcept.CURRENT_DEBT_AND_LEASES);
-        inputs.remove(FinancialConcept.CURRENT_CAPITAL_LEASES);
-        assertReason(calculator.enterpriseValue(decimal("1000"), values(2, inputs)), "EV_LEASE_SCOPE_UNRESOLVED");
+
+        // 若僅有未拆分的含租賃債務總額且無純借款、無租賃拆分，維持 EV_LEASE_SCOPE_UNRESOLVED。
+        java.util.Map<FinancialConcept, String> unsplitOnly = new java.util.EnumMap<>(FinancialConcept.class);
+        unsplitOnly.put(FinancialConcept.CASH_AND_EQUIVALENTS, "50");
+        unsplitOnly.put(FinancialConcept.CURRENT_DEBT_AND_LEASES, "120");
+        unsplitOnly.put(FinancialConcept.LONG_TERM_DEBT_AND_LEASES, "230");
+        assertReason(calculator.enterpriseValue(decimal("1000"), values(2, unsplitOnly)), "EV_LEASE_SCOPE_UNRESOLVED");
     }
 
     @Test
@@ -401,7 +368,6 @@ class FinancialReportValuationCalculatorTests {
         assertThat(calculator.enterpriseValue(decimal("1000000"), values(2, inputs)).value()).isEqualByComparingTo("1106454");
     }
 
-
     @Test
     void unresolvedFinanceCostDoesNotAffectOperatingEbitdaOrEps() {
         java.util.Map<FinancialConcept, String> amounts = new java.util.EnumMap<>(FinancialConcept.class);
@@ -420,24 +386,16 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
-    void ebitdaUsesOperatingProfitAndPrefersThePureTotalInTheSameReport() {
-        java.util.Map<FinancialConcept, String> inputs = new java.util.EnumMap<>(FinancialConcept.class);
-        inputs.put(FinancialConcept.OPERATING_PROFIT, "80");
-        inputs.put(FinancialConcept.INCOME_DEPRECIATION, "16");
-        inputs.put(FinancialConcept.INCOME_AMORTIZATION, "5");
-        inputs.put(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, "20");
-        FinancialReportValuationCalculator.ReportValues income = values(1, inputs);
-        assertThat(calculator.trailingEbitda(List.of(income), income).value()).isEqualByComparingTo("100");
-        inputs.remove(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION);
-        inputs.remove(FinancialConcept.INCOME_DEPRECIATION);
-        inputs.put(FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION, "99");
-        inputs.put(FinancialConcept.EBITDA_MARGIN, "99");
-        income = values(1, inputs);
-        assertReason(calculator.trailingEbitda(List.of(income), income), "FINANCIAL_INPUT_MISSING");
-        inputs.put(FinancialConcept.INCOME_DEPRECIATION, "15");
-        inputs.put(FinancialConcept.INCOME_AMORTIZATION, "5");
-        income = values(1, inputs);
-        assertThat(calculator.trailingEbitda(List.of(income), income).value()).isEqualByComparingTo("100");
+    void ebitdaFallsBackToCashFlowStatementDdaWhenIncomeStatementLacksDepreciation() {
+        java.util.Map<FinancialConcept, String> incomeInputs = new java.util.EnumMap<>(FinancialConcept.class);
+        incomeInputs.put(FinancialConcept.OPERATING_PROFIT, "158063");
+        FinancialReportValuationCalculator.ReportValues income = values(1, incomeInputs);
+
+        java.util.Map<FinancialConcept, String> cashFlowInputs = new java.util.EnumMap<>(FinancialConcept.class);
+        cashFlowInputs.put(FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION, "13423");
+        FinancialReportValuationCalculator.ReportValues cashFlow = values(3, cashFlowInputs);
+
+        assertThat(calculator.trailingEbitda(List.of(income, cashFlow), income).value()).isEqualByComparingTo("171486");
     }
 
     @Test
@@ -454,25 +412,9 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
-    void redeemableMixedSecurityAmountCannotBeOmittedFromEvButDoesNotBlockOtherMultiples() {
-        // AMRX 2026/Q3 的 8077 樣本金額；其餘輸入為合成資料，隔離資本橋接缺口。
-        FinancialReportValuationCalculator.ReportValues balance = mixedSecurityBalance("109453000");
-        MetricResult<BigDecimal> ev = calculator.enterpriseValue(decimal("1000"), balance);
-        assertReason(ev, "EV_FINANCING_SCOPE_UNRESOLVED");
-        assertThat(balance.unknownNames()).isEmpty();
-        FinancialReportValuationCalculator.MarketMultiples multiples = calculator.calculate(inputs("10", "5",
-                calculator.commonEquity(balance).value().toPlainString(), "1000", "50", null, "100", "USD"));
-        assertThat(multiples.pe().value()).isEqualByComparingTo("20");
-        assertThat(multiples.pb().value()).isEqualByComparingTo("2");
-        assertThat(multiples.ps().value()).isEqualByComparingTo("1");
-        assertThat(multiples.pfcf().value()).isEqualByComparingTo("20");
-        assertThat(multiples.evEbitda().value()).isNull();
-    }
-
-    @Test
-    void explicitlyZeroMixedSecurityDoesNotBlockEvButUnknownAmountIsNotZero() {
+    void convertiblePreferredAndDerivativePendingLinesDoNotBlockOperatingCompanyEv() {
+        assertThat(calculator.enterpriseValue(decimal("1000"), mixedSecurityBalance("109453000")).value()).isEqualByComparingTo("1200");
         assertThat(calculator.enterpriseValue(decimal("1000"), mixedSecurityBalance("0")).value()).isEqualByComparingTo("1200");
-        assertReason(calculator.enterpriseValue(decimal("1000"), mixedSecurityBalance(null)), "EV_FINANCING_SCOPE_UNRESOLVED");
     }
 
     private FinancialReportValuationCalculator.ReportValues mixedSecurityBalance(String amount) {
@@ -493,30 +435,30 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
-    void myrgAndLiiLeaseSamplesCannotBeCountedWhollyOrDroppedFromUsGaapEv() {
-        for (java.util.Map<FinancialConcept, String> sample : List.of(
-                leaseInputs("18377000", "4554000", "13823000", "85132000", "54483000", "30649000"),
-                leaseInputs("333200000", "226000000", "107200000", "1437500000", "1093500000", "344000000"))) {
-            assertReason(calculator.enterpriseValue(decimal("1000000000"), extractedBalance(sample, "US_GAAP")), "EV_LEASE_SCOPE_UNRESOLVED");
-            java.util.Map<FinancialConcept, String> withoutAggregates = new java.util.EnumMap<>(sample);
-            withoutAggregates.remove(FinancialConcept.CURRENT_DEBT_AND_LEASES);
-            withoutAggregates.remove(FinancialConcept.LONG_TERM_DEBT_AND_LEASES);
-            assertReason(calculator.enterpriseValue(decimal("1000000000"), extractedBalance(withoutAggregates, "US_GAAP")), "EV_LEASE_SCOPE_UNRESOLVED");
-        }
+    void myrgAndLiiLeaseSamplesResolveViaPureBorrowingsUnderUsGaapAndIncludeLeasesUnderIfrs() {
+        java.util.Map<FinancialConcept, String> myrg = leaseInputs("18377000", "4554000", "13823000", "85132000", "54483000", "30649000");
+        // US_GAAP 採純借款：1000M + 4,554,000 + 54,483,000 = 1,059,037,000
+        assertThat(calculator.enterpriseValue(decimal("1000000000"), extractedBalance(myrg, "US_GAAP")).value())
+                .isEqualByComparingTo("1059037000");
+        // IFRS（含 Futu NonUS_GAAP）納入全部租賃負債：1000M + 18,377,000 + 85,132,000 = 1,103,509,000
+        assertThat(calculator.enterpriseValue(decimal("1000000000"), extractedBalance(myrg, "IFRS")).value())
+                .isEqualByComparingTo("1103509000");
+        assertThat(calculator.enterpriseValue(decimal("1000000000"), extractedBalance(myrg, "NonUS_GAAP")).value())
+                .isEqualByComparingTo("1103509000");
     }
 
     @Test
-    void unknownOrNonUsAccountingDoesNotUseTheUsGaapEvPolicy() {
-        java.util.Map<FinancialConcept, String> inputs = leaseInputs("100", "100", "0", "200", "200", "0");
-        for (String standard : new String[]{null, "NonUS_GAAP"}) {
-            FinancialReportValuationCalculator.ReportValues balance = extractedBalance(inputs, standard);
-            assertReason(calculator.enterpriseValue(decimal("1000"), balance), "EV_ACCOUNTING_STANDARD_UNCONFIRMED");
-            assertThat(calculator.commonEquity(balance).value()).isEqualByComparingTo("500");
-        }
+    void unknownAccountingStandardBlocksEvWhileIfrsAndUsGaapSucceedWhenConsistent() {
+        java.util.Map<FinancialConcept, String> inputs = leaseInputs("120", "100", "20", "230", "200", "30");
+        assertReason(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, null)), "EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        assertReason(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "")), "EV_ACCOUNTING_STANDARD_UNCONFIRMED");
+        assertThat(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "US_GAAP")).value()).isEqualByComparingTo("1300");
+        assertThat(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "IFRS")).value()).isEqualByComparingTo("1350");
+        assertThat(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "NonUS_GAAP")).value()).isEqualByComparingTo("1350");
     }
 
     @Test
-    void zeroLeaseConfirmationIsRequiredAndNoUnidentifiedInvestmentIsDeductedAsCash() {
+    void negativeLeaseBlocksWhileNoUnidentifiedInvestmentIsDeductedAsCash() {
         java.util.Map<FinancialConcept, String> inputs = leaseInputs("100", "100", "0", "200", "200", "0");
         inputs.put(FinancialConcept.CASH_AND_EQUIVALENTS, "50");
         inputs.put(FinancialConcept.CASH_AND_SHORT_TERM_INVESTMENTS, "350");
@@ -524,18 +466,33 @@ class FinancialReportValuationCalculatorTests {
         inputs.put(FinancialConcept.TOTAL_INVESTMENTS_AS_REPORTED, "500");
         assertThat(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "US_GAAP")).value()).isEqualByComparingTo("1250");
         inputs.remove(FinancialConcept.CURRENT_CAPITAL_LEASES);
-        assertReason(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "US_GAAP")), "EV_LEASE_SCOPE_UNRESOLVED");
+        assertThat(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "US_GAAP")).value()).isEqualByComparingTo("1250");
         inputs.put(FinancialConcept.CURRENT_CAPITAL_LEASES, "-1");
         assertReason(calculator.enterpriseValue(decimal("1000"), extractedBalance(inputs, "US_GAAP")), "EV_LEASE_SCOPE_UNRESOLVED");
     }
 
     @Test
-    void nonUsIncomeCannotSupplyEbitdaUnderTheUsGaapEvPolicy() {
-        FinancialReport income = report("A", 1, 2025, 7, "2025-12-30", "USD", item("EPS", "5"));
-        income.setAccountingStandards("NonUS_GAAP");
-        List<FinancialReportValuationCalculator.ReportValues> values = calculator.extract(List.of(income), List.of(mapping(1, "EPS", FinancialConcept.DILUTED_EPS)));
-        assertReason(calculator.trailingEbitda(values, values.getFirst()), "EV_ACCOUNTING_STANDARD_UNCONFIRMED");
-        assertThat(calculator.trailingTwelveMonths(values, "A", 1, FinancialConcept.DILUTED_EPS, income.getPeriodEnd(), "USD").value()).isEqualByComparingTo("5");
+    void ifrsIncomeSuppliesEbitdaWhenConsistentAcrossTtmAndBlocksMixedStandards() {
+        FinancialReport q1 = report("A", 1, 2025, 1, "2025-03-31", "USD",
+                new FinancialReport.Item(8017L, "Operating Profit", decimal("50"), null, null),
+                new FinancialReport.Item(8011L, "Depreciation & Amortization & Depletion", decimal("10"), null, null));
+        FinancialReport q2 = report("A", 1, 2025, 2, "2025-06-30", "USD",
+                new FinancialReport.Item(8017L, "Operating Profit", decimal("60"), null, null),
+                new FinancialReport.Item(8011L, "Depreciation & Amortization & Depletion", decimal("12"), null, null));
+        FinancialReport q3 = report("A", 1, 2025, 3, "2025-09-30", "USD",
+                new FinancialReport.Item(8017L, "Operating Profit", decimal("70"), null, null),
+                new FinancialReport.Item(8011L, "Depreciation & Amortization & Depletion", decimal("14"), null, null));
+        FinancialReport q4 = report("A", 1, 2025, 4, "2025-12-31", "USD",
+                new FinancialReport.Item(8017L, "Operating Profit", decimal("80"), null, null),
+                new FinancialReport.Item(8011L, "Depreciation & Amortization & Depletion", decimal("16"), null, null));
+        for (FinancialReport q : List.of(q1, q2, q3, q4)) q.setAccountingStandards("NonUS_GAAP");
+        List<FinancialReportValuationCalculator.ReportValues> values = calculator.extract(List.of(q1, q2, q3, q4));
+        assertThat(calculator.trailingEbitda(values, values.getLast()).value()).isEqualByComparingTo("312");
+
+        // 若同一 TTM 期間混用 NonUS_GAAP（IFRS）與 US_GAAP，必須阻擋以避免口徑混算。
+        q4.setAccountingStandards("US_GAAP");
+        List<FinancialReportValuationCalculator.ReportValues> mixed = calculator.extract(List.of(q1, q2, q3, q4));
+        assertReason(calculator.trailingEbitda(mixed, mixed.getLast()), "EV_ACCOUNTING_STANDARD_UNCONFIRMED");
     }
 
     @Test

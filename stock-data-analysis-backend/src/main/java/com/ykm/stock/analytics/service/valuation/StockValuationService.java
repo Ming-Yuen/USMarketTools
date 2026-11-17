@@ -85,6 +85,9 @@ public class StockValuationService {
     private static final MathContext MC = MathContext.DECIMAL128;
     private static final LocalDate PERIOD_REBUILD_START = LocalDate.of(2014, 1, 1);
     private static final BigDecimal TWO_PERCENT = new BigDecimal("0.02");
+    private static final BigDecimal TEN_PERCENT = new BigDecimal("0.10");
+    private static final Set<String> US_DOMESTIC_GAAP_FORMS = Set.of("10-K", "10-K/A", "10-KT", "10-KT/A", "10-Q", "10-Q/A");
+    private static final Set<String> PERIODIC_SHARE_FORMS = Set.of("10-K", "10-K/A", "10-KT", "10-KT/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A");
     private static final int REBUILD_BATCH_SIZE = 40;
     private static final int LATEST_BATCH_SIZE = 100;
     private static final int MIN_HISTORICAL_SAMPLES = 6;
@@ -195,15 +198,16 @@ public class StockValuationService {
             cutoff = calendar.getSessionCloseAt(day);
             targetQuote = quoteByDate.get(day);
         }
+        LocalDate latestSessionForRequest = defaultLatestRequest ? effectiveLatest : lastClosed;
         List<StockSplit> stockSplits = splits.findByFigiInOrderByExecutionDateAsc(List.of(figi));
         String cik = resolveCik(stock, day);
         boolean multiSecurityIssuer = cik != null && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
         StockShareObservation latestObs = shareObservations
                 .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", now).orElse(null);
-        StockShareObservation cutoffObs = day.equals(effectiveLatest) ? latestObs
+        StockShareObservation cutoffObs = day.equals(latestSessionForRequest) ? latestObs
                 : shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", cutoff).orElse(null);
         StockShareObservation closingSnap = null;
-        if (day.equals(effectiveLatest)) {
+        if (day.equals(latestSessionForRequest)) {
             List<StockShareObservation> snaps = shareObservations.findLatestClosingSnapshotAt(
                     List.of(figi), calendar.getSessionOpenAt(day), cutoff, now);
             if (!snaps.isEmpty()) closingSnap = snaps.getFirst();
@@ -219,23 +223,23 @@ public class StockValuationService {
         } else {
             dayValuation = evaluateSingleDay(stock, status, targetQuote, matchedPeriod, stockSplits,
                     primaryObs, cutoffObs,
-                    multiSecurityIssuer, verifiedOneToOne, modelCtx, day, cutoff, now, effectiveLatest);
+                    multiSecurityIssuer, verifiedOneToOne, modelCtx, day, cutoff, now, latestSessionForRequest);
         }
 
         FinancialsDto financialsDto = matchedPeriod == null ? null
-                : toFinancialsDto(matchedPeriod, stockSplits, day, effectiveLatest, cutoffObs, multiSecurityIssuer, verifiedOneToOne, status);
+                : toFinancialsDto(matchedPeriod, stockSplits, day, latestSessionForRequest, cutoffObs, multiSecurityIssuer, verifiedOneToOne, status);
 
         List<ValuationResultDto> monthlyHistory = buildHistoryFromLoaded(
                 stock, status, quoteByDate, periods, stockSplits, closingSnap, cutoffObs,
-                multiSecurityIssuer, verifiedOneToOne, modelCtx, effectiveLatest, now, true);
+                multiSecurityIssuer, verifiedOneToOne, modelCtx, latestSessionForRequest, now, true);
 
-        boolean historicalDate = day.isBefore(effectiveLatest);
+        boolean historicalDate = day.isBefore(latestSessionForRequest);
         boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
         String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
                 : dayValuation.modelCode() != null ? dayValuation.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
         String selectedMetric = selectPrimaryMetricForDay(modelCtx, dayValuation.metrics(), matchedPeriod);
         DayDenominators denoms = resolveDayDenominators(stock, status, targetQuote, matchedPeriod, stockSplits,
-                primaryObs, cutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, effectiveLatest);
+                primaryObs, cutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest);
         String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : industryCode;
 
         ValuationReferenceDto historicalRef = buildHistoricalReference(
@@ -836,7 +840,11 @@ public class StockValuationService {
                     : BigDecimal.valueOf(obs.effectiveShares());
             sharesAtDay = rawShares.multiply(StockSplitCalculator.shareFactor(stockSplits, basis, day), MC);
             sharesAvailAt = obs.getObservedAt();
-            sharesCalc = multiClass ? "富途最新等值流通股數基準" : "富途最新流通在外股數";
+            boolean hasDirectOutstanding = obs.getOutstandingShares() != null && obs.getOutstandingShares() > 0;
+            sharesCalc = multiClass
+                    ? (obs.getOutstandingMarketCap() != null && obs.getOutstandingMarketCap().signum() > 0
+                            ? "富途最新等值流通股數基準" : "富途最新等值股數基準（已發行市值備援）")
+                    : (hasDirectOutstanding ? "富途最新流通在外股數" : "富途最新已發行股數（舊快照備援）");
         } else if (p.getSharesOutstanding() != null && MetricStatus.AVAILABLE.name().equals(p.getSharesOutstandingStatus()) && p.getSharesBasisDate() != null) {
             if (splitError == null || p.getSharesBasisDate().equals(day)) {
                 sharesAtDay = p.getSharesOutstanding().multiply(StockSplitCalculator.shareFactor(stockSplits, p.getSharesBasisDate(), day), MC);
@@ -907,16 +915,17 @@ public class StockValuationService {
         if (alignment.windows().isEmpty()) return List.of();
 
         Map<ReportObservationKey, Instant> futuObservedMap = new HashMap<>();
-        List<ReportValues> alignedReports = alignment.reports();
-        for (int i = 0; i < eligibleFutu.size() && i < alignedReports.size(); i++) {
+        List<ReportValues> rawAligned = alignment.reports();
+        for (int i = 0; i < eligibleFutu.size() && i < rawAligned.size(); i++) {
             FinancialReport src = eligibleFutu.get(i);
-            ReportValues norm = alignedReports.get(i);
+            ReportValues norm = rawAligned.get(i);
             ReportObservationKey key = new ReportObservationKey(norm.statementType(), norm.periodEnd(), norm.periodType());
             Instant prev = futuObservedMap.get(key);
             if (prev == null || (src.getObservedAt() != null && src.getObservedAt().isAfter(prev))) {
                 futuObservedMap.put(key, src.getObservedAt());
             }
         }
+        List<ReportValues> alignedReports = normalizeReportStandardsWithSec(stock, rawAligned, alignment.facts());
 
         List<StockFinancialPeriod> builtRows = new ArrayList<>();
         for (PeriodWindow window : alignment.windows()) {
@@ -924,26 +933,24 @@ public class StockValuationService {
             List<ReportValues> reportsUpToP = alignedReports.stream()
                     .filter(r -> !r.periodEnd().isAfter(periodEnd)).toList();
             String periodCik = resolveCik(stock, periodEnd);
-            List<SecFinancialFact> factsUpToP = periodCik == null ? List.of()
-                    : alignment.facts().stream()
-                            .filter(f -> periodCik.equals(f.getCik()) && !f.getPeriodEnd().isAfter(periodEnd)).toList();
+            List<SecFinancialFact> periodCikFacts = periodCik == null ? List.of()
+                    : alignment.facts().stream().filter(f -> periodCik.equals(f.getCik())).toList();
+            List<SecFinancialFact> factsUpToP = periodCikFacts.stream()
+                    .filter(f -> !f.getPeriodEnd().isAfter(periodEnd)).toList();
 
-            ReportValues income = latestStatementAt(reportsUpToP, 1, periodEnd);
-            ReportValues balance = latestStatementAt(reportsUpToP, 2, periodEnd);
-            ReportValues cashFlow = latestStatementAt(reportsUpToP, 3, periodEnd);
+            ReportValues income = statementAtPeriod(reportsUpToP, 1, periodEnd);
+            ReportValues balance = statementAtPeriod(reportsUpToP, 2, periodEnd);
+            ReportValues cashFlow = statementAtPeriod(reportsUpToP, 3, periodEnd);
 
-            boolean hasFutuAtEnd = (income != null && income.periodEnd().equals(periodEnd))
-                    || (balance != null && balance.periodEnd().equals(periodEnd))
-                    || (cashFlow != null && cashFlow.periodEnd().equals(periodEnd));
+            boolean hasFutuAtEnd = income != null || balance != null || cashFlow != null;
             boolean hasSecAtEnd = factsUpToP.stream().anyMatch(f -> periodEnd.equals(f.getPeriodEnd()) && !"shares".equals(f.getUnit()));
             if (!hasFutuAtEnd && !hasSecAtEnd) continue;
 
             String reportingCurrency = firstNonBlank(
-                    income != null && income.periodEnd().equals(periodEnd) ? income.currency() : null,
-                    balance != null && balance.periodEnd().equals(periodEnd) ? balance.currency() : null,
-                    cashFlow != null && cashFlow.periodEnd().equals(periodEnd) ? cashFlow.currency() : null,
                     income != null ? income.currency() : null,
                     balance != null ? balance.currency() : null,
+                    cashFlow != null ? cashFlow.currency() : null,
+                    latestReportCurrency(reportsUpToP),
                     stock.getCurrency());
 
             Flows secFlows = factsUpToP.isEmpty() || reportingCurrency == null ? null
@@ -952,7 +959,7 @@ public class StockValuationService {
 
             StockFinancialPeriod row = assemblePeriodRow(
                     stock, status, window, reportsUpToP, income, balance, cashFlow,
-                    secFlows, factsUpToP, rawSecFacts, futuObservedMap, stockSplits, latestObs,
+                    secFlows, periodCikFacts, rawSecFacts, futuObservedMap, stockSplits, latestObs,
                     multiClass, verifiedOneToOne, financialInstitution,
                     reportingCurrency, periodCik, latestShareBasisDate, calculatedAt);
             builtRows.add(row);
@@ -963,7 +970,7 @@ public class StockValuationService {
     private StockFinancialPeriod assemblePeriodRow(
             Stock stock, StockStatus status, PeriodWindow window, List<ReportValues> reportsUpToP,
             ReportValues income, ReportValues balance, ReportValues cashFlow,
-            Flows secFlows, List<SecFinancialFact> factsUpToP, List<SecFinancialFact> allStockSecFacts,
+            Flows secFlows, List<SecFinancialFact> periodCikFacts, List<SecFinancialFact> allStockSecFacts,
             Map<ReportObservationKey, Instant> futuObservedMap, List<StockSplit> stockSplits, StockShareObservation latestObs,
             boolean multiClass, boolean verifiedOneToOne, boolean financialInstitution,
             String reportingCurrency, String periodCik, LocalDate latestShareBasisDate, Instant calculatedAt) {
@@ -976,7 +983,9 @@ public class StockValuationService {
         row.setFiscalYear(window.fiscalYear());
         row.setFiscalQuarter(window.fiscalQuarter());
         row.setReportingCurrency(reportingCurrency);
+        boolean secUsGaapAtEnd = hasDomesticUsGaapFilingAt(periodCikFacts, periodEnd);
         String normStandard = firstNonBlank(
+                secUsGaapAtEnd ? "US_GAAP" : null,
                 income != null ? FinancialReportValuationCalculator.normalizeAccountingStandard(income.accountingStandards()) : null,
                 balance != null ? FinancialReportValuationCalculator.normalizeAccountingStandard(balance.accountingStandards()) : null,
                 secFlows != null ? "US_GAAP" : null);
@@ -986,14 +995,24 @@ public class StockValuationService {
         Instant incomeObs = statementObservedAt(income, futuObservedMap);
         Instant balanceObs = statementObservedAt(balance, futuObservedMap);
         Instant cashFlowObs = statementObservedAt(cashFlow, futuObservedMap);
-        LocalDate ttmStart = resolveFutuTtmStart(reportsUpToP, figi, 1, income != null ? income.periodEnd() : periodEnd, window.periodStart());
-        LocalDate cfTtmStart = resolveFutuTtmStart(reportsUpToP, figi, 3, cashFlow != null ? cashFlow.periodEnd() : periodEnd, window.periodStart());
+        Flow secRevAtEnd = secFlows == null ? null : samePeriodSecFlow(secFlows.revenue(), periodEnd);
+        Flow secCfoAtEnd = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.OPERATING_CASH_FLOW), periodEnd);
+        LocalDate secAnnualIncStart = secRevAtEnd != null && secRevAtEnd.periodStart() != null
+                && ChronoUnit.DAYS.between(secRevAtEnd.periodStart(), periodEnd) >= 350 ? secRevAtEnd.periodStart() : null;
+        LocalDate secAnnualCfStart = secCfoAtEnd != null && secCfoAtEnd.periodStart() != null
+                && ChronoUnit.DAYS.between(secCfoAtEnd.periodStart(), periodEnd) >= 350 ? secCfoAtEnd.periodStart() : null;
+        List<ReportValues> reportsWithSecMissing = secFlows == null || secFlows.missingQuarters().isEmpty() ? reportsUpToP
+                : combineReportsWithMissingQuarters(reportsUpToP, secFlows.missingQuarters());
+        LocalDate ttmStart = resolveFutuTtmStart(reportsWithSecMissing, figi, 1, periodEnd, window.periodStart(), secAnnualIncStart);
+        LocalDate cfTtmStart = resolveFutuTtmStart(reportsWithSecMissing, figi, 3, periodEnd, window.periodStart(), secAnnualCfStart);
 
+        ReportValues effectiveIncome = effectiveFlowStatement(income, secFlows, 1, periodEnd);
+        ReportValues effectiveCashFlow = effectiveFlowStatement(cashFlow, secFlows, 3, periodEnd);
         Set<Flow> usedSecFlows = new ArrayListSet();
 
         // 1. TTM 營業收入
-        ResolvedFlow rev = resolveTrailingFlow(reportsUpToP, income, FinancialConcept.REVENUE_AS_REPORTED,
-                secFlows == null ? null : secFlows.revenue(), secFlows, reportingCurrency, ttmStart, incomeObs,
+        ResolvedFlow rev = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.REVENUE_AS_REPORTED,
+                secRevAtEnd, secFlows, reportingCurrency, ttmStart, incomeObs,
                 "Futu 營業收入 TTM", "SEC 營業收入 TTM", usedSecFlows);
         row.setRevenueTtm(rev.value());
         row.setRevenueTtmStatus(rev.status());
@@ -1004,8 +1023,8 @@ public class StockValuationService {
         row.setRevenueTtmAvailableAt(rev.availableAt());
 
         // 2. TTM 普通股淨利
-        Flow secNetIncome = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.NET_INCOME_COMMON);
-        ResolvedFlow netInc = resolveTrailingFlow(reportsUpToP, income, FinancialConcept.NET_INCOME_COMMON,
+        Flow secNetIncome = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.NET_INCOME_COMMON), periodEnd);
+        ResolvedFlow netInc = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.NET_INCOME_COMMON,
                 secNetIncome, secFlows, reportingCurrency, ttmStart, incomeObs,
                 "Futu 普通股淨利 TTM", "SEC 普通股淨利 TTM", usedSecFlows);
         row.setNetIncomeCommonTtm(netInc.value());
@@ -1017,13 +1036,12 @@ public class StockValuationService {
         row.setNetIncomeCommonTtmAvailableAt(netInc.availableAt());
 
         // 3. TTM 稀釋 EPS 與拆股基準驗證
-        populateEpsTtm(row, reportsUpToP, income, secFlows, allStockSecFacts, stockSplits,
-                multiClass, verifiedOneToOne, reportingCurrency, ttmStart, incomeObs, latestShareBasisDate, calculatedAt, usedSecFlows);
+        populateEpsTtm(row, reportsUpToP, effectiveIncome, secFlows, allStockSecFacts, stockSplits,
+                multiClass, verifiedOneToOne, reportingCurrency, periodEnd, ttmStart, incomeObs, latestShareBasisDate, calculatedAt, usedSecFlows);
 
         // 4. TTM 營運現金流
-        Flow secCfo = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.OPERATING_CASH_FLOW);
-        ResolvedFlow cfo = resolveTrailingFlow(reportsUpToP, cashFlow, FinancialConcept.OPERATING_CASH_FLOW,
-                secCfo, secFlows, reportingCurrency, cfTtmStart, cashFlowObs,
+        ResolvedFlow cfo = resolveTrailingFlow(reportsUpToP, effectiveCashFlow, FinancialConcept.OPERATING_CASH_FLOW,
+                secCfoAtEnd, secFlows, reportingCurrency, cfTtmStart, cashFlowObs,
                 "Futu 營運現金流 TTM", "SEC 營運現金流 TTM", usedSecFlows);
         row.setOperatingCashFlowTtm(cfo.value());
         row.setOperatingCashFlowTtmStatus(cfo.status());
@@ -1034,8 +1052,8 @@ public class StockValuationService {
         row.setOperatingCashFlowTtmAvailableAt(cfo.availableAt());
 
         // 5. TTM 資本支出
-        Flow secCapex = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.CAPITAL_EXPENDITURE);
-        ResolvedFlow capex = resolveTrailingFlow(reportsUpToP, cashFlow, FinancialConcept.CAPITAL_EXPENDITURE,
+        Flow secCapex = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.CAPITAL_EXPENDITURE), periodEnd);
+        ResolvedFlow capex = resolveTrailingFlow(reportsUpToP, effectiveCashFlow, FinancialConcept.CAPITAL_EXPENDITURE,
                 secCapex, secFlows, reportingCurrency, cfTtmStart, cashFlowObs,
                 "Futu 資本支出 TTM", "SEC 完整資本支出 TTM", usedSecFlows);
         row.setCapitalExpenditureTtm(capex.value());
@@ -1047,16 +1065,16 @@ public class StockValuationService {
         row.setCapitalExpenditureTtmAvailableAt(capex.availableAt());
 
         // 6. TTM 自由現金流
-        populateFreeCashFlow(row, reportsUpToP, cashFlow, secFlows, financialInstitution, reportingCurrency, cfTtmStart, cashFlowObs, usedSecFlows);
+        populateFreeCashFlow(row, reportsUpToP, effectiveCashFlow, secFlows, financialInstitution, reportingCurrency, periodEnd, cfTtmStart, cashFlowObs, usedSecFlows);
 
         // 7. TTM 營運 EBITDA
-        populateEbitda(row, reportsUpToP, income, secFlows, financialInstitution, reportingCurrency, ttmStart, incomeObs, cashFlowObs, usedSecFlows);
+        populateEbitda(row, reportsUpToP, effectiveIncome, secFlows, financialInstitution, reportingCurrency, periodEnd, ttmStart, incomeObs, cashFlowObs, usedSecFlows);
 
         // 8 & 11-14 & EV Adjustment：資產負債表項目
-        populateBalanceAndEv(row, balance, secFlows, financialInstitution, reportingCurrency, balanceObs, usedSecFlows);
+        populateBalanceAndEv(row, balance, secFlows, financialInstitution, reportingCurrency, periodEnd, balanceObs, usedSecFlows);
 
         // 9 & 10：期末流通股數基準與每股帳面值
-        populateSharesAndBookValue(row, factsUpToP, latestObs, stockSplits, multiClass, verifiedOneToOne, status, periodEnd, calculatedAt);
+        populateSharesAndBookValue(row, periodCikFacts, latestObs, stockSplits, multiClass, verifiedOneToOne, status, periodEnd, calculatedAt);
 
         // 彙整本列觀察時間與 SEC 披露日期
         Instant maxAvail = maxInstant(incomeObs, balanceObs, cashFlowObs);
@@ -1119,11 +1137,11 @@ public class StockValuationService {
     private void populateEpsTtm(
             StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues income,
             Flows secFlows, List<SecFinancialFact> allStockSecFacts, List<StockSplit> stockSplits,
-            boolean multiClass, boolean verifiedOneToOne, String currency, LocalDate futuStart, Instant incomeObs,
+            boolean multiClass, boolean verifiedOneToOne, String currency, LocalDate periodEnd, LocalDate futuStart, Instant incomeObs,
             LocalDate latestShareBasisDate, Instant calculatedAt, Set<Flow> usedSecFlows) {
         String figi = row.getFigi();
         boolean allowSecEps = !multiClass || verifiedOneToOne;
-        Flow issuerEps = secFlows == null ? null : secFlows.dilutedEpsTtm();
+        Flow issuerEps = secFlows == null ? null : samePeriodSecFlow(secFlows.dilutedEpsTtm(), periodEnd);
         Flow secEps = allowSecEps ? issuerEps : null;
 
         List<ReportValues> epsSourceReports = reportsUpToP;
@@ -1133,22 +1151,14 @@ public class StockValuationService {
         LocalDate epsBasisFrom = income == null ? null : calculator.trailingBasisFromDate(reportsUpToP, figi, 1, income.periodEnd());
         List<Flow> mixedEps = new ArrayList<>();
 
-        boolean newerSecQuarter = allowSecEps && income != null && issuerEps != null && issuerEps.periodEnd() != null
-                && issuerEps.periodEnd().isAfter(income.periodEnd()) && secFlows != null
-                && secFlows.missingQuarters().stream().anyMatch(r -> r.statementType() == 1 && r.periodEnd().equals(issuerEps.periodEnd()));
-        if ((futuEps == null || futuEps.value() == null || newerSecQuarter) && allowSecEps && income != null
+        if ((futuEps == null || futuEps.value() == null) && allowSecEps && income != null
                 && sameCurrency(currency, income.currency()) && secFlows != null) {
-            ReportValues latest = secFlows.missingQuarters().stream()
-                    .filter(r -> r.statementType() == 1 && issuerEps != null && issuerEps.periodEnd() != null
-                            && r.periodEnd().equals(issuerEps.periodEnd()) && r.periodEnd().isAfter(income.periodEnd()))
-                    .max(Comparator.comparing(ReportValues::periodEnd)).orElse(income);
-            List<ReportValues> combined = supplementFlowReports(reportsUpToP, latest, secFlows, mixedEps, List.of(FinancialConcept.DILUTED_EPS));
-            MetricResult<BigDecimal> candidate = calculator.trailingTwelveMonths(combined, figi, 1, FinancialConcept.DILUTED_EPS, latest.periodEnd(), currency);
+            List<ReportValues> combined = supplementFlowReports(reportsUpToP, income, secFlows, mixedEps, List.of(FinancialConcept.DILUTED_EPS));
+            MetricResult<BigDecimal> candidate = calculator.trailingTwelveMonths(combined, figi, 1, FinancialConcept.DILUTED_EPS, income.periodEnd(), currency);
             if (candidate.value() != null) {
                 futuEps = candidate;
                 epsSourceReports = combined;
-                epsBasisFrom = calculator.trailingBasisFromDate(combined, figi, 1, latest.periodEnd());
-                epsPeriod = latest;
+                epsBasisFrom = calculator.trailingBasisFromDate(combined, figi, 1, income.periodEnd());
             } else {
                 mixedEps.clear();
             }
@@ -1230,17 +1240,18 @@ public class StockValuationService {
 
     private void populateFreeCashFlow(
             StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues cashFlow,
-            Flows secFlows, boolean financialInstitution, String currency, LocalDate cfStart, Instant cfObs, Set<Flow> usedSecFlows) {
+            Flows secFlows, boolean financialInstitution, String currency, LocalDate periodEnd, LocalDate cfStart, Instant cfObs, Set<Flow> usedSecFlows) {
         MetricResult<BigDecimal> futuFcf = cashFlow == null ? missingMetric("NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE")
                 : calculator.trailingTwelveMonths(reportsUpToP, cashFlow.figi(), 3, FinancialConcept.FREE_CASH_FLOW, cashFlow.periodEnd(), currency);
+        boolean directFutuFcf = futuFcf.value() != null;
         List<Flow> mixedFcf = new ArrayList<>();
-        if (futuFcf.value() == null && cashFlow != null && secFlows != null && sameCurrency(currency, cashFlow.currency())) {
+        if (futuFcf.value() == null && cashFlow != null && sameCurrency(currency, cashFlow.currency())) {
             List<ReportValues> combined = supplementFlowReports(reportsUpToP, cashFlow, secFlows, mixedFcf,
                     List.of(FinancialConcept.OPERATING_CASH_FLOW, FinancialConcept.CAPITAL_EXPENDITURE));
             futuFcf = calculator.trailingTwelveMonths(combined, cashFlow.figi(), 3, FinancialConcept.FREE_CASH_FLOW, cashFlow.periodEnd(), currency);
             if (futuFcf.value() == null) mixedFcf.clear();
         }
-        Flow secFcf = secFlows == null ? null : secFlows.freeCashFlow();
+        Flow secFcf = secFlows == null ? null : samePeriodSecFlow(secFlows.freeCashFlow(), periodEnd);
         boolean useSec = preferSec(secFcf, futuFcf, cashFlow);
         if (useSec) {
             usedSecFlows.add(secFcf);
@@ -1264,7 +1275,8 @@ public class StockValuationService {
         if (futuFcf.value() != null) {
             usedSecFlows.addAll(mixedFcf);
             String src = mixedFcf.isEmpty() ? "FUTU" : "FUTU_AND_SEC";
-            String calc = mixedFcf.isEmpty() ? "Futu 自由現金流 TTM" : "Futu + SEC 營運現金流減資本支出 TTM";
+            String calc = !mixedFcf.isEmpty() ? "Futu + SEC 營運現金流減資本支出 TTM"
+                    : directFutuFcf ? "Futu 自由現金流 TTM" : "Futu 營運現金流減資本支出 TTM";
             Instant avail = mixedFcf.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(cfObs, this::laterInstant);
             row.setFreeCashFlowTtm(futuFcf.value());
             row.setFreeCashFlowTtmStatus(MetricStatus.AVAILABLE.name());
@@ -1285,7 +1297,7 @@ public class StockValuationService {
 
     private void populateEbitda(
             StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues income,
-            Flows secFlows, boolean financialInstitution, String currency, LocalDate ttmStart,
+            Flows secFlows, boolean financialInstitution, String currency, LocalDate periodEnd, LocalDate ttmStart,
             Instant incomeObs, Instant cfObs, Set<Flow> usedSecFlows) {
         if (financialInstitution) {
             row.setEbitdaTtmStatus(MetricStatus.NOT_APPLICABLE.name());
@@ -1305,7 +1317,7 @@ public class StockValuationService {
             futuEbitda = calculator.trailingEbitda(combined, income);
             if (futuEbitda.value() == null) mixedEbitda.clear();
         }
-        Flow secEbitda = secFlows == null ? null : secFlows.ebitda();
+        Flow secEbitda = secFlows == null ? null : samePeriodSecFlow(secFlows.ebitda(), periodEnd);
         boolean useSec = preferSec(secEbitda, futuEbitda, income);
         if (useSec) {
             usedSecFlows.add(secEbitda);
@@ -1354,16 +1366,15 @@ public class StockValuationService {
 
     private void populateBalanceAndEv(
             StockFinancialPeriod row, ReportValues balance, Flows secFlows,
-            boolean financialInstitution, String currency, Instant balanceObs, Set<Flow> usedSecFlows) {
-        // 8. 普通股權益
-        MetricResult<BigDecimal> futuEq = balance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.commonEquity(balance);
-        List<Flow> mixedEq = new ArrayList<>();
-        if (futuEq.value() == null && balance != null && secFlows != null && sameCurrency(currency, balance.currency())) {
-            futuEq = calculator.commonEquity(supplementBalance(balance, secFlows, mixedEq));
-            if (futuEq.value() == null) mixedEq.clear();
-        }
-        Flow secEq = secFlows == null ? null : secFlows.equity();
-        boolean useSecEq = preferSec(secEq, futuEq, balance);
+            boolean financialInstitution, String currency, LocalDate periodEnd, Instant balanceObs, Set<Flow> usedSecFlows) {
+        Map<FinancialConcept, Flow> secBalUsed = new EnumMap<>(FinancialConcept.class);
+        ReportValues enrichedBalance = balance != null && secFlows != null && sameCurrency(currency, balance.currency())
+                ? supplementBalance(balance, secFlows, secBalUsed) : balance;
+
+        // 8. 普通股權益（與面板優先股、權益修正共用同一份 enrichedBalance，避免普通股權益漏扣已補入之優先股）
+        MetricResult<BigDecimal> futuEq = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.commonEquity(enrichedBalance);
+        Flow secEq = secFlows == null ? null : samePeriodSecFlow(secFlows.equity(), periodEnd);
+        boolean useSecEq = preferSec(secEq, futuEq, enrichedBalance);
         if (useSecEq) {
             usedSecFlows.add(secEq);
             if (secEq.value() != null) {
@@ -1380,73 +1391,78 @@ public class StockValuationService {
                 row.setCommonEquityAvailableAt(secEq.observedAt());
             }
         } else if (futuEq.value() != null) {
-            usedSecFlows.addAll(mixedEq);
+            List<Flow> eqFlows = collectConceptFlows(secBalUsed, List.of(
+                    FinancialConcept.STOCKHOLDERS_EQUITY, FinancialConcept.TOTAL_EQUITY,
+                    FinancialConcept.PREFERRED_STOCK_CAPITAL, FinancialConcept.NONCONTROLLING_INTEREST_EQUITY));
+            usedSecFlows.addAll(eqFlows);
             row.setCommonEquity(futuEq.value());
             row.setCommonEquityStatus(MetricStatus.AVAILABLE.name());
-            row.setCommonEquitySource(mixedEq.isEmpty() ? "FUTU" : "FUTU_AND_SEC");
-            row.setCommonEquityCalculation("Futu 期末普通股股東權益");
-            row.setCommonEquityAvailableAt(mixedEq.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(balanceObs, this::laterInstant));
+            row.setCommonEquitySource(eqFlows.isEmpty() ? "FUTU" : "FUTU_AND_SEC");
+            row.setCommonEquityCalculation(eqFlows.isEmpty() ? "Futu 期末普通股股東權益" : "Futu + SEC 期末普通股股東權益");
+            row.setCommonEquityAvailableAt(eqFlows.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(balanceObs, this::laterInstant));
         } else {
-            ValuationReason r = ValuationReason.fromCode(hasReportReason(secEq, balance) ? secEq.reason() : reasonOf(futuEq));
+            ValuationReason r = ValuationReason.fromCode(hasReportReason(secEq, enrichedBalance) ? secEq.reason() : reasonOf(futuEq));
             row.setCommonEquityStatus(r.statusName());
             row.setCommonEquityReason(r);
             row.setCommonEquitySource("FUTU");
             row.setCommonEquityAvailableAt(balanceObs);
         }
 
-        List<Flow> mixedBal = new ArrayList<>();
-        ReportValues enrichedBalance = balance != null && secFlows != null && sameCurrency(currency, balance.currency())
-                ? supplementBalance(balance, secFlows, mixedBal) : balance;
-
         // 12. 現金及約當現金
-        Flow secCash = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.CASH_AND_EQUIVALENTS);
+        Flow secCash = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.CASH_AND_EQUIVALENTS), periodEnd);
         MetricResult<BigDecimal> futuCash = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING")
                 : enrichedBalance.value(FinancialConcept.CASH_AND_EQUIVALENTS);
-        if (preferSec(secCash, futuCash, balance)) {
+        if (preferSec(secCash, futuCash, enrichedBalance)) {
             usedSecFlows.add(secCash);
             setBalanceComponent(row::setCashLikeAssets, row::setCashLikeAssetsStatus, row::setCashLikeAssetsReason,
                     row::setCashLikeAssetsSource, row::setCashLikeAssetsCalculation, row::setCashLikeAssetsAvailableAt,
                     secCash.value(), secCash.reason(), "SEC", "SEC CashAndCashEquivalentsAtCarryingValue", secCash.observedAt());
         } else {
-            boolean fromSec = balance != null && balance.value(FinancialConcept.CASH_AND_EQUIVALENTS).value() == null && futuCash.value() != null;
-            if (fromSec && secCash != null) usedSecFlows.add(secCash);
+            Flow cashSup = secBalUsed.get(FinancialConcept.CASH_AND_EQUIVALENTS);
+            if (cashSup != null && futuCash.value() != null) usedSecFlows.add(cashSup);
             setBalanceComponent(row::setCashLikeAssets, row::setCashLikeAssetsStatus, row::setCashLikeAssetsReason,
                     row::setCashLikeAssetsSource, row::setCashLikeAssetsCalculation, row::setCashLikeAssetsAvailableAt,
-                    futuCash.value(), reasonOf(futuCash), fromSec ? "FUTU_AND_SEC" : "FUTU",
-                    "期末獨立現金及約當現金", fromSec && secCash != null ? laterInstant(balanceObs, secCash.observedAt()) : balanceObs);
+                    futuCash.value(), reasonOf(futuCash), cashSup != null && futuCash.value() != null ? "FUTU_AND_SEC" : "FUTU",
+                    "期末獨立現金及約當現金", cashSup != null && futuCash.value() != null ? laterInstant(balanceObs, cashSup.observedAt()) : balanceObs);
         }
 
         // 13. 優先股權益
-        Flow secPref = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.PREFERRED_STOCK_CAPITAL);
+        Flow secPref = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.PREFERRED_STOCK_CAPITAL), periodEnd);
         MetricResult<BigDecimal> futuPref = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING")
                 : calculator.preferredEquity(enrichedBalance);
-        if (preferSec(secPref, futuPref, balance)) {
+        if (preferSec(secPref, futuPref, enrichedBalance)) {
             usedSecFlows.add(secPref);
             setBalanceComponent(row::setPreferredEquity, row::setPreferredEquityStatus, row::setPreferredEquityReason,
                     row::setPreferredEquitySource, row::setPreferredEquityCalculation, row::setPreferredEquityAvailableAt,
                     secPref.value(), secPref.reason(), "SEC", "SEC 優先股帳面值", secPref.observedAt());
         } else {
+            Flow prefSup = secBalUsed.get(FinancialConcept.PREFERRED_STOCK_CAPITAL);
+            if (prefSup != null && futuPref.value() != null) usedSecFlows.add(prefSup);
             setBalanceComponent(row::setPreferredEquity, row::setPreferredEquityStatus, row::setPreferredEquityReason,
                     row::setPreferredEquitySource, row::setPreferredEquityCalculation, row::setPreferredEquityAvailableAt,
-                    futuPref.value(), reasonOf(futuPref), "FUTU", "期末優先股帳面值", balanceObs);
+                    futuPref.value(), reasonOf(futuPref), prefSup != null && futuPref.value() != null ? "FUTU_AND_SEC" : "FUTU",
+                    "期末優先股帳面值", prefSup != null && futuPref.value() != null ? laterInstant(balanceObs, prefSup.observedAt()) : balanceObs);
         }
 
         // 14. 非控制權益
-        Flow secNci = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
+        Flow secNci = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY), periodEnd);
         MetricResult<BigDecimal> futuNci = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING")
                 : calculator.noncontrollingInterest(enrichedBalance);
-        if (preferSec(secNci, futuNci, balance)) {
+        if (preferSec(secNci, futuNci, enrichedBalance)) {
             usedSecFlows.add(secNci);
             setBalanceComponent(row::setNoncontrollingInterest, row::setNoncontrollingInterestStatus, row::setNoncontrollingInterestReason,
                     row::setNoncontrollingInterestSource, row::setNoncontrollingInterestCalculation, row::setNoncontrollingInterestAvailableAt,
                     secNci.value(), secNci.reason(), "SEC", "SEC 非控制權益帳面值", secNci.observedAt());
         } else {
+            Flow nciSup = secBalUsed.get(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY);
+            if (nciSup != null && futuNci.value() != null) usedSecFlows.add(nciSup);
             setBalanceComponent(row::setNoncontrollingInterest, row::setNoncontrollingInterestStatus, row::setNoncontrollingInterestReason,
                     row::setNoncontrollingInterestSource, row::setNoncontrollingInterestCalculation, row::setNoncontrollingInterestAvailableAt,
-                    futuNci.value(), reasonOf(futuNci), "FUTU", "期末非控制權益帳面值", balanceObs);
+                    futuNci.value(), reasonOf(futuNci), nciSup != null && futuNci.value() != null ? "FUTU_AND_SEC" : "FUTU",
+                    "期末非控制權益帳面值", nciSup != null && futuNci.value() != null ? laterInstant(balanceObs, nciSup.observedAt()) : balanceObs);
         }
 
-        // 11. 有息債務與 EV 調整淨額
+        // 11. 有息債務與 EV 調整淨額（直接由同報期已解析之債務、優先股、非控制權益與現金組合，保證面板與 EV 100% 一致）
         if (financialInstitution) {
             row.setTotalDebtStatus(MetricStatus.NOT_APPLICABLE.name());
             row.setTotalDebtReason(ValuationReason.EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY);
@@ -1459,53 +1475,58 @@ public class StockValuationService {
             return;
         }
 
-        MetricResult<BigDecimal> futuDebt = balance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.totalDebt(balance);
-        List<Flow> mixedDebt = new ArrayList<>();
-        if (futuDebt.value() == null && balance != null && secFlows != null && sameCurrency(currency, balance.currency())) {
-            futuDebt = calculator.totalDebt(supplementBalance(balance, secFlows, mixedDebt));
-            if (futuDebt.value() == null) mixedDebt.clear();
-        }
-        Flow secDebt = secFlows == null ? null : secFlows.inputs().get(FinancialConcept.CURRENT_DEBT_AND_LEASES);
-        if (preferSec(secDebt, futuDebt, balance)) {
+        MetricResult<BigDecimal> futuDebt = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.totalDebt(enrichedBalance);
+        Flow secDebt = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.CURRENT_DEBT_AND_LEASES), periodEnd);
+        if (preferSec(secDebt, futuDebt, enrichedBalance)) {
             usedSecFlows.add(secDebt);
             setBalanceComponent(row::setTotalDebt, row::setTotalDebtStatus, row::setTotalDebtReason,
                     row::setTotalDebtSource, row::setTotalDebtCalculation, row::setTotalDebtAvailableAt,
                     secDebt.value(), secDebt.reason(), "SEC", "SEC 計息債務（排除營運租賃）", secDebt.observedAt());
         } else {
-            usedSecFlows.addAll(mixedDebt);
-            String std = balance == null ? null : FinancialReportValuationCalculator.normalizeAccountingStandard(balance.accountingStandards());
+            List<Flow> debtFlows = collectConceptFlows(secBalUsed, List.of(
+                    FinancialConcept.CURRENT_DEBT, FinancialConcept.CURRENT_OPERATING_LEASES, FinancialConcept.LONG_TERM_OPERATING_LEASES,
+                    FinancialConcept.CURRENT_FINANCE_LEASES, FinancialConcept.LONG_TERM_FINANCE_LEASES, FinancialConcept.TOTAL_FINANCE_LEASES));
+            if (futuDebt.value() != null) usedSecFlows.addAll(debtFlows);
+            String std = enrichedBalance == null ? null : FinancialReportValuationCalculator.normalizeAccountingStandard(enrichedBalance.accountingStandards());
             String debtCalc = "IFRS".equals(std) ? "IFRS 計息債務（含全部租賃負債）" : "US_GAAP 計息債務（排除營運租賃／純借款）";
             setBalanceComponent(row::setTotalDebt, row::setTotalDebtStatus, row::setTotalDebtReason,
                     row::setTotalDebtSource, row::setTotalDebtCalculation, row::setTotalDebtAvailableAt,
-                    futuDebt.value(), reasonOf(futuDebt), mixedDebt.isEmpty() ? "FUTU" : "FUTU_AND_SEC", debtCalc,
-                    mixedDebt.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(balanceObs, this::laterInstant));
+                    futuDebt.value(), reasonOf(futuDebt), !debtFlows.isEmpty() && futuDebt.value() != null ? "FUTU_AND_SEC" : "FUTU", debtCalc,
+                    debtFlows.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(balanceObs, this::laterInstant));
         }
 
-        // EV 非市值調整項與 EBITDA 準則／報期核對
-        MetricResult<BigDecimal> futuEvAdj = balance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.enterpriseValueAdjustment(balance);
-        List<Flow> mixedEv = new ArrayList<>();
-        if (futuEvAdj.value() == null && balance != null && secFlows != null && sameCurrency(currency, balance.currency())) {
-            futuEvAdj = calculator.enterpriseValueAdjustment(supplementBalance(balance, secFlows, mixedEv));
-            if (futuEvAdj.value() == null) mixedEv.clear();
+        String financingScopeFail = checkFinancingScopeReason(enrichedBalance);
+        String evFail = null;
+        BigDecimal evAdjVal = null;
+        String evAdjSource = combineSources(row.getTotalDebtSource(), row.getCashLikeAssetsSource());
+        if (financingScopeFail != null) {
+            evFail = financingScopeFail;
+        } else if (MetricStatus.UNVERIFIED.name().equals(row.getPreferredEquityStatus()) && row.getPreferredEquityReason() != null) {
+            evFail = row.getPreferredEquityReason().name();
+        } else if (MetricStatus.UNVERIFIED.name().equals(row.getNoncontrollingInterestStatus()) && row.getNoncontrollingInterestReason() != null) {
+            evFail = row.getNoncontrollingInterestReason().name();
+        } else if (!MetricStatus.AVAILABLE.name().equals(row.getTotalDebtStatus()) || row.getTotalDebt() == null) {
+            evFail = row.getTotalDebtReason() != null ? row.getTotalDebtReason().name() : "EV_COMPONENTS_UNRESOLVED";
+        } else if (!MetricStatus.AVAILABLE.name().equals(row.getCashLikeAssetsStatus()) || row.getCashLikeAssets() == null) {
+            evFail = row.getCashLikeAssetsReason() != null ? row.getCashLikeAssetsReason().name() : "EV_COMPONENTS_UNRESOLVED";
+        } else {
+            BigDecimal prefVal = MetricStatus.AVAILABLE.name().equals(row.getPreferredEquityStatus()) && row.getPreferredEquity() != null
+                    ? row.getPreferredEquity() : BigDecimal.ZERO;
+            BigDecimal nciVal = MetricStatus.AVAILABLE.name().equals(row.getNoncontrollingInterestStatus()) && row.getNoncontrollingInterest() != null
+                    ? row.getNoncontrollingInterest() : BigDecimal.ZERO;
+            if (prefVal.signum() != 0) evAdjSource = combineSources(evAdjSource, row.getPreferredEquitySource());
+            if (nciVal.signum() != 0) evAdjSource = combineSources(evAdjSource, row.getNoncontrollingInterestSource());
+            evAdjVal = row.getTotalDebt().add(prefVal, MC).add(nciVal, MC).subtract(row.getCashLikeAssets(), MC);
         }
-        Flow secEvAdj = secFlows == null ? null : secFlows.enterpriseValueAdjustment();
-        boolean useSecEv = preferSec(secEvAdj, futuEvAdj, balance);
-        BigDecimal evAdjVal = useSecEv ? secEvAdj.value() : futuEvAdj.value();
-        String evAdjSource = useSecEv ? "SEC" : mixedEv.isEmpty() ? "FUTU" : "FUTU_AND_SEC";
-        String evFail = useSecEv ? secEvAdj.reason() : reasonOf(futuEvAdj);
-        if (useSecEv) usedSecFlows.add(secEvAdj);
-        else usedSecFlows.addAll(mixedEv);
 
         if (evAdjVal != null && row.getEbitdaTtm() != null) {
-            String evStd = useSecEv ? "US_GAAP" : balance == null ? null : FinancialReportValuationCalculator.normalizeAccountingStandard(balance.accountingStandards());
+            String evStd = "SEC".equals(row.getTotalDebtSource()) ? "US_GAAP"
+                    : enrichedBalance != null ? FinancialReportValuationCalculator.normalizeAccountingStandard(enrichedBalance.accountingStandards())
+                    : row.getAccountingStandards();
             String ebitdaStd = "SEC".equals(row.getEbitdaTtmSource()) ? "US_GAAP" : row.getAccountingStandards();
-            LocalDate evEnd = useSecEv ? secEvAdj.periodEnd() : balance == null ? null : balance.periodEnd();
             if (!Objects.equals(evStd, ebitdaStd)) {
                 evAdjVal = null;
                 evFail = "EV_ACCOUNTING_STANDARD_UNCONFIRMED";
-            } else if (evEnd != null && !evEnd.equals(row.getPeriodEnd())) {
-                evAdjVal = null;
-                evFail = "FINANCIAL_PERIOD_CONFLICT";
             }
         }
         if (evAdjVal != null) {
@@ -1516,7 +1537,7 @@ public class StockValuationService {
             ValuationReason r = ValuationReason.fromCode(evFail != null ? evFail : "EV_COMPONENTS_UNRESOLVED");
             row.setEvAdjustmentStatus(r.statusName());
             row.setEvAdjustmentReason(r);
-            row.setEvAdjustmentSource(evAdjSource);
+            row.setEvAdjustmentSource(evAdjSource != null ? evAdjSource : "FUTU");
         }
     }
 
@@ -1542,7 +1563,7 @@ public class StockValuationService {
     }
 
     private void populateSharesAndBookValue(
-            StockFinancialPeriod row, List<SecFinancialFact> factsUpToP, StockShareObservation latestObs,
+            StockFinancialPeriod row, List<SecFinancialFact> periodCikFacts, StockShareObservation latestObs,
             List<StockSplit> stockSplits, boolean multiClass, boolean verifiedOneToOne,
             StockStatus status, LocalDate periodEnd, Instant calculatedAt) {
         if (multiClass && !verifiedOneToOne) {
@@ -1556,7 +1577,8 @@ public class StockValuationService {
             return;
         }
 
-        SecFinancialFact secShare = selectFilingSharesAtPeriod(factsUpToP, periodEnd, calculatedAt);
+        SecFinancialFact secShare = selectFilingSharesAtPeriod(periodCikFacts, periodEnd, calculatedAt);
+        BigDecimal sharesAtPeriodEnd = null;
         if (secShare != null && secShare.getValue() != null && secShare.getValue().signum() > 0) {
             if (hasSplitBetween(stockSplits, secShare.getPeriodEnd(), secShare.getFiled())) {
                 row.setSharesOutstandingStatus(MetricStatus.UNVERIFIED.name());
@@ -1566,28 +1588,32 @@ public class StockValuationService {
                 row.setBookValuePerShareReason(ValuationReason.SEC_SHARE_SPLIT_BASIS_UNCONFIRMED);
                 return;
             }
-            BigDecimal sharesAtPeriodEnd = secShare.getValue()
-                    .multiply(StockSplitCalculator.shareFactor(stockSplits, secShare.getPeriodEnd(), periodEnd), MC);
-            row.setSharesOutstanding(sharesAtPeriodEnd);
+            row.setSharesOutstanding(secShare.getValue());
             row.setSharesOutstandingStatus(MetricStatus.AVAILABLE.name());
             row.setSharesOutstandingSource("SEC_FILING_SHARES");
-            row.setSharesOutstandingCalculation("SEC " + secShare.getTag() + "（對齊期末股份基準）");
+            row.setSharesOutstandingCalculation("SEC " + secShare.getTag() + "（基準日 " + secShare.getPeriodEnd() + "）");
             row.setSharesOutstandingAvailableAt(secShare.getObservedAt());
-            row.setSharesBasisDate(periodEnd);
+            row.setSharesBasisDate(secShare.getPeriodEnd());
             row.setSecShareAccession(secShare.getAccession());
+            if (splitSyncError(status) == null || secShare.getPeriodEnd().equals(periodEnd)) {
+                sharesAtPeriodEnd = secShare.getValue()
+                        .multiply(StockSplitCalculator.shareFactor(stockSplits, secShare.getPeriodEnd(), periodEnd), MC);
+            }
         } else if (latestObs != null && splitSyncError(status) == null) {
             LocalDate obsDate = latestObs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
             BigDecimal baseShares = multiClass && latestObs.effectiveMarketCap() != null
                     && latestObs.getSnapshotPrice() != null && latestObs.getSnapshotPrice().signum() > 0
                     ? latestObs.effectiveMarketCap().divide(latestObs.getSnapshotPrice(), MC)
                     : BigDecimal.valueOf(latestObs.effectiveShares());
-            BigDecimal sharesAtPeriodEnd = baseShares.multiply(StockSplitCalculator.shareFactor(stockSplits, obsDate, periodEnd), MC);
-            row.setSharesOutstanding(sharesAtPeriodEnd);
+            row.setSharesOutstanding(baseShares);
             row.setSharesOutstandingStatus(MetricStatus.AVAILABLE.name());
             row.setSharesOutstandingSource("OBSERVED_SHARES");
-            row.setSharesOutstandingCalculation("富途流通在外股數按已知拆股因子對齊期末");
+            boolean hasDirectOutstanding = latestObs.getOutstandingShares() != null && latestObs.getOutstandingShares() > 0;
+            row.setSharesOutstandingCalculation(hasDirectOutstanding ? "富途流通在外股數（基準日 " + obsDate + "）"
+                    : "富途已發行股數備援（基準日 " + obsDate + "）");
             row.setSharesOutstandingAvailableAt(latestObs.getObservedAt());
-            row.setSharesBasisDate(periodEnd);
+            row.setSharesBasisDate(obsDate);
+            sharesAtPeriodEnd = baseShares.multiply(StockSplitCalculator.shareFactor(stockSplits, obsDate, periodEnd), MC);
         } else {
             ValuationReason reason = splitSyncError(status) != null
                     ? ValuationReason.SPLIT_SYNC_ERROR : ValuationReason.VALUATION_DATE_SHARES_MISSING;
@@ -1596,12 +1622,12 @@ public class StockValuationService {
             row.setSharesOutstandingSource("OBSERVED_SHARES");
         }
 
-        if (row.getSharesOutstanding() != null && row.getSharesOutstanding().signum() > 0
+        if (sharesAtPeriodEnd != null && sharesAtPeriodEnd.signum() > 0
                 && row.getCommonEquity() != null && MetricStatus.AVAILABLE.name().equals(row.getCommonEquityStatus())) {
-            row.setBookValuePerShare(row.getCommonEquity().divide(row.getSharesOutstanding(), MC));
+            row.setBookValuePerShare(row.getCommonEquity().divide(sharesAtPeriodEnd, MC));
             row.setBookValuePerShareStatus(MetricStatus.AVAILABLE.name());
             row.setBookValuePerShareSource(row.getCommonEquitySource());
-            row.setBookValuePerShareCalculation("期末普通股權益 ÷ 期末流通在外股數");
+            row.setBookValuePerShareCalculation("期末普通股權益 ÷ 期末拆股對齊流通股數");
             row.setBookValuePerShareAvailableAt(laterInstant(row.getCommonEquityAvailableAt(), row.getSharesOutstandingAvailableAt()));
         } else {
             ValuationReason bvReason = row.getSharesOutstandingReason() != null
@@ -1623,14 +1649,18 @@ public class StockValuationService {
         List<SecFinancialFact> balance = counts.stream()
                 .filter(fact -> "us-gaap".equals(fact.getTaxonomy()) && "CommonStockSharesOutstanding".equals(fact.getTag())
                         && !fact.getPeriodEnd().isAfter(periodEnd)).toList();
-        if (!balance.isEmpty()) {
-            SecFinancialFact chosen = latestShareFact(balance);
-            if (chosen != null) return chosen;
-        }
         List<SecFinancialFact> covers = counts.stream()
                 .filter(fact -> "dei".equals(fact.getTaxonomy()) && "EntityCommonStockSharesOutstanding".equals(fact.getTag())
-                        && Set.of("10-K", "10-K/A", "10-Q", "10-Q/A").contains(Objects.toString(fact.getForm(), ""))).toList();
-        return latestShareFact(covers);
+                        && PERIODIC_SHARE_FORMS.contains(Objects.toString(fact.getForm(), ""))).toList();
+        SecFinancialFact bestBalance = latestShareFact(balance);
+        SecFinancialFact bestCover = latestShareFact(covers);
+        if (bestBalance != null && bestCover != null) {
+            if (!bestBalance.getPeriodEnd().isBefore(periodEnd.minusDays(7))) {
+                return bestBalance;
+            }
+            return bestCover.getPeriodEnd().isAfter(bestBalance.getPeriodEnd()) ? bestCover : bestBalance;
+        }
+        return bestBalance != null ? bestBalance : bestCover;
     }
 
     private SecFinancialFact latestShareFact(List<SecFinancialFact> counts) {
@@ -2215,17 +2245,104 @@ public class StockValuationService {
                 metrics, price, currency, calculatedAt, null, null, null, null, null, null, null);
     }
 
-    private ReportValues latestStatementAt(List<ReportValues> reports, int statementType, LocalDate upToEnd) {
+    private ReportValues statementAtPeriod(List<ReportValues> reports, int statementType, LocalDate periodEnd) {
         return reports.stream()
-                .filter(r -> r.statementType() == statementType && !r.periodEnd().isAfter(upToEnd))
-                .max(Comparator.comparing(ReportValues::periodEnd).thenComparingInt(ReportValues::periodType))
+                .filter(r -> r.statementType() == statementType && periodEnd.equals(r.periodEnd()))
+                .max(Comparator.comparingInt(ReportValues::periodType))
                 .orElse(null);
     }
 
-    private LocalDate resolveFutuTtmStart(List<ReportValues> reports, String figi, int statementType, LocalDate periodEnd, LocalDate quarterStart) {
+    private ReportValues effectiveFlowStatement(ReportValues futuAtPeriod, Flows secFlows, int statementType, LocalDate periodEnd) {
+        if (futuAtPeriod != null) return futuAtPeriod;
+        if (secFlows == null) return null;
+        return secFlows.missingQuarters().stream()
+                .filter(r -> r.statementType() == statementType && periodEnd.equals(r.periodEnd()))
+                .max(Comparator.comparingInt(ReportValues::periodType))
+                .orElse(null);
+    }
+
+    private List<ReportValues> combineReportsWithMissingQuarters(List<ReportValues> base, List<ReportValues> missing) {
+        List<ReportValues> combined = new ArrayList<>(base.size() + missing.size());
+        combined.addAll(base);
+        combined.addAll(missing);
+        return combined;
+    }
+
+    private Flow samePeriodSecFlow(Flow flow, LocalDate periodEnd) {
+        if (flow == null || flow.periodEnd() == null || periodEnd == null) return null;
+        return Math.abs(ChronoUnit.DAYS.between(flow.periodEnd(), periodEnd)) <= 7 ? flow : null;
+    }
+
+    private List<ReportValues> normalizeReportStandardsWithSec(Stock stock, List<ReportValues> aligned, List<SecFinancialFact> secFactsList) {
+        if (aligned.isEmpty() || secFactsList.isEmpty()) return aligned;
+        List<ReportValues> result = new ArrayList<>(aligned.size());
+        for (ReportValues r : aligned) {
+            String rcik = resolveCik(stock, r.periodEnd());
+            List<SecFinancialFact> cikFacts = rcik == null ? List.of()
+                    : secFactsList.stream().filter(f -> rcik.equals(f.getCik())).toList();
+            boolean domesticUsGaapAtEnd = hasDomesticUsGaapFilingAt(cikFacts, r.periodEnd());
+            boolean blankStandardWithSecUsGaap = (r.accountingStandards() == null || r.accountingStandards().isBlank())
+                    && cikFacts.stream().anyMatch(f -> "us-gaap".equals(f.getTaxonomy()));
+            if (domesticUsGaapAtEnd || blankStandardWithSecUsGaap) {
+                result.add(new ReportValues(r.figi(), r.statementType(), r.periodEnd(), r.periodType(),
+                        r.fiscalYear(), r.currency(), "US_GAAP", r.values(), r.unknownNames(), r.pendingItems()));
+            } else {
+                result.add(r);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private boolean hasDomesticUsGaapFilingAt(List<SecFinancialFact> cikFacts, LocalDate periodEnd) {
+        if (cikFacts == null || cikFacts.isEmpty() || periodEnd == null) return false;
+        return cikFacts.stream().anyMatch(f -> "us-gaap".equals(f.getTaxonomy())
+                && US_DOMESTIC_GAAP_FORMS.contains(Objects.toString(f.getForm(), ""))
+                && f.getPeriodEnd() != null && Math.abs(ChronoUnit.DAYS.between(f.getPeriodEnd(), periodEnd)) <= 7);
+    }
+
+    private String latestReportCurrency(List<ReportValues> reportsUpToP) {
+        for (int i = reportsUpToP.size() - 1; i >= 0; i--) {
+            String cur = reportsUpToP.get(i).currency();
+            if (cur != null && !cur.isBlank()) return cur;
+        }
+        return null;
+    }
+
+    private List<Flow> collectConceptFlows(Map<FinancialConcept, Flow> secBalUsed, List<FinancialConcept> concepts) {
+        List<Flow> flows = new ArrayList<>();
+        for (FinancialConcept c : concepts) {
+            Flow f = secBalUsed.get(c);
+            if (f != null) flows.add(f);
+        }
+        return flows;
+    }
+
+    private String checkFinancingScopeReason(ReportValues balance) {
+        if (balance == null) return null;
+        for (FinancialConcept financing : List.of(FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES,
+                FinancialConcept.SECURITIES_LENDING_AND_REPO_PAYABLES_AS_REPORTED, FinancialConcept.BANK_DEPOSITS)) {
+            MetricResult<BigDecimal> value = balance.value(financing);
+            if (value.status() == MetricStatus.UNVERIFIED) return reasonOf(value);
+            if (value.value() != null && value.value().signum() != 0) return "EV_FINANCING_SCOPE_UNRESOLVED";
+        }
+        return null;
+    }
+
+    private LocalDate resolveFutuTtmStart(List<ReportValues> reports, String figi, int statementType,
+                                          LocalDate periodEnd, LocalDate quarterStart, LocalDate secAnnualStart) {
         List<ReportValues> periods = calculator.trailingPeriods(reports, figi, statementType, periodEnd);
         if (periods.isEmpty()) return quarterStart;
         if (periods.size() == 1 && periods.getFirst().periodType() == 7) {
+            if (secAnnualStart != null) return secAnnualStart;
+            LocalDate priorAnnualEnd = reports.stream()
+                    .filter(r -> r.figi().equals(figi) && (r.periodType() == 7 || r.periodType() == 4) && r.periodEnd().isBefore(periodEnd))
+                    .map(ReportValues::periodEnd)
+                    .filter(d -> {
+                        long days = ChronoUnit.DAYS.between(d, periodEnd);
+                        return days >= 350 && days <= 380;
+                    })
+                    .max(LocalDate::compareTo).orElse(null);
+            if (priorAnnualEnd != null) return priorAnnualEnd.plusDays(1);
             return periodEnd.minusYears(1).plusDays(1);
         }
         LocalDate earliestEnd = periods.stream().map(ReportValues::periodEnd).min(LocalDate::compareTo).orElse(periodEnd);
@@ -2243,9 +2360,39 @@ public class StockValuationService {
         return map.get(new ReportObservationKey(report.statementType(), report.periodEnd(), report.periodType()));
     }
 
-    private ReportValues supplementBalance(ReportValues balance, Flows sec, List<Flow> used) {
+    private ReportValues supplementBalance(ReportValues balance, Flows sec, Map<FinancialConcept, Flow> usedByConcept) {
         Map<FinancialConcept, MetricResult<BigDecimal>> values = new EnumMap<>(FinancialConcept.class);
         values.putAll(balance.values());
+
+        // 修正富途個別報期母公司股東權益欄位錯值（如缺 8095 少數股東權益，且富途總權益與 SEC StockholdersEquity 一致、8085 卻偏離逾 10%）
+        Flow secParent = sec.input(FinancialConcept.STOCKHOLDERS_EQUITY, balance);
+        BigDecimal futuParent = balance.value(FinancialConcept.STOCKHOLDERS_EQUITY).value();
+        BigDecimal futuTotalEq = balance.value(FinancialConcept.TOTAL_EQUITY).value();
+        BigDecimal futuNci = balance.value(FinancialConcept.NONCONTROLLING_INTEREST_EQUITY).value();
+        if (futuNci == null && futuParent != null && futuTotalEq != null && secParent != null
+                && secParent.value() != null && secParent.value().signum() > 0 && balance.periodEnd().equals(secParent.periodEnd())) {
+            BigDecimal totalDiff = futuTotalEq.subtract(secParent.value(), MC).abs().divide(secParent.value(), MC);
+            BigDecimal parentDiff = futuParent.subtract(secParent.value(), MC).abs().divide(secParent.value(), MC);
+            if (totalDiff.compareTo(TWO_PERCENT) <= 0 && parentDiff.compareTo(TEN_PERCENT) > 0) {
+                values.put(FinancialConcept.STOCKHOLDERS_EQUITY, MetricResult.available(secParent.value()));
+                usedByConcept.put(FinancialConcept.STOCKHOLDERS_EQUITY, secParent);
+            }
+        }
+
+        // 當富途僅列非流動借款 8069（與 SEC LongTermDebtNoncurrent 一致）而漏列短期借款 8057/8058 時，由同報期 SEC 補齊短期純借款
+        BigDecimal futuCurDebt = balance.value(FinancialConcept.CURRENT_DEBT).value();
+        BigDecimal futuCurCombined = balance.value(FinancialConcept.CURRENT_DEBT_AND_LEASES).value();
+        BigDecimal futuLtDebt = balance.value(FinancialConcept.LONG_TERM_DEBT).value();
+        Flow secCurDebt = sec.input(FinancialConcept.CURRENT_DEBT, balance);
+        Flow secLtNoncurrent = sec.input(FinancialConcept.LONG_TERM_DEBT, balance);
+        if (futuCurDebt == null && futuCurCombined == null && futuLtDebt != null && futuLtDebt.signum() > 0
+                && secLtNoncurrent != null && secLtNoncurrent.value() != null && futuLtDebt.compareTo(secLtNoncurrent.value()) == 0
+                && secCurDebt != null && secCurDebt.value() != null && secCurDebt.value().signum() > 0
+                && balance.periodEnd().equals(secCurDebt.periodEnd())) {
+            values.put(FinancialConcept.CURRENT_DEBT, MetricResult.available(secCurDebt.value()));
+            usedByConcept.put(FinancialConcept.CURRENT_DEBT, secCurDebt);
+        }
+
         for (FinancialConcept concept : List.of(
                 FinancialConcept.CURRENT_OPERATING_LEASES, FinancialConcept.LONG_TERM_OPERATING_LEASES,
                 FinancialConcept.CURRENT_FINANCE_LEASES, FinancialConcept.LONG_TERM_FINANCE_LEASES, FinancialConcept.TOTAL_FINANCE_LEASES,
@@ -2253,11 +2400,15 @@ public class StockValuationService {
                 FinancialConcept.NONCONTROLLING_INTEREST_EQUITY, FinancialConcept.STOCKHOLDERS_EQUITY,
                 FinancialConcept.TOTAL_EQUITY, FinancialConcept.OTHER_COMPREHENSIVE_EQUITY_AS_REPORTED)) {
             Flow input = sec.input(concept, balance);
-            MetricResult<BigDecimal> existing = balance.value(concept);
+            MetricResult<BigDecimal> existing = values.getOrDefault(concept, balance.value(concept));
             if (existing.value() != null || existing.status() == MetricStatus.UNVERIFIED || input == null || input.value() == null
                     || !balance.periodEnd().equals(input.periodEnd())) continue;
+            if (concept == FinancialConcept.PREFERRED_STOCK_CAPITAL && input.value().signum() == 0
+                    && "PreferredStock default 0".equals(input.note())) {
+                continue;
+            }
             values.put(concept, MetricResult.available(input.value()));
-            used.add(input);
+            usedByConcept.put(concept, input);
         }
         return new ReportValues(balance.figi(), balance.statementType(), balance.periodEnd(), balance.periodType(),
                 balance.fiscalYear(), balance.currency(), balance.accountingStandards(), values, balance.unknownNames(), balance.pendingItems());
@@ -2265,30 +2416,44 @@ public class StockValuationService {
 
     private List<ReportValues> supplementFlowReports(List<ReportValues> reports, ReportValues latest, Flows sec,
                                                      List<Flow> used, List<FinancialConcept> concepts) {
-        if (sec == null) return reports;
         List<ReportValues> available = new ArrayList<>(reports);
-        available.addAll(sec.missingQuarters());
-        List<ReportValues> result = new ArrayList<>();
-        for (ReportValues report : calculator.trailingPeriods(available, latest.figi(), latest.statementType(), latest.periodEnd())) {
+        if (sec != null) available.addAll(sec.missingQuarters());
+        List<ReportValues> trailing = calculator.trailingPeriods(available, latest.figi(), latest.statementType(), latest.periodEnd());
+        Map<ReportObservationKey, ReportValues> replaced = new HashMap<>();
+        for (ReportValues report : trailing) {
             Map<FinancialConcept, MetricResult<BigDecimal>> values = new EnumMap<>(FinancialConcept.class);
             values.putAll(report.values());
-            for (FinancialConcept concept : concepts) {
-                MetricResult<BigDecimal> original = calculator.flowInput(report, concept);
-                Flow input = sec.input(concept, report);
-                if (original.value() != null || original.status() == MetricStatus.UNVERIFIED || input == null || input.value() == null) continue;
-                if (concept == FinancialConcept.CAPITAL_EXPENDITURE && input.value().signum() < 0) continue;
-                values.put(concept, MetricResult.available(input.value()));
-                used.add(input);
+            boolean secSuppliedCapex = false;
+            if (sec != null) {
+                for (FinancialConcept concept : concepts) {
+                    MetricResult<BigDecimal> original = calculator.flowInput(report, concept);
+                    Flow input = sec.input(concept, report);
+                    if (original.value() != null || original.status() == MetricStatus.UNVERIFIED || input == null || input.value() == null) continue;
+                    if (concept == FinancialConcept.CAPITAL_EXPENDITURE && input.value().signum() < 0) continue;
+                    values.put(concept, MetricResult.available(input.value()));
+                    used.add(input);
+                    if (concept == FinancialConcept.CAPITAL_EXPENDITURE) secSuppliedCapex = true;
+                }
             }
             if (report.statementType() == 3 && report.value(FinancialConcept.FREE_CASH_FLOW).status() == MetricStatus.INSUFFICIENT_DATA) {
-                MetricResult<BigDecimal> cfo = values.get(FinancialConcept.OPERATING_CASH_FLOW);
+                MetricResult<BigDecimal> cfo = values.containsKey(FinancialConcept.OPERATING_CASH_FLOW)
+                        ? values.get(FinancialConcept.OPERATING_CASH_FLOW)
+                        : calculator.flowInput(report, FinancialConcept.OPERATING_CASH_FLOW);
                 MetricResult<BigDecimal> capex = values.get(FinancialConcept.CAPITAL_EXPENDITURE);
-                if (cfo != null && cfo.value() != null && capex != null && capex.value() != null) {
+                BigDecimal separateNetPpe = report.value(FinancialConcept.NET_PPE_CASH_FLOW).value();
+                boolean safeFutuCapex = secSuppliedCapex || separateNetPpe == null || separateNetPpe.signum() == 0;
+                if (safeFutuCapex && cfo != null && cfo.value() != null && capex != null && capex.value() != null) {
                     values.put(FinancialConcept.FREE_CASH_FLOW, MetricResult.available(cfo.value().subtract(capex.value().abs(), MC)));
                 }
             }
-            result.add(new ReportValues(report.figi(), report.statementType(), report.periodEnd(), report.periodType(),
-                    report.fiscalYear(), report.currency(), report.accountingStandards(), values, report.unknownNames(), report.pendingItems()));
+            ReportValues enriched = new ReportValues(report.figi(), report.statementType(), report.periodEnd(), report.periodType(),
+                    report.fiscalYear(), report.currency(), report.accountingStandards(), values, report.unknownNames(), report.pendingItems());
+            replaced.put(new ReportObservationKey(report.statementType(), report.periodEnd(), report.periodType()), enriched);
+        }
+        List<ReportValues> result = new ArrayList<>(available.size());
+        for (ReportValues item : available) {
+            ReportObservationKey key = new ReportObservationKey(item.statementType(), item.periodEnd(), item.periodType());
+            result.add(replaced.getOrDefault(key, item));
         }
         return result;
     }

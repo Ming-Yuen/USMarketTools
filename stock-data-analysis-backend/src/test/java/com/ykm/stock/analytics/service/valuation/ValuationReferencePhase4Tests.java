@@ -390,6 +390,44 @@ class ValuationReferencePhase4Tests {
     }
 
     @Test
+    void explicitHistoricalDateEqualToStaleQuoteDateRemainsHistoricalAndIssuedSharesFallbackIsLabeledAccurately() {
+        LocalDate staleQuoteDay = LocalDate.of(2026, 9, 30);
+        Instant staleClose = Instant.parse("2026-09-30T20:00:00Z");
+        status.setQuoteDate(staleQuoteDay);
+
+        StockFinancialPeriod period = buildPeriod(LocalDate.of(2026, 7, 1), staleQuoteDay,
+                new BigDecimal("5.00"), new BigDecimal("500"), new BigDecimal("1000"), new BigDecimal("200"), new BigDecimal("100"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(period));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(staleQuoteDay)))
+                .thenReturn(List.of(quote(staleQuoteDay, "50")));
+
+        com.ykm.stock.analytics.model.entity.StockShareObservation futureObs = new com.ykm.stock.analytics.model.entity.StockShareObservation();
+        futureObs.setFigi(FIGI);
+        futureObs.setObservedAt(LATEST_CLOSE);
+        futureObs.setIssuedShares(999L);
+        futureObs.setSource("FUTU");
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(FIGI, "FUTU", NOW))
+                .thenReturn(Optional.of(futureObs));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(FIGI, "FUTU", staleClose))
+                .thenReturn(Optional.empty());
+
+        // 1) 明確指定歷史日期 2026-09-30（supplementalCutoff == staleClose）：即使等於個股過期行情日，仍屬歷史查詢，且不使用未來 11-13 快照股數 999
+        ReportValuationBundle explicitHist = service.evaluateForReport(apple, staleQuoteDay, staleClose, staleClose, "I10");
+        assertThat(explicitHist.valuation().peerReference().status()).isEqualTo("NOT_APPLICABLE");
+        assertThat(explicitHist.valuation().peerReference().reasonCode()).isEqualTo("HISTORICAL_DATE_NOT_APPLICABLE");
+        assertThat(explicitHist.valuation().industryAssumption().status()).isEqualTo("NOT_APPLICABLE");
+        assertThat(explicitHist.valuation().industryAssumption().reasonCode()).isEqualTo("HISTORICAL_DATE_NOT_APPLICABLE");
+        assertThat(explicitHist.financials().sharesOutstanding().value()).isEqualByComparingTo("100");
+
+        // 2) 最新收市日使用舊快照（outstandingShares 為 null，回退 issuedShares）時，口徑說明須如實標明已發行股數備援，不謊稱流通在外股數
+        status.setQuoteDate(LATEST_DAY);
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(LATEST_DAY)))
+                .thenReturn(List.of(quote(LATEST_DAY, "50")));
+        ReportValuationBundle latestWithLegacyObs = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
+        assertThat(latestWithLegacyObs.financials().sharesOutstanding().calculation()).contains("已發行股數");
+    }
+
+    @Test
     void historicalReferenceCountsCompletelyMissingFinancialMonthsInWindowCoverage() {
         // 僅有 2025-01-01 起算的財報分母；2024 年 2 個月份完全無財報（整體狀態 INSUFFICIENT_DATA，五項倍數皆不可用）
         StockFinancialPeriod p2025 = buildPeriod(LocalDate.of(2025, 1, 1), LocalDate.of(2026, 9, 30),

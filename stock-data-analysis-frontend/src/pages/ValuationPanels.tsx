@@ -93,25 +93,31 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
   const valid = sliced.filter(point => point.value != null && Number.isFinite(point.value));
   const allValidCount = ordered.filter(point => point.value != null && Number.isFinite(point.value)).length;
   if (allValidCount < 2) return <Typography color="text.secondary" sx={{ my: 2 }}>可用歷史資料不足，暫時無法繪製{title}。</Typography>;
-  const renderValid = valid.length >= 2 ? valid : ordered.filter(point => point.value != null && Number.isFinite(point.value));
-  const renderOrdered = valid.length >= 2 ? sliced : ordered;
+  const windowInsufficient = valid.length < 2;
+  const renderValid = windowInsufficient ? valid : valid;
+  const renderOrdered = sliced;
 
-  const minX = Date.parse(renderValid[0].date), maxX = Date.parse(renderValid[renderValid.length - 1].date);
+  const minX = windowInsufficient ? 0 : Date.parse(renderValid[0].date);
+  const maxX = windowInsufficient ? 1 : Date.parse(renderValid[renderValid.length - 1].date);
   const values = renderValid.map(point => point.value as number);
-  const minY = Math.min(...values), maxY = Math.max(...values), spanY = maxY - minY || Math.abs(maxY) * 0.01 || 1;
+  const minY = windowInsufficient ? 0 : Math.min(...values);
+  const maxY = windowInsufficient ? 1 : Math.max(...values);
+  const spanY = maxY - minY || Math.abs(maxY) * 0.01 || 1;
   const midY = (minY + maxY) / 2;
   const x = (date: string) => SVG_PAD_L + (Date.parse(date) - minX) / (maxX - minX || 1) * SVG_PLOT_W;
   const y = (value: number) => 175 - (value - minY) / spanY * 145;
   let connected = false;
-  const path = renderOrdered.map(point => {
+  const path = windowInsufficient ? "" : renderOrdered.map(point => {
     if (point.value == null || !Number.isFinite(point.value)) { connected = false; return ""; }
     const command = connected ? "L" : "M";
     connected = true;
     return command + x(point.date) + "," + y(point.value);
   }).join(" ");
 
-  const activePoint = hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : renderValid[renderValid.length - 1];
-  const hoveredPoint = hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : null;
+  const activePoint = windowInsufficient
+    ? null
+    : hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : renderValid[renderValid.length - 1];
+  const hoveredPoint = !windowInsufficient && hoverIdx != null && hoverIdx >= 0 && hoverIdx < renderValid.length ? renderValid[hoverIdx] : null;
 
   return <Box sx={{ width: "100%", overflowX: "auto", my: 1, userSelect: "none" }}>
     {total >= 6 && (
@@ -134,6 +140,11 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
         </Stack>
       </Stack>
     )}
+    {windowInsufficient ? (
+      <Typography color="text.secondary" variant="body2" sx={{ my: 2 }}>
+        所選區間內可用資料不足，請切換其他區間或按「全部」查看歷史數據。
+      </Typography>
+    ) : (
     <svg ref={svgRef} role="img" aria-label={title} viewBox={`0 0 ${SVG_W} 215`}
       style={{ width: "100%", minWidth: 360, maxHeight: 280, display: "block", cursor: total >= 6 ? "crosshair" : "default" }}
       onMouseDown={event => {
@@ -183,6 +194,7 @@ export function SeriesChart({ title, points }: { title: string; points: Array<{ 
       )}
       <text x={SVG_PAD_L + SVG_PLOT_W} y="205" textAnchor="end" fontSize="11" fill="currentColor">{renderValid[renderValid.length - 1].date}</text>
     </svg>
+    )}
   </Box>;
 }
 
@@ -191,7 +203,7 @@ const financialLabels: Array<[keyof Financials, string, "money" | "perShare" | "
   ["epsTtm", "TTM 每股盈利", "perShare"], ["operatingCashFlowTtm", "TTM 營運現金流", "money"],
   ["capitalExpenditureTtm", "TTM 資本支出", "money"], ["freeCashFlowTtm", "TTM 自由現金流", "money"],
   ["ebitdaTtm", "TTM EBITDA", "money"], ["commonEquity", "普通股權益", "money"],
-  ["sharesOutstanding", "已發行股數", "shares"], ["bookValuePerShare", "每股帳面值", "perShare"],
+  ["sharesOutstanding", "流通在外股數", "shares"], ["bookValuePerShare", "每股帳面值", "perShare"],
   ["totalDebt", "有息債務", "money"], ["cashLikeAssets", "現金及可計入的投資", "money"],
   ["preferredEquity", "優先股權益", "money"], ["noncontrollingInterest", "非控制權益", "money"],
 ];

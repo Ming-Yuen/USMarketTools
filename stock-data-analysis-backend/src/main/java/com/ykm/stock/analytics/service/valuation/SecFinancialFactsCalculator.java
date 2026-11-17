@@ -520,6 +520,8 @@ public class SecFinancialFactsCalculator {
                 balance(eligible, "AccumulatedOtherComprehensiveIncomeLossNetOfTax"));
         if (preferredEnd != null) {
             inputs.put(FinancialConcept.CURRENT_DEBT_AND_LEASES, resolveSecDebt(sameBalancePeriod, preferredEnd));
+            inputs.put(FinancialConcept.CURRENT_DEBT, resolveSecCurrentBorrowing(sameBalancePeriod));
+            inputs.put(FinancialConcept.LONG_TERM_DEBT, balance(sameBalancePeriod, "LongTermDebtNoncurrent"));
         }
 
         Flow profit = trailing(eligible, "OperatingIncomeLoss");
@@ -881,6 +883,14 @@ public class SecFinancialFactsCalculator {
             if (anchor.value() != null) return combineWithNote(BigDecimal.ZERO, List.of(anchor), "ZeroDebt");
         }
         return missing("SEC_EV_COMPONENTS_UNRESOLVED", end);
+    }
+
+    private Flow resolveSecCurrentBorrowing(List<SecFinancialFact> samePeriod) {
+        for (String tag : List.of("LongTermDebtCurrent", "ShortTermBorrowings", "CommercialPaper", "DebtCurrent")) {
+            Flow candidate = balance(samePeriod, tag);
+            if (candidate.value() != null) return candidate;
+        }
+        return missing("SEC_BALANCE_INPUT_MISSING", null);
     }
 
     private Flow sumPresentBalances(List<SecFinancialFact> facts, String firstTag, String secondTag) {

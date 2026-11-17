@@ -367,6 +367,21 @@ class FinancialReportValuationCalculatorTests {
     }
 
     @Test
+    void totalFinanceLeasesDoesNotDropCombinedDebtWhenPureBorrowingsAreUnreported() {
+        java.util.Map<FinancialConcept, String> inputs = new java.util.EnumMap<>(FinancialConcept.class);
+        inputs.put(FinancialConcept.CURRENT_DEBT_AND_LEASES, "120");
+        inputs.put(FinancialConcept.LONG_TERM_DEBT_AND_LEASES, "230");
+        inputs.put(FinancialConcept.CURRENT_OPERATING_LEASES, "20");
+        inputs.put(FinancialConcept.LONG_TERM_OPERATING_LEASES, "30");
+        inputs.put(FinancialConcept.TOTAL_FINANCE_LEASES, "10");
+        inputs.put(FinancialConcept.CASH_AND_EQUIVALENTS, "50");
+        FinancialReportValuationCalculator.ReportValues balance = values(2, inputs);
+
+        assertThat(calculator.totalDebt(balance).value()).isEqualByComparingTo("300");
+        assertThat(calculator.enterpriseValue(decimal("1000"), balance).value()).isEqualByComparingTo("1250");
+    }
+
+    @Test
     void unresolvedFinanceCostDoesNotAffectOperatingEbitdaOrEps() {
         java.util.Map<FinancialConcept, String> amounts = new java.util.EnumMap<>(FinancialConcept.class);
         amounts.put(FinancialConcept.OPERATING_PROFIT, "80");

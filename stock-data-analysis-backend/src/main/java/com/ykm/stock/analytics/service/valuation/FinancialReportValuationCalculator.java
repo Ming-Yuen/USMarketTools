@@ -477,11 +477,16 @@ public class FinancialReportValuationCalculator {
         MetricResult<BigDecimal> finance = balance.value(FinancialConcept.TOTAL_FINANCE_LEASES);
         MetricResult<BigDecimal> borrowingCurrent = balance.value(FinancialConcept.CURRENT_DEBT);
         MetricResult<BigDecimal> borrowingLongTerm = balance.value(FinancialConcept.LONG_TERM_DEBT);
+        MetricResult<BigDecimal> combinedCurrent = balance.value(FinancialConcept.CURRENT_DEBT_AND_LEASES);
+        MetricResult<BigDecimal> combinedLongTerm = balance.value(FinancialConcept.LONG_TERM_DEBT_AND_LEASES);
         if (finance.status() == MetricStatus.UNVERIFIED) return finance;
         if (borrowingCurrent.status() == MetricStatus.UNVERIFIED) return borrowingCurrent;
         if (borrowingLongTerm.status() == MetricStatus.UNVERIFIED) return borrowingLongTerm;
-        if (finance.value() != null && finance.value().signum() >= 0
-                && (borrowingCurrent.value() != null || borrowingLongTerm.value() != null || anchored)) {
+        if (combinedCurrent.status() == MetricStatus.UNVERIFIED) return combinedCurrent;
+        if (combinedLongTerm.status() == MetricStatus.UNVERIFIED) return combinedLongTerm;
+        boolean currentPureResolved = borrowingCurrent.value() != null || (combinedCurrent.value() == null && anchored);
+        boolean longTermPureResolved = borrowingLongTerm.value() != null || (combinedLongTerm.value() == null && anchored);
+        if (finance.value() != null && finance.value().signum() >= 0 && currentPureResolved && longTermPureResolved) {
             BigDecimal cur = borrowingCurrent.value() == null ? BigDecimal.ZERO : borrowingCurrent.value();
             BigDecimal lt = borrowingLongTerm.value() == null ? BigDecimal.ZERO : borrowingLongTerm.value();
             return MetricResult.available(cur.add(lt, MC).add(finance.value(), MC));
@@ -557,7 +562,8 @@ public class FinancialReportValuationCalculator {
         if (combined.value() != null && lease.value() != null && combined.value().compareTo(lease.value()) >= 0) {
             return MetricResult.available(combined.value().subtract(lease.value(), MC));
         }
-        if (combined.value() == null && lease.value() == null && operating.value() == null && finance.value() == null) {
+        if (combined.value() == null && lease.value() == null) {
+            if (finance.value() != null) return finance;
             return anchored ? MetricResult.available(BigDecimal.ZERO) : borrowing;
         }
         return unverified("EV_LEASE_SCOPE_UNRESOLVED");

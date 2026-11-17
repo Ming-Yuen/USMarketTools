@@ -144,8 +144,8 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
             const pct = maDiff(val);
             return <Stack key={label} direction="row" justifyContent="space-between">
               <Typography variant="caption" color="text.secondary">{label}：{formatNumber(val)}</Typography>
-              <Typography variant="caption" fontWeight={600} color={pct == null ? "text.secondary" : pct >= 0 ? "success.main" : "error.main"}>
-                {pct == null ? "—" : (pct >= 0 ? "高於 " : "低於 ") + formatSignedPct(pct)}
+              <Typography variant="caption" fontWeight={600} color={pct == null || pct === 0 ? "text.secondary" : pct > 0 ? "success.main" : "error.main"}>
+                {pct == null ? "—" : pct > 0 ? "高於 " + formatSignedPct(pct) : pct < 0 ? "低於 " + formatSignedPct(pct) : "持平 0.00%"}
               </Typography>
             </Stack>;
           })}
@@ -166,7 +166,7 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
           <Box sx={{ position: "absolute", left: `calc(${Math.min(98, Math.max(2, rsi14))}% - 4px)`, top: 0, width: 8, height: 8, borderRadius: "50%", bgcolor: rsi14 <= 30 ? "#16a34a" : rsi14 >= 70 ? "#dc2626" : "#1976d2" }} />
         </Box>}
         <Typography variant="caption" display="block" color="text.secondary">
-          MACD：{formatNumber(macd)} · 柱狀：{formatNumber(macdHist)}（{macdHist == null ? "—" : macdHist >= 0 ? "多方柱" : "空方柱"}）
+          MACD：{formatNumber(macd)} · 柱狀：{formatNumber(macdHist)}（{macdHist == null ? "—" : macdHist > 0 ? "多方柱" : macdHist < 0 ? "空方柱" : "中性"}）
         </Typography>
         <Typography variant="caption" display="block" color="text.secondary">
           20日報酬：{ret20 != null ? formatSignedPct(ret20 * 100) : "—"} · 距52週高點：{dd252 != null ? formatSignedPct(dd252 * 100) : "—"}

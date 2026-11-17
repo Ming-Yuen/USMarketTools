@@ -538,6 +538,233 @@ class MarketWideValuationPhase2Tests {
         assertThat(exelHist.metrics().evEbitda().reasonCode()).isNull();
     }
 
+    @Test
+    void newerDeiFilingSharesBeatStaleBalanceSheetSharesAndRetainActualShareBasisDate() {
+        ActiveStockWithStatus algt = target("BBG000LJS6B8", "ALGT", "0001362468", "Allegiant Travel Co", "4512");
+        stubStocksAndStatuses(List.of(algt));
+
+        SecFinancialFact staleBalanceShares = secShareFact("0001362468", "2021-12-31", "2022-03-01", "18111381");
+        SecFinancialFact newerDeiShares = new SecFinancialFact();
+        newerDeiShares.setCik("0001362468");
+        newerDeiShares.setTaxonomy("dei");
+        newerDeiShares.setTag("EntityCommonStockSharesOutstanding");
+        newerDeiShares.setUnit("shares");
+        newerDeiShares.setPeriodStart(null);
+        newerDeiShares.setPeriodEnd(LocalDate.of(2026, 7, 31));
+        newerDeiShares.setFiled(LocalDate.of(2026, 8, 10));
+        newerDeiShares.setAvailableFromDate(LocalDate.of(2026, 8, 11));
+        newerDeiShares.setObservedAt(HIST_CLOSE.minusSeconds(3600));
+        newerDeiShares.setAccession("0001362468-26-000010");
+        newerDeiShares.setForm("10-Q");
+        newerDeiShares.setValue(new BigDecimal("27337755"));
+
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any()))
+                .thenReturn(List.of(staleBalanceShares, newerDeiShares));
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(
+                operatingAnnualReports("BBG000LJS6B8", "US_GAAP", "2026-09-30", "4.00", "1765000000", "3293000000", "150000000", "300000000", "100000000", "2000000000", "500000000"));
+
+        valuationService.rebuildFinancialPeriods(List.of("BBG000LJS6B8"));
+
+        StockFinancialPeriod built = storedPeriods.get("BBG000LJS6B8").getFirst();
+        assertThat(built.getSharesOutstanding()).isEqualByComparingTo("27337755");
+        assertThat(built.getSharesBasisDate()).isEqualTo(LocalDate.of(2026, 7, 31));
+
+        LocalDate evalDay = LocalDate.of(2026, 9, 30);
+        when(calendar.getSessionCloseAt(evalDay)).thenReturn(Instant.parse("2026-09-30T20:00:00Z"));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("BBG000LJS6B8"), eq(evalDay), eq(evalDay)))
+                .thenReturn(List.of(quote("BBG000LJS6B8", evalDay, "75.79")));
+        ValuationResultDto dayVal = valuationService.history("BBG000LJS6B8", evalDay, evalDay, "DAILY").getFirst();
+        // 27,337,755 * 75.79 / 1,765,000,000 = 1.173897... -> 1.1739 (而非舊股數 18,111,381 算出的 0.7777)
+        assertThat(dayVal.metrics().pb().value()).isEqualByComparingTo("1.1739");
+    }
+
+    @Test
+    void newQuarterDoesNotStuffStalePriorPeriodCashFlowOrBalanceIntoCurrentPeriodRow() {
+        ActiveStockWithStatus reg = target("BBG000BL46Q4", "REG", "0000910606", "Regency Centers Corp", "6798");
+        stubStocksAndStatuses(List.of(reg));
+
+        List<FinancialReport> regReports = new ArrayList<>();
+        // 2025 年度完整三表（2025-12-31：FCF = 80, Equity = 1000）＋ 2025Q2..Q4 與 2026Q1 損益表（無 2026Q1 資產負債表與現金流量表）
+        regReports.addAll(operatingAnnualReports("BBG000BL46Q4", "US_GAAP", "2025-12-31", "4.00", "1000", "400", "80", "160", "40", "300", "50"));
+        String[][] incQuarters = {
+                {"2025-06-30", "2", "2025", "1.00", "100"},
+                {"2025-09-30", "3", "2025", "1.00", "100"},
+                {"2025-12-31", "4", "2025", "1.00", "100"},
+                {"2026-03-31", "1", "2026", "1.20", "120"}
+        };
+        for (String[] q : incQuarters) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("BBG000BL46Q4");
+            inc.setStatementType(1);
+            inc.setPeriodType(Integer.parseInt(q[1]));
+            inc.setFiscalYear(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(HIST_CLOSE.minusSeconds(600));
+            inc.setItems(List.of(
+                    new FinancialReport.Item(8048L, "Diluted EPS", new BigDecimal(q[3]), null, null),
+                    new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[4]), null, null)));
+            regReports.add(inc);
+        }
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(regReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(List.of());
+
+        valuationService.rebuildFinancialPeriods(List.of("BBG000BL46Q4"));
+
+        StockFinancialPeriod q1Row = storedPeriods.get("BBG000BL46Q4").stream()
+                .filter(p -> LocalDate.of(2026, 3, 31).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(q1Row.getRevenueTtm()).isEqualByComparingTo("420");
+        assertThat(q1Row.getEpsTtm()).isEqualByComparingTo("4.20");
+        assertThat(q1Row.getFreeCashFlowTtm()).isNull();
+        assertThat(q1Row.getFreeCashFlowTtmStatus()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(q1Row.getCommonEquity()).isNull();
+        assertThat(q1Row.getCommonEquityStatus()).isEqualTo("INSUFFICIENT_DATA");
+    }
+
+    @Test
+    void evComponentsUsGaapOverrideCorruptedFutuEquityFcfSynthesisAnd52WeekStartStayConsistent() {
+        ActiveStockWithStatus qxo = target("QXO_FIGI", "QXO", "0001236275", "QXO Inc", "5030");
+        ActiveStockWithStatus ferg = target("FERG_FIGI", "FERG", "0002011641", "Ferguson Enterprises Inc", "5070");
+        ActiveStockWithStatus iart = target("IART_FIGI", "IART", "0000917520", "Integra LifeSciences", "3841");
+        ActiveStockWithStatus aapl = target("AAPL52_FIGI", "AAPL52", null, "52 Week Filer", "3571");
+        stubStocksAndStatuses(List.of(qxo, ferg, iart, aapl));
+
+        List<FinancialReport> batchReports = new ArrayList<>();
+        List<SecFinancialFact> batchSec = new ArrayList<>();
+
+        // 1) QXO：Futu 權益 1000、債務 200、現金 50（且 accountingStandards 空白），SEC 同報期補優先股 100、NCI 20 -> 普通股權益 900、EV 調整 270
+        List<FinancialReport> qxoReports = operatingAnnualReports("QXO_FIGI", "", "2026-09-30", "2.00", "1000", "500", "60", "80", "20", "200", "50");
+        batchReports.addAll(qxoReports);
+        batchSec.add(secBalanceFact("0001236275", "2026-09-30", "10-Q", "PreferredStockValue", "100"));
+        batchSec.add(secBalanceFact("0001236275", "2026-09-30", "10-Q", "MinorityInterest", "20"));
+        batchSec.add(secBalanceFact("0001236275", "2026-09-30", "10-Q", "Assets", "1500"));
+
+        // 2) FERG：Futu 誤標 NonUS_GAAP 且僅列長債 5571＋營運租賃 1521＝7092，SEC 10-Q us-gaap 證明 US_GAAP 並補入短債 599 -> 總債 6170
+        FinancialReport fergInc = new FinancialReport();
+        fergInc.setFigi("FERG_FIGI");
+        fergInc.setStatementType(1);
+        fergInc.setPeriodType(7);
+        fergInc.setFiscalYear(2026);
+        fergInc.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        fergInc.setCurrency("USD");
+        fergInc.setAccountingStandards("NonUS_GAAP");
+        fergInc.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fergInc.setItems(List.of(
+                new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal("30000"), null, null),
+                new FinancialReport.Item(8017L, "Operating Profit", new BigDecimal("2800"), null, null),
+                new FinancialReport.Item(8012L, "Depreciation & Amortization", new BigDecimal("400"), null, null)));
+        FinancialReport fergBal = new FinancialReport();
+        fergBal.setFigi("FERG_FIGI");
+        fergBal.setStatementType(2);
+        fergBal.setPeriodType(7);
+        fergBal.setFiscalYear(2026);
+        fergBal.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        fergBal.setCurrency("USD");
+        fergBal.setAccountingStandards("NonUS_GAAP");
+        fergBal.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fergBal.setItems(List.of(
+                new FinancialReport.Item(8085L, "Stockholders' Equity", new BigDecimal("5800"), null, null),
+                new FinancialReport.Item(8068L, "Long Term Debt and Capital Lease Obligation", new BigDecimal("7092"), null, null),
+                new FinancialReport.Item(8069L, "-Long Term Debt", new BigDecimal("5571"), null, null),
+                new FinancialReport.Item(8070L, "-Long Term Capital Lease Obligation", new BigDecimal("1521"), null, null),
+                new FinancialReport.Item(8004L, "-Cash and Cash Equivalents", new BigDecimal("476"), null, null)));
+        batchReports.add(fergInc);
+        batchReports.add(fergBal);
+        batchSec.add(secBalanceFact("0002011641", "2026-09-30", "10-Q", "DebtCurrent", "599"));
+        batchSec.add(secBalanceFact("0002011641", "2026-09-30", "10-Q", "LongTermDebtNoncurrent", "5571"));
+        batchSec.add(secBalanceFact("0002011641", "2026-09-30", "10-Q", "OperatingLeaseLiabilityCurrent", "492"));
+        batchSec.add(secBalanceFact("0002011641", "2026-09-30", "10-Q", "OperatingLeaseLiabilityNoncurrent", "1521"));
+        batchSec.add(secBalanceFact("0002011641", "2026-09-30", "10-Q", "Assets", "18000"));
+
+        // 3) IART：Futu Total Equity = 1066、Stockholders' Equity 錯填 2468（缺 8095），SEC StockholdersEquity = 1066 -> 普通股權益 1066、NCI 0
+        FinancialReport iartBal = new FinancialReport();
+        iartBal.setFigi("IART_FIGI");
+        iartBal.setStatementType(2);
+        iartBal.setPeriodType(7);
+        iartBal.setFiscalYear(2026);
+        iartBal.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        iartBal.setCurrency("USD");
+        iartBal.setAccountingStandards("US_GAAP");
+        iartBal.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        iartBal.setItems(List.of(
+                new FinancialReport.Item(8081L, "Total Equity", new BigDecimal("1066"), null, null),
+                new FinancialReport.Item(8085L, "Stockholders' Equity", new BigDecimal("2468"), null, null),
+                new FinancialReport.Item(8069L, "-Long Term Debt", new BigDecimal("500"), null, null),
+                new FinancialReport.Item(8004L, "-Cash and Cash Equivalents", new BigDecimal("100"), null, null)));
+        batchReports.add(iartBal);
+        batchSec.add(secBalanceFact("0000917520", "2026-09-30", "10-Q", "StockholdersEquity", "1066"));
+
+        // 4) Futu-only 52 週財年（2025-09-27 -> 2026-09-26）且僅有 CFO=100、CapEx=-20（無直接 FCF、無 SEC）-> FCF=80，起日為 2025-09-28
+        batchReports.addAll(operatingAnnualReports("AAPL52_FIGI", "US_GAAP", "2025-09-27", "7.00", "90", "400", "70", "120", "10", "80", "30"));
+        FinancialReport fy26Inc = new FinancialReport();
+        fy26Inc.setFigi("AAPL52_FIGI");
+        fy26Inc.setStatementType(1);
+        fy26Inc.setPeriodType(7);
+        fy26Inc.setFiscalYear(2026);
+        fy26Inc.setPeriodEnd(LocalDate.of(2026, 9, 26));
+        fy26Inc.setCurrency("USD");
+        fy26Inc.setAccountingStandards("US_GAAP");
+        fy26Inc.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fy26Inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal("478"), null, null)));
+        FinancialReport fy26Cf = new FinancialReport();
+        fy26Cf.setFigi("AAPL52_FIGI");
+        fy26Cf.setStatementType(3);
+        fy26Cf.setPeriodType(7);
+        fy26Cf.setFiscalYear(2026);
+        fy26Cf.setPeriodEnd(LocalDate.of(2026, 9, 26));
+        fy26Cf.setCurrency("USD");
+        fy26Cf.setAccountingStandards("US_GAAP");
+        fy26Cf.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fy26Cf.setItems(List.of(
+                new FinancialReport.Item(8015L, "Operating Cash Flow", new BigDecimal("100"), null, null),
+                new FinancialReport.Item(8044L, "Capital Expenditure", new BigDecimal("-20"), null, null)));
+        batchReports.add(fy26Inc);
+        batchReports.add(fy26Cf);
+
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(batchSec);
+
+        valuationService.rebuildFinancialPeriods(List.of("QXO_FIGI", "FERG_FIGI", "IART_FIGI", "AAPL52_FIGI"));
+
+        StockFinancialPeriod qxoRow = storedPeriods.get("QXO_FIGI").getFirst();
+        assertThat(qxoRow.getCommonEquity()).isEqualByComparingTo("900");
+        assertThat(qxoRow.getPreferredEquity()).isEqualByComparingTo("100");
+        assertThat(qxoRow.getNoncontrollingInterest()).isEqualByComparingTo("20");
+        assertThat(qxoRow.getEvAdjustment()).isEqualByComparingTo("270");
+
+        StockFinancialPeriod fergRow = storedPeriods.get("FERG_FIGI").getFirst();
+        assertThat(fergRow.getAccountingStandards()).isEqualTo("US_GAAP");
+        assertThat(fergRow.getTotalDebt()).isEqualByComparingTo("6170");
+        assertThat(fergRow.getEvAdjustment()).isEqualByComparingTo("5694");
+
+        StockFinancialPeriod iartRow = storedPeriods.get("IART_FIGI").getFirst();
+        assertThat(iartRow.getCommonEquity()).isEqualByComparingTo("1066");
+        assertThat(iartRow.getNoncontrollingInterest()).isEqualByComparingTo("0");
+
+        StockFinancialPeriod aapl52Row = storedPeriods.get("AAPL52_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 26).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(aapl52Row.getFreeCashFlowTtm()).isEqualByComparingTo("80");
+        assertThat(aapl52Row.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 28));
+    }
+
+    private SecFinancialFact secBalanceFact(String cik, String periodEnd, String form, String tag, String val) {
+        SecFinancialFact fact = new SecFinancialFact();
+        fact.setCik(cik);
+        fact.setTaxonomy("us-gaap");
+        fact.setTag(tag);
+        fact.setUnit("USD");
+        fact.setPeriodStart(null);
+        fact.setPeriodEnd(LocalDate.parse(periodEnd));
+        fact.setFiled(LocalDate.parse(periodEnd).plusDays(35));
+        fact.setAvailableFromDate(LocalDate.parse(periodEnd).plusDays(36));
+        fact.setObservedAt(HIST_CLOSE.minusSeconds(3600));
+        fact.setAccession(cik + "-26-000099");
+        fact.setForm(form);
+        fact.setValue(new BigDecimal(val));
+        return fact;
+    }
+
     private void stubStocksAndStatuses(List<ActiveStockWithStatus> items) {
         Map<String, Stock> sMap = new LinkedHashMap<>();
         Map<String, StockStatus> stMap = new LinkedHashMap<>();

@@ -295,3 +295,45 @@ test("hides blank UNAVAILABLE trade plan cards while surfacing active support/re
   await calls[calls.length - 1][0].queryFn();
   expect(apiClient.post).toHaveBeenLastCalledWith("analysis/report", { figi: "AAPL-FIGI", horizon: "SWING" });
 });
+
+test("keeps selected 1Y window when recent points are null, labels outstanding shares accurately, and renders zero SMA/MACD diffs neutrally", () => {
+  // 1) SeriesChart：36 個月（前 24 月有值、近 12 月為 null），點擊「1年」後不得偷偷退回繪製整段 36 個月舊資料
+  const points36 = Array.from({ length: 36 }, (_, i) => {
+    const year = 2024 + Math.floor(i / 12);
+    const month = String((i % 12) + 1).padStart(2, "0");
+    return { date: `${year}-${month}-28`, value: i < 24 ? 15 + (i % 5) : null };
+  });
+  const { unmount } = render(<SeriesChart title="歷史 P/E" points={points36} />);
+  fireEvent.click(screen.getByRole("button", { name: "1年" }));
+  expect(screen.getByText(/所選區間內可用資料不足/)).toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "歷史 P/E" })).not.toBeInTheDocument();
+  unmount();
+
+  // 2) FinancialsPanel 顯示「流通在外股數」，且 TechnicalChartWorkbench 對股價 == SMA 與 MACD 柱 == 0 顯示中性文案
+  report.valuation.price = 100;
+  report.financials = {
+    periodEnd: "2026-09-30", availableAt: "2026-11-01T00:00:00Z", reportingCurrency: "USD",
+    sharesOutstanding: { value: 14532182000, status: "AVAILABLE", reasonCode: null, calculation: "富途最新流通在外股數", periodStart: null, periodEnd: "2026-09-30", availableAt: "2026-11-05T21:00:00Z" },
+  };
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: { priceDataThrough: "2026-11-05", timeframes: [{ timeframe: "DAILY", bars: [], majorTrend: { status: "AVAILABLE", value: { state: "RANGE" }, reasons: [] } }] },
+  };
+  report.marketContext = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      momentum: { volumeVs20Day: metric(1), return20: metric(0), return60: metric(0), drawdownFrom252High: metric(0) },
+      momentumDetail: {
+        indicators: { SMA20: metric(100), SMA50: metric(100), SMA200: metric(100), RSI14: metric(50), MACD: metric(0), MACD_HISTOGRAM: metric(0), ATR14: metric(2) },
+        interpretations: {},
+        series: [],
+      },
+    },
+  };
+  render(<StockAnalysisPage />);
+  expect(within(screen.getByRole("region", { name: "估值使用的財務數據" })).getByText("流通在外股數")).toBeInTheDocument();
+  expect(screen.queryByText(/高於 \+0\.00%/)).not.toBeInTheDocument();
+  expect(screen.getAllByText(/持平 0\.00%/).length).toBeGreaterThanOrEqual(1);
+  expect(screen.queryByText(/多方柱/)).not.toBeInTheDocument();
+  expect(screen.getByText(/柱狀：0\.00（中性）/)).toBeInTheDocument();
+});

@@ -2280,6 +2280,9 @@ public class StockValuationService {
             String rcik = resolveCik(stock, r.periodEnd());
             List<SecFinancialFact> cikFacts = rcik == null ? List.of()
                     : secFactsList.stream().filter(f -> rcik.equals(f.getCik())).toList();
+            if (r.periodType() == 7 && r.statementType() != 2 && isShortTransitionAnnualAt(cikFacts, r.periodEnd())) {
+                continue;
+            }
             boolean domesticUsGaapAtEnd = hasDomesticUsGaapFilingAt(cikFacts, r.periodEnd());
             boolean blankStandardWithSecUsGaap = (r.accountingStandards() == null || r.accountingStandards().isBlank())
                     && cikFacts.stream().anyMatch(f -> "us-gaap".equals(f.getTaxonomy()));
@@ -2291,6 +2294,18 @@ public class StockValuationService {
             }
         }
         return List.copyOf(result);
+    }
+
+    private boolean isShortTransitionAnnualAt(List<SecFinancialFact> cikFacts, LocalDate periodEnd) {
+        if (cikFacts == null || cikFacts.isEmpty() || periodEnd == null) return false;
+        boolean hasShortTransition = cikFacts.stream().anyMatch(f -> ("10-KT".equals(f.getForm()) || "10-KT/A".equals(f.getForm()))
+                && f.getPeriodStart() != null && f.getPeriodEnd() != null
+                && Math.abs(ChronoUnit.DAYS.between(f.getPeriodEnd(), periodEnd)) <= 7
+                && ChronoUnit.DAYS.between(f.getPeriodStart(), f.getPeriodEnd()) + 1 < 330);
+        if (!hasShortTransition) return false;
+        return cikFacts.stream().noneMatch(f -> f.getPeriodStart() != null && f.getPeriodEnd() != null
+                && Math.abs(ChronoUnit.DAYS.between(f.getPeriodEnd(), periodEnd)) <= 7
+                && ChronoUnit.DAYS.between(f.getPeriodStart(), f.getPeriodEnd()) + 1 >= 350);
     }
 
     private boolean hasDomesticUsGaapFilingAt(List<SecFinancialFact> cikFacts, LocalDate periodEnd) {
@@ -2352,7 +2367,7 @@ public class StockValuationService {
         List<ReportValues> prior = reports.stream()
                 .filter(r -> r.figi().equals(figi) && r.statementType() == statementType && r.periodEnd().isBefore(earliestEnd))
                 .max(Comparator.comparing(ReportValues::periodEnd)).stream().toList();
-        if (!prior.isEmpty() && ChronoUnit.DAYS.between(prior.getFirst().periodEnd(), earliestEnd) <= 105) {
+        if (!prior.isEmpty() && ChronoUnit.DAYS.between(prior.getFirst().periodEnd(), earliestEnd) <= 125) {
             return prior.getFirst().periodEnd().plusDays(1);
         }
         return earliestEnd.minusDays(90);

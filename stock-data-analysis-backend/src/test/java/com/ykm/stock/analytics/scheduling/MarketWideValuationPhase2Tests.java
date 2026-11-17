@@ -836,6 +836,97 @@ class MarketWideValuationPhase2Tests {
         assertThat(fergLatest.getFreeCashFlowTtmPeriodStart()).isNotEqualTo(LocalDate.of(2025, 5, 1));
     }
 
+    @Test
+    void short10KtTransitionAnnualIsNotTreatedAsFullYearAnd16WeekRetailQuarterUsesExactStartDate() {
+        ActiveStockWithStatus ferg = target("FERG_10KT_FIGI", "FERG", "0002011641", "Ferguson Enterprises Inc", "5070");
+        ActiveStockWithStatus cost = target("COST_FIGI", "COST", "0000909832", "Costco Wholesale Corp", "5331");
+        stubStocksAndStatuses(List.of(ferg, cost));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(
+                simpleObs("FERG_10KT_FIGI", 195545957L), simpleObs("COST_FIGI", 443000000L)));
+
+        List<FinancialReport> batchReports = new ArrayList<>();
+        List<SecFinancialFact> batchSec = new ArrayList<>();
+
+        // 1) FERG 2025-12-31：5 個月 10-KT 過渡報表（2025-08-01..2025-12-31）被富途標為 periodType=7，不得當成 12 個月年報輸出 FCF 674
+        FinancialReport fergBal = new FinancialReport();
+        fergBal.setFigi("FERG_10KT_FIGI");
+        fergBal.setStatementType(2);
+        fergBal.setPeriodType(7);
+        fergBal.setFiscalYear(2025);
+        fergBal.setPeriodEnd(LocalDate.of(2025, 12, 31));
+        fergBal.setCurrency("USD");
+        fergBal.setAccountingStandards("US_GAAP");
+        fergBal.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fergBal.setItems(List.of(
+                new FinancialReport.Item(8085L, "Stockholders' Equity", new BigDecimal("5700"), null, null),
+                new FinancialReport.Item(8069L, "-Long Term Debt", new BigDecimal("3500"), null, null),
+                new FinancialReport.Item(8004L, "-Cash and Cash Equivalents", new BigDecimal("557"), null, null)));
+        FinancialReport fergStubCf = new FinancialReport();
+        fergStubCf.setFigi("FERG_10KT_FIGI");
+        fergStubCf.setStatementType(3);
+        fergStubCf.setPeriodType(7);
+        fergStubCf.setFiscalYear(2025);
+        fergStubCf.setPeriodEnd(LocalDate.of(2025, 12, 31));
+        fergStubCf.setCurrency("USD");
+        fergStubCf.setAccountingStandards("US_GAAP");
+        fergStubCf.setObservedAt(HIST_CLOSE.minusSeconds(600));
+        fergStubCf.setItems(List.of(new FinancialReport.Item(8072L, "Free Cash Flow", new BigDecimal("674"), null, null)));
+        batchReports.add(fergBal);
+        batchReports.add(fergStubCf);
+
+        SecFinancialFact stubCfo = new SecFinancialFact();
+        stubCfo.setCik("0002011641");
+        stubCfo.setTaxonomy("us-gaap");
+        stubCfo.setTag("NetCashProvidedByUsedInOperatingActivities");
+        stubCfo.setUnit("USD");
+        stubCfo.setPeriodStart(LocalDate.of(2025, 8, 1));
+        stubCfo.setPeriodEnd(LocalDate.of(2025, 12, 31));
+        stubCfo.setFiled(LocalDate.of(2026, 2, 27));
+        stubCfo.setAvailableFromDate(LocalDate.of(2026, 2, 28));
+        stubCfo.setObservedAt(HIST_CLOSE.minusSeconds(3600));
+        stubCfo.setAccession("0002011641-26-000010");
+        stubCfo.setForm("10-KT");
+        stubCfo.setValue(new BigDecimal("859"));
+        batchSec.add(stubCfo);
+
+        // 2) COST：12+12+12+16 週財年（Q3 2025-05-11 -> Q4 2025-08-31 相隔 112 天），截至 2026-05-10 的 TTM 起日應為 2025-05-12 而非 2025-06-02
+        String[][] costQuarters = {
+                {"2025-05-11", "2025", "3", "63000"},
+                {"2025-08-31", "2025", "4", "86000"},
+                {"2025-11-23", "2026", "1", "67000"},
+                {"2026-02-15", "2026", "2", "69000"},
+                {"2026-05-10", "2026", "3", "71587"}
+        };
+        for (String[] q : costQuarters) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("COST_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(HIST_CLOSE.minusSeconds(600));
+            inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null)));
+            batchReports.add(inc);
+        }
+
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(batchSec);
+
+        valuationService.rebuildFinancialPeriods(List.of("FERG_10KT_FIGI", "COST_FIGI"));
+
+        StockFinancialPeriod ferg10KtRow = storedPeriods.get("FERG_10KT_FIGI").stream()
+                .filter(p -> LocalDate.of(2025, 12, 31).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(ferg10KtRow.getFreeCashFlowTtm()).isNull();
+        assertThat(ferg10KtRow.getCommonEquity()).isEqualByComparingTo("5700");
+
+        StockFinancialPeriod costQ3Row = storedPeriods.get("COST_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 5, 10).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(costQ3Row.getRevenueTtm()).isEqualByComparingTo("293587");
+        assertThat(costQ3Row.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 5, 12));
+    }
+
     private SecFinancialFact secBalanceFact(String cik, String periodEnd, String form, String tag, String val) {
         SecFinancialFact fact = new SecFinancialFact();
         fact.setCik(cik);

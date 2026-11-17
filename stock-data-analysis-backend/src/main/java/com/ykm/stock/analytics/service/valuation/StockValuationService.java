@@ -515,26 +515,23 @@ public class StockValuationService {
             StockShareObservation closingSnap, StockShareObservation fallbackObs,
             boolean multiClass, boolean verifiedOneToOne, IndustryModelContext modelCtx,
             LocalDate lastClosed, Instant calculatedAt, boolean monthly) {
-        if (quoteByDate.isEmpty() || periods.isEmpty()) return List.of();
+        if (quoteByDate.isEmpty()) return List.of();
         if (monthly) {
             Map<YearMonth, LocalDate> monthLastQuoteDays = new LinkedHashMap<>();
             for (LocalDate quoteDate : quoteByDate.keySet()) {
                 monthLastQuoteDays.put(YearMonth.from(quoteDate), quoteDate);
             }
-            Map<YearMonth, ValuationResultDto> monthlyResults = new LinkedHashMap<>();
-            for (Map.Entry<LocalDate, StockQuote> entry : quoteByDate.entrySet()) {
-                LocalDate day = entry.getKey();
-                StockQuote quote = entry.getValue();
+            List<ValuationResultDto> monthlyResults = new ArrayList<>(monthLastQuoteDays.size());
+            for (LocalDate day : monthLastQuoteDays.values()) {
+                StockQuote quote = quoteByDate.get(day);
                 Instant dayCutoff = calendar.isTradingDay(day) ? calendar.getSessionCloseAt(day) : calculatedAt;
                 StockFinancialPeriod matched = matchPeriod(periods, day);
                 StockShareObservation primary = day.equals(lastClosed) && closingSnap != null ? closingSnap : fallbackObs;
                 ValuationResultDto dto = evaluateSingleDay(stock, status, quote, matched, stockSplits,
                         primary, fallbackObs, multiClass, verifiedOneToOne, modelCtx, day, dayCutoff, calculatedAt, lastClosed);
-                if ("AVAILABLE".equals(dto.status())) {
-                    monthlyResults.put(YearMonth.from(day), dto);
-                }
+                monthlyResults.add(dto);
             }
-            return List.copyOf(monthlyResults.values());
+            return List.copyOf(monthlyResults);
         }
 
         List<ValuationResultDto> dailyResults = new ArrayList<>();

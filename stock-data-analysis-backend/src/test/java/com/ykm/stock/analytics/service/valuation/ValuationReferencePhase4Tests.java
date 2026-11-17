@@ -389,6 +389,60 @@ class ValuationReferencePhase4Tests {
         assertThat(bundle.valuation().peerReference().status()).isNotEqualTo("NOT_APPLICABLE");
     }
 
+    @Test
+    void historicalReferenceCountsCompletelyMissingFinancialMonthsInWindowCoverage() {
+        // 僅有 2025-01-01 起算的財報分母；2024 年 2 個月份完全無財報（整體狀態 INSUFFICIENT_DATA，五項倍數皆不可用）
+        StockFinancialPeriod p2025 = buildPeriod(LocalDate.of(2025, 1, 1), LocalDate.of(2026, 9, 30),
+                new BigDecimal("10.00"), new BigDecimal("600"), new BigDecimal("1200"), new BigDecimal("250"), new BigDecimal("100"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(p2025));
+
+        List<StockQuote> twelveMonthsQuotes = new ArrayList<>();
+        // 前 2 個月（2024-06、2024-09）完全缺財報 -> NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE，不得從應統計視窗刪除
+        twelveMonthsQuotes.add(quote(LocalDate.of(2024, 6, 28), "150"));
+        twelveMonthsQuotes.add(quote(LocalDate.of(2024, 9, 30), "160"));
+        LocalDate[] tenValidMonths = {
+                LocalDate.of(2025, 2, 28), LocalDate.of(2025, 4, 30), LocalDate.of(2025, 6, 30),
+                LocalDate.of(2025, 8, 29), LocalDate.of(2025, 10, 31), LocalDate.of(2025, 12, 31),
+                LocalDate.of(2026, 3, 31), LocalDate.of(2026, 6, 30), LocalDate.of(2026, 9, 30), LATEST_DAY
+        };
+        int price = 100;
+        for (LocalDate d : tenValidMonths) {
+            twelveMonthsQuotes.add(quote(d, String.valueOf(price)));
+            price += 20;
+        }
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(LATEST_DAY))).thenReturn(twelveMonthsQuotes);
+
+        ReportValuationBundle bundle = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
+        ValuationReferenceDto hist = bundle.valuation().historicalReference();
+
+        // 月末歷史清單完整保留 12 個月（前 2 個月為 INSUFFICIENT_DATA，供圖表斷點與覆蓋率統計）
+        assertThat(bundle.history()).hasSize(12);
+        assertThat(bundle.history().get(0).status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(bundle.history().get(0).reasonCode()).isEqualTo("NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
+        assertThat(bundle.history().get(1).status()).isEqualTo("INSUFFICIENT_DATA");
+
+        // 必須揭露有效 10／12、排除 2（而非誤報 10／10、排除 0）
+        assertThat(hist.status()).isEqualTo("AVAILABLE");
+        assertThat(hist.sampleCount()).isEqualTo(10);
+        assertThat(hist.windowSampleCount()).isEqualTo(12);
+        assertThat(hist.excludedSampleCount()).isEqualTo(2);
+        assertThat(hist.sampleStartDate()).isEqualTo(LocalDate.of(2025, 2, 28));
+        assertThat(hist.sampleEndDate()).isEqualTo(LATEST_DAY);
+
+        // 當 12 個月中有 8 個月完全缺財報、僅 4 個月可用（未滿 6 個月門檻）時，仍揭露 4／12、排除 8
+        StockFinancialPeriod pLate = buildPeriod(LocalDate.of(2026, 3, 1), LocalDate.of(2026, 9, 30),
+                new BigDecimal("10.00"), new BigDecimal("600"), new BigDecimal("1200"), new BigDecimal("250"), new BigDecimal("100"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(pLate));
+
+        ReportValuationBundle shortBundle = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
+        ValuationReferenceDto shortHist = shortBundle.valuation().historicalReference();
+        assertThat(shortHist.status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(shortHist.reasonCode()).isEqualTo("HISTORICAL_SAMPLES_INSUFFICIENT");
+        assertThat(shortHist.sampleCount()).isEqualTo(4);
+        assertThat(shortHist.windowSampleCount()).isEqualTo(12);
+        assertThat(shortHist.excludedSampleCount()).isEqualTo(8);
+    }
+
     private Object[] peerTuple(String issuerKey, String figi, String pe) {
         return peerTupleOnDate(issuerKey, figi, LATEST_DAY, pe);
     }

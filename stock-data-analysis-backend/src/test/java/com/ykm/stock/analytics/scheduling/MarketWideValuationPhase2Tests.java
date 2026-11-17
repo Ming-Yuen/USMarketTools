@@ -365,6 +365,8 @@ class MarketWideValuationPhase2Tests {
         existing.setSnapshotPrice(new BigDecimal("220"));
         existing.setSnapshotMarketCap(new BigDecimal("3300000000000"));
         existing.setOutstandingMarketCap(new BigDecimal("3256000000000"));
+        existing.setPeTtmRate(new BigDecimal("31.5"));
+        existing.setPbRate(new BigDecimal("45.0"));
         existing.setSnapshotQuoteTime(CLOSE);
         existing.setSource("FUTU");
 

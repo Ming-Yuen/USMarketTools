@@ -343,6 +343,108 @@ class StockValuationDailyTaskTests {
         assertThat(latest.getStatus()).isEqualTo("AVAILABLE");
     }
 
+    /**
+     * Scenario：同日已有收市快照且股數未變時，若舊快照僅有 PE=20、PB=null，新快照帶回 PE=20、PB=3（單一欄位缺值補齊），
+     * 必須允許寫入新快照補齊 PB；當 PE 與 PB 皆已齊備且股數未變時，重跑應跳過不重複寫入。
+     */
+    @Test
+    void refreshShareObservationsBackfillsSingleMissingNativeMultipleAndSkipsWhenComplete() {
+        ActiveStockWithStatus target = stockWithStatus("F_OBS", "OBSV");
+        long sameShares = 50_000_000L;
+        stubStock(target, "120", sameShares);
+
+        List<StockShareObservation> persistedObs = new ArrayList<>();
+        doAnswer(invocation -> {
+            Object arg = invocation.getArgument(0);
+            if (arg instanceof StockShareObservation obs) {
+                persistedObs.add(obs);
+            } else if (arg instanceof StockFinancialPeriod p) {
+                storedPeriods.computeIfAbsent(p.getFigi(), k -> new ArrayList<>()).add(p);
+            } else if (arg instanceof StockValuationLatest l) {
+                storedLatest.put(l.getFigi(), l);
+            }
+            return null;
+        }).when(entityManager).persist(any());
+
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of("OBSV"));
+
+        // 既有同日收市快照：PE = 20.0 已有值，但 PB = null 缺失，股數未變
+        StockShareObservation partialExisting = new StockShareObservation();
+        partialExisting.setFigi("F_OBS");
+        partialExisting.setObservedAt(CLOSE_NOV_12.plusSeconds(60));
+        partialExisting.setIssuedShares(sameShares);
+        partialExisting.setOutstandingShares(sameShares);
+        partialExisting.setSnapshotPrice(new BigDecimal("120"));
+        partialExisting.setSnapshotMarketCap(new BigDecimal("6000000000"));
+        partialExisting.setPeTtmRate(new BigDecimal("20.0"));
+        partialExisting.setPbRate(null);
+        partialExisting.setSnapshotQuoteTime(CLOSE_NOV_12);
+        partialExisting.setSource("FUTU");
+
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(partialExisting));
+        when(shareObservations.findLatestClosingSnapshotAt(anyCollection(), any(), any(), any()))
+                .thenReturn(List.of(partialExisting));
+
+        FutuService.ShareSnapshot incomingComplete = new FutuService.ShareSnapshot(
+                sameShares, sameShares, new BigDecimal("120"), new BigDecimal("6000000000"),
+                new BigDecimal("6000000000"), new BigDecimal("20.0"), new BigDecimal("3.0"), CLOSE_NOV_12);
+        when(session.shareCounts(List.of("OBSV"))).thenReturn(Map.of("OBSV", incomingComplete));
+
+        RuntimeException err1 = task.refreshShareObservations(List.of(target));
+        assertThat(err1).isNull();
+        assertThat(persistedObs).hasSize(1);
+        assertThat(persistedObs.getFirst().getPeTtmRate()).isEqualByComparingTo("20.0");
+        assertThat(persistedObs.getFirst().getPbRate()).isEqualByComparingTo("3.0");
+
+        // 反向單欄缺失：既有 PB = 3.0、PE = null -> 新快照帶回 PE = 20.0、PB = 3.0 亦須補寫
+        persistedObs.clear();
+        StockShareObservation missingPeOnly = new StockShareObservation();
+        missingPeOnly.setFigi("F_OBS");
+        missingPeOnly.setObservedAt(CLOSE_NOV_12.plusSeconds(120));
+        missingPeOnly.setIssuedShares(sameShares);
+        missingPeOnly.setOutstandingShares(sameShares);
+        missingPeOnly.setPeTtmRate(null);
+        missingPeOnly.setPbRate(new BigDecimal("3.0"));
+        missingPeOnly.setSnapshotQuoteTime(CLOSE_NOV_12);
+        missingPeOnly.setSource("FUTU");
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(missingPeOnly));
+        when(shareObservations.findLatestClosingSnapshotAt(anyCollection(), any(), any(), any()))
+                .thenReturn(List.of(missingPeOnly));
+
+        RuntimeException err2 = task.refreshShareObservations(List.of(target));
+        assertThat(err2).isNull();
+        assertThat(persistedObs).hasSize(1);
+        assertThat(persistedObs.getFirst().getPeTtmRate()).isEqualByComparingTo("20.0");
+
+        // 當 PE 與 PB 均已齊備且股數未變、同日收市快照已存在時，重跑應跳過不重複寫入
+        persistedObs.clear();
+        StockShareObservation completeExisting = persistedObsFrom(incomingComplete, sameShares);
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(completeExisting));
+        when(shareObservations.findLatestClosingSnapshotAt(anyCollection(), any(), any(), any()))
+                .thenReturn(List.of(completeExisting));
+
+        RuntimeException err3 = task.refreshShareObservations(List.of(target));
+        assertThat(err3).isNull();
+        assertThat(persistedObs).isEmpty();
+    }
+
+    private StockShareObservation persistedObsFrom(FutuService.ShareSnapshot snap, long shares) {
+        StockShareObservation obs = new StockShareObservation();
+        obs.setFigi("F_OBS");
+        obs.setObservedAt(CLOSE_NOV_12.plusSeconds(180));
+        obs.setIssuedShares(shares);
+        obs.setOutstandingShares(shares);
+        obs.setSnapshotPrice(snap.price());
+        obs.setSnapshotMarketCap(snap.marketCap());
+        obs.setPeTtmRate(snap.peTtmRate());
+        obs.setPbRate(snap.pbRate());
+        obs.setSnapshotQuoteTime(snap.quoteTime());
+        obs.setSource("FUTU");
+        return obs;
+    }
+
     private com.ykm.stock.analytics.model.entity.SecFinancialFact secEpsFact(
             String cik, String start, String end, String filed, String form, String val) {
         com.ykm.stock.analytics.model.entity.SecFinancialFact f = new com.ykm.stock.analytics.model.entity.SecFinancialFact();

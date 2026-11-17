@@ -130,9 +130,9 @@ public class StockValuationDailyTask implements Job {
                 List<String> batchFigis = batch.stream().map(row -> row.stock().getFigi()).toList();
                 Map<String, StockShareObservation> latestByFigi = shareObservations.findLatestAt(batchFigis, observedAt).stream()
                         .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
-                Set<String> hasClosingSnapshot = shareObservations.findLatestClosingSnapshotAt(
+                Map<String, StockShareObservation> closingByFigi = shareObservations.findLatestClosingSnapshotAt(
                                 batchFigis, calendar.getSessionOpenAt(lastClosed), calendar.getSessionCloseAt(lastClosed), observedAt)
-                        .stream().map(StockShareObservation::getFigi).collect(Collectors.toSet());
+                        .stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
 
                 List<StockShareObservation> rows = new ArrayList<>();
                 for (ActiveStockWithStatus target : batch) {
@@ -143,14 +143,14 @@ public class StockValuationDailyTask implements Job {
                         continue;
                     }
                     StockShareObservation previous = latestByFigi.get(figi);
+                    StockShareObservation existingClosing = closingByFigi.get(figi);
                     boolean sharesChanged = previous == null
                             || previous.getIssuedShares() != snapshot.issuedShares()
                             || (snapshot.outstandingShares() != null
                                     && !Objects.equals(previous.getOutstandingShares(), snapshot.outstandingShares()));
-                    boolean missingNativeMultiples = previous != null
-                            && previous.getPeTtmRate() == null && previous.getPbRate() == null
-                            && (snapshot.peTtmRate() != null || snapshot.pbRate() != null);
-                    if (!sharesChanged && !missingNativeMultiples && hasClosingSnapshot.contains(figi)) continue;
+                    boolean missingNativeMultiples = hasMissingNativeMultiple(previous, snapshot)
+                            || hasMissingNativeMultiple(existingClosing, snapshot);
+                    if (!sharesChanged && !missingNativeMultiples && existingClosing != null) continue;
 
                     StockShareObservation observation = new StockShareObservation();
                     observation.setFigi(figi);
@@ -187,5 +187,11 @@ public class StockValuationDailyTask implements Job {
             log.error("Share observation collection failed; valuation uses only already stored eligible observations", failure);
             return failure;
         }
+    }
+
+    private boolean hasMissingNativeMultiple(StockShareObservation stored, FutuService.ShareSnapshot incoming) {
+        if (stored == null) return false;
+        return (stored.getPeTtmRate() == null && incoming.peTtmRate() != null)
+                || (stored.getPbRate() == null && incoming.pbRate() != null);
     }
 }

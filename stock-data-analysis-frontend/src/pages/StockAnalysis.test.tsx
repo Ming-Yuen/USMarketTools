@@ -111,3 +111,25 @@ test("shows SEC financial source and actual TTM interval without replacing valua
   expect(screen.getByText(/SEC 財務.*2025-07-01～2026-06-30/)).toBeInTheDocument();
   expect(screen.getByText("7.00")).toBeInTheDocument();
 });
+
+test("displays NOT_APPLICABLE peer and industry assumption references on historical dates and renders Futu valuation observations", () => {
+  report.valuation.peerReference = {
+    kind: "PEER_MARKET", metricCode: "PE", status: "NOT_APPLICABLE", reasonCode: "HISTORICAL_DATE_NOT_APPLICABLE",
+    multipleLow: null, multipleMedian: null, multipleHigh: null, priceLow: null, priceHigh: null, sampleCount: null,
+  };
+  report.valuation.industryAssumption = {
+    kind: "INDUSTRY_ASSUMPTION", metricCode: "PE", status: "NOT_APPLICABLE", reasonCode: "HISTORICAL_DATE_NOT_APPLICABLE",
+    multipleLow: null, multipleMedian: null, multipleHigh: null, priceLow: null, priceHigh: null, sampleCount: null,
+  };
+  report.futuObservations = {
+    valuation: { observationDate: "2026-11-05", observedAt: "2026-11-05T21:05:00Z", pe: 36.42, pb: 49.18, ps: null, forwardPe: null, forwardPs: null },
+    earnings: [],
+  };
+  render(<StockAnalysisPage />);
+  expect(within(screen.getByRole("region", { name: "同業市場估值參考" })).getByText("狀態：不適用")).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "產業估值假設" })).getByText(/查詢指定歷史日期時不套用最新同業快照或當前產業假設設定/)).toBeInTheDocument();
+  const futuSection = screen.getByRole("region", { name: "富途市場觀察" });
+  expect(within(futuSection).getByText("P/E：36.42")).toBeInTheDocument();
+  expect(within(futuSection).getByText("P/B：49.18")).toBeInTheDocument();
+  expect(within(futuSection).getByText("P/S：—")).toBeInTheDocument();
+});

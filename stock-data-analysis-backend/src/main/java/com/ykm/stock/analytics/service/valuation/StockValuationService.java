@@ -10,6 +10,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto.FinancialValue;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationReferenceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
@@ -86,6 +87,8 @@ public class StockValuationService {
     private static final BigDecimal TWO_PERCENT = new BigDecimal("0.02");
     private static final int REBUILD_BATCH_SIZE = 40;
     private static final int LATEST_BATCH_SIZE = 100;
+    private static final int MIN_HISTORICAL_SAMPLES = 6;
+    private static final int MIN_PEER_ISSUERS = 5;
 
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
@@ -110,10 +113,13 @@ public class StockValuationService {
     private record ReportObservationKey(int statementType, LocalDate periodEnd, int periodType) {}
 
     private record IndustryModelContext(String industryCode, String modelCode, String configuredPrimaryMetric,
+                                        BigDecimal assumedMultipleLow, BigDecimal assumedMultipleHigh,
                                         boolean financialInstitution) {}
 
     private record ShareEvaluation(BigDecimal marketCap, BigDecimal sharesAtDay, String marketCapSource,
                                    Instant sharesObservedAt, String sharesReason) {}
+
+    private record DayDenominators(BigDecimal epsAtDay, BigDecimal sharesAtDay) {}
 
     /** Controller 入口：整股重建指定股票的財季分母並刷新最新估值快照，回傳指定日期區間的即時估值。 */
     public List<ValuationResultDto> recalculate(String figi, LocalDate from, LocalDate through) {
@@ -196,15 +202,16 @@ public class StockValuationService {
             if (!snaps.isEmpty()) closingSnap = snaps.getFirst();
         }
         boolean verifiedOneToOne = multiSecurityIssuer && isMultiClassVerifiedOneToOne(figi, cik, latestObs, stockSplits, periods, now);
-        IndustryModelContext modelCtx = resolveIndustryModel(stock, industryCode, cutoff);
+        IndustryModelContext modelCtx = resolveIndustryModel(stock, industryCode, cutoff, now);
 
         StockFinancialPeriod matchedPeriod = matchPeriod(periods, day);
+        StockShareObservation primaryObs = closingSnap != null ? closingSnap : cutoffObs;
         ValuationResultDto dayValuation;
         if (periods.isEmpty() && storedLatest.isPresent() && day.equals(storedLatest.get().getValuationDate())) {
             dayValuation = ValuationResultDto.fromLatest(storedLatest.get());
         } else {
             dayValuation = evaluateSingleDay(stock, status, targetQuote, matchedPeriod, stockSplits,
-                    closingSnap != null ? closingSnap : cutoffObs, cutoffObs,
+                    primaryObs, cutoffObs,
                     multiSecurityIssuer, verifiedOneToOne, modelCtx, day, cutoff, now, effectiveLatest);
         }
 
@@ -215,7 +222,26 @@ public class StockValuationService {
                 stock, status, quoteByDate, periods, stockSplits, closingSnap, cutoffObs,
                 multiSecurityIssuer, verifiedOneToOne, modelCtx, effectiveLatest, now, true);
 
-        return new ReportValuationBundle(dayValuation, financialsDto, monthlyHistory);
+        boolean historicalDate = day.isBefore(lastClosed);
+        boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
+        String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
+                : dayValuation.modelCode() != null ? dayValuation.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
+        String selectedMetric = selectPrimaryMetricForDay(modelCtx, dayValuation.metrics(), matchedPeriod);
+        DayDenominators denoms = resolveDayDenominators(stock, status, targetQuote, matchedPeriod, stockSplits,
+                primaryObs, cutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, effectiveLatest);
+        String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : industryCode;
+
+        ValuationReferenceDto historicalRef = buildHistoricalReference(
+                selectedMetric, monthlyHistory, matchedPeriod, denoms, stock.getCurrency(), financialInstitution, day);
+        ValuationReferenceDto peerRef = buildPeerReference(
+                selectedMetric, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency(), financialInstitution);
+        ValuationReferenceDto assumptionRef = buildIndustryAssumption(
+                selectedMetric, modelCtx, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency());
+
+        ValuationResultDto enrichedValuation = dayValuation.withReferences(
+                resolvedModelCode, selectedMetric, historicalRef, peerRef, assumptionRef);
+
+        return new ReportValuationBundle(enrichedValuation, financialsDto, monthlyHistory);
     }
 
     /** 當財報、SEC 披露或拆股有變更時，整股重建財季分母並刷新最新收市估值快照。 */
@@ -263,7 +289,7 @@ public class StockValuationService {
                     : stocks.findMultiSecurityIssuers(ciks, ActiveStatus.ACTIVE);
             Map<String, StockShareObservation> latestObsByFigi = shareObservations.findLatestAt(activeFigis, calculatedAt).stream()
                     .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
-            Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed));
+            Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed), calculatedAt);
 
             Map<String, List<StockFinancialPeriod>> builtByFigi = new LinkedHashMap<>();
             for (Stock stock : batchStocks) {
@@ -348,7 +374,7 @@ public class StockValuationService {
 
             Map<String, StockShareObservation> latestObsMap = shareObservations.findLatestAt(activeFigis, calculatedAt).stream()
                     .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
-            Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed));
+            Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed), calculatedAt);
 
             transactions.executeWithoutResult(tx -> {
                 Map<String, StockStatus> lockedStatuses = statuses.findAllByIdForUpdate(activeFigis).stream()
@@ -463,7 +489,7 @@ public class StockValuationService {
         boolean verifiedOneToOne = multiClass && isMultiClassVerifiedOneToOne(figi, cik, latestObs, stockSplits, periods, now);
         Instant throughClose = calendar.getSessionCloseAt(through);
         String industryCode = industries.findAt(figi, throughClose).map(row -> row.getIndustry().getCode()).orElse(null);
-        IndustryModelContext modelCtx = resolveIndustryModel(stock, industryCode, throughClose);
+        IndustryModelContext modelCtx = resolveIndustryModel(stock, industryCode, throughClose, now);
 
         return buildHistoryFromLoaded(stock, status, quoteByDate, periods, stockSplits,
                 closingSnap, latestObs, multiClass, verifiedOneToOne, modelCtx, effectiveLatest, now, monthly);
@@ -1737,7 +1763,7 @@ public class StockValuationService {
         return issuerHistory.cikAt(stock.getCik(), day);
     }
 
-    private IndustryModelContext resolveIndustryModel(Stock stock, String knownIndustryCode, Instant cutoff) {
+    private IndustryModelContext resolveIndustryModel(Stock stock, String knownIndustryCode, Instant cutoff, Instant configAsOf) {
         String figi = stock.getFigi();
         String code = knownIndustryCode;
         String plate = null;
@@ -1748,20 +1774,24 @@ public class StockValuationService {
         }
         String cfgModel = null;
         String cfgMetric = null;
+        BigDecimal cfgLow = null;
+        BigDecimal cfgHigh = null;
         if (code != null) {
             Optional<IndustryValuationConfig> cfg = industryConfigs
-                    .findFirstByIndustryCodeAndEffectiveAtLessThanEqualOrderByEffectiveAtDesc(code, cutoff);
+                    .findFirstByIndustryCodeAndEffectiveAtLessThanEqualOrderByEffectiveAtDesc(code, configAsOf);
             if (cfg.isPresent()) {
                 cfgModel = cfg.get().getModelCode();
                 cfgMetric = cfg.get().getPrimaryMetric();
+                cfgLow = cfg.get().getAssumedMultipleLow();
+                cfgHigh = cfg.get().getAssumedMultipleHigh();
             }
         }
         String resolvedModel = IndustryValuationProposalService.resolveModelCode(cfgModel, plate, stock.getSic());
-        return new IndustryModelContext(code, resolvedModel, cfgMetric,
+        return new IndustryModelContext(code, resolvedModel, cfgMetric, cfgLow, cfgHigh,
                 IndustryValuationProposalService.isFinancialInstitutionModel(resolvedModel));
     }
 
-    private Map<String, IndustryModelContext> resolveBatchIndustryModels(List<Stock> batchStocks, Instant cutoff) {
+    private Map<String, IndustryModelContext> resolveBatchIndustryModels(List<Stock> batchStocks, Instant cutoff, Instant configAsOf) {
         List<String> figis = batchStocks.stream().map(Stock::getFigi).toList();
         Map<String, String> codes = new HashMap<>();
         Map<String, String> plates = new HashMap<>();
@@ -1773,7 +1803,7 @@ public class StockValuationService {
         }
         Map<String, IndustryValuationConfig> cfgs = new HashMap<>();
         if (!codes.isEmpty()) {
-            for (IndustryValuationConfig cfg : industryConfigs.findByIndustryCodesAt(Set.copyOf(codes.values()), cutoff)) {
+            for (IndustryValuationConfig cfg : industryConfigs.findByIndustryCodesAt(Set.copyOf(codes.values()), configAsOf)) {
                 cfgs.put(cfg.getIndustryCode(), cfg);
             }
         }
@@ -1786,12 +1816,14 @@ public class StockValuationService {
                     cfg == null ? null : cfg.getModelCode(), plates.get(figi), s.getSic());
             result.put(figi, new IndustryModelContext(code, resolvedModel,
                     cfg == null ? null : cfg.getPrimaryMetric(),
+                    cfg == null ? null : cfg.getAssumedMultipleLow(),
+                    cfg == null ? null : cfg.getAssumedMultipleHigh(),
                     IndustryValuationProposalService.isFinancialInstitutionModel(resolvedModel)));
         }
         return result;
     }
 
-    /** 依單一主指標選擇規則挑出當期主指標（Phase 4 歷史參考亦將共用此單一指標規則）。 */
+    /** 依單一主指標選擇規則挑出當期主指標（銀行／保險絕不退回 EV_EBITDA 或 PFCF）。 */
     public static String selectPrimaryMetric(String modelCode, String configuredPrimaryMetric, ValuationResultDto.Metrics metrics) {
         boolean financial = IndustryValuationProposalService.isFinancialInstitutionModel(modelCode);
         if (configuredPrimaryMetric != null && !configuredPrimaryMetric.isBlank()) {
@@ -1818,6 +1850,273 @@ public class StockValuationService {
     private String selectPrimaryMetric(IndustryModelContext ctx, ValuationResultDto.Metrics metrics) {
         return selectPrimaryMetric(ctx == null ? null : ctx.modelCode(),
                 ctx == null ? null : ctx.configuredPrimaryMetric(), metrics);
+    }
+
+    private String selectPrimaryMetricForDay(IndustryModelContext ctx, ValuationResultDto.Metrics metrics, StockFinancialPeriod period) {
+        String modelCode = ctx == null ? null : ctx.modelCode();
+        String configured = ctx == null ? null : ctx.configuredPrimaryMetric();
+        boolean financial = IndustryValuationProposalService.isFinancialInstitutionModel(modelCode);
+        if (configured != null && !configured.isBlank()) {
+            String upper = configured.trim().toUpperCase();
+            if (!financial || "PE".equals(upper) || "PB".equals(upper)) return upper;
+        }
+        if (financial) return "PB";
+        boolean hasAnyDayMultiple = metrics != null && ((metrics.pe() != null && metrics.pe().value() != null)
+                || (metrics.evEbitda() != null && metrics.evEbitda().value() != null)
+                || (metrics.ps() != null && metrics.ps().value() != null));
+        if (hasAnyDayMultiple || period == null) {
+            return selectPrimaryMetric(modelCode, null, metrics);
+        }
+        if (MetricStatus.AVAILABLE.name().equals(period.getEpsTtmStatus()) && period.getEpsTtm() != null && period.getEpsTtm().signum() > 0) {
+            return "PE";
+        }
+        if (MetricStatus.AVAILABLE.name().equals(period.getEbitdaTtmStatus()) && period.getEbitdaTtm() != null
+                && period.getEbitdaTtm().signum() > 0 && MetricStatus.AVAILABLE.name().equals(period.getEvAdjustmentStatus())) {
+            return "EV_EBITDA";
+        }
+        if (MetricStatus.AVAILABLE.name().equals(period.getRevenueTtmStatus()) && period.getRevenueTtm() != null && period.getRevenueTtm().signum() > 0) {
+            return "PS";
+        }
+        return "PE";
+    }
+
+    private DayDenominators resolveDayDenominators(
+            Stock stock, StockStatus status, StockQuote quote, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, StockShareObservation primaryObs, StockShareObservation fallbackObs,
+            boolean multiClass, boolean verifiedOneToOne, LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed) {
+        if (period == null || !sameCurrency(stock.getCurrency(), period.getReportingCurrency())) {
+            return new DayDenominators(null, null);
+        }
+        String splitError = splitSyncError(status);
+        BigDecimal epsAtDay = null;
+        if (period.getEpsTtm() != null && MetricStatus.AVAILABLE.name().equals(period.getEpsTtmStatus()) && period.getEpsShareBasisDate() != null) {
+            if (splitError == null || period.getEpsShareBasisDate().equals(day)) {
+                BigDecimal factor = StockSplitCalculator.shareFactor(stockSplits, period.getEpsShareBasisDate(), day);
+                if (factor.signum() > 0) {
+                    epsAtDay = period.getEpsTtm().divide(factor, MC);
+                }
+            }
+        }
+        if (quote != null && quote.getClosePrice() != null && quote.getClosePrice().signum() > 0) {
+            ShareEvaluation eval = evaluateMarketCap(quote, period, stockSplits, status, primaryObs, fallbackObs,
+                    multiClass, verifiedOneToOne, day, cutoff, calculatedAt, lastClosed);
+            return new DayDenominators(epsAtDay, eval.sharesAtDay());
+        }
+        BigDecimal sharesAtDay = resolveSharesWithoutQuote(period, stockSplits, status, primaryObs, fallbackObs,
+                multiClass, verifiedOneToOne, day, lastClosed);
+        return new DayDenominators(epsAtDay, sharesAtDay);
+    }
+
+    private BigDecimal resolveSharesWithoutQuote(
+            StockFinancialPeriod period, List<StockSplit> stockSplits, StockStatus status,
+            StockShareObservation primaryObs, StockShareObservation fallbackObs,
+            boolean multiClass, boolean verifiedOneToOne, LocalDate day, LocalDate lastClosed) {
+        String splitError = splitSyncError(status);
+        StockShareObservation obs = primaryObs != null ? primaryObs : fallbackObs;
+        if (multiClass) {
+            if (day.equals(lastClosed) && obs != null) {
+                LocalDate basis = obs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+                if (splitError != null && !basis.equals(day)) return null;
+                BigDecimal equiv = obs.effectiveMarketCap() != null && obs.getSnapshotPrice() != null && obs.getSnapshotPrice().signum() > 0
+                        ? obs.effectiveMarketCap().divide(obs.getSnapshotPrice(), MC)
+                        : BigDecimal.valueOf(obs.effectiveShares());
+                return equiv.multiply(StockSplitCalculator.shareFactor(stockSplits, basis, day), MC);
+            }
+            if (!verifiedOneToOne) return null;
+        } else if (day.equals(lastClosed) && obs != null) {
+            LocalDate basis = obs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+            if (splitError != null && !basis.equals(day)) return null;
+            return BigDecimal.valueOf(obs.effectiveShares()).multiply(StockSplitCalculator.shareFactor(stockSplits, basis, day), MC);
+        }
+        if (period.getSharesOutstanding() != null && period.getSharesBasisDate() != null) {
+            if (splitError != null && !period.getSharesBasisDate().equals(day)) return null;
+            return period.getSharesOutstanding().multiply(StockSplitCalculator.shareFactor(stockSplits, period.getSharesBasisDate(), day), MC);
+        }
+        return null;
+    }
+
+    /** 自身歷史估值參考：以單一適用主指標貫穿 <= valuationDate 的 5 年月頻有效樣本計算 P20 / P50 / P80 並換算價格區間。 */
+    private ValuationReferenceDto buildHistoricalReference(
+            String selectedMetric, List<ValuationResultDto> monthlyHistory, StockFinancialPeriod period,
+            DayDenominators denoms, String quoteCurrency, boolean financialInstitution, LocalDate day) {
+        if (period != null && !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
+                    MetricStatus.UNVERIFIED.name(), "REPORTING_CURRENCY_MISMATCH");
+        }
+        List<BigDecimal> samples = new ArrayList<>();
+        for (ValuationResultDto row : monthlyHistory) {
+            if (row.valuationDate() == null || row.valuationDate().isAfter(day) || row.metrics() == null) continue;
+            ValuationResultDto.Value cell = row.metrics().byMetricCode(selectedMetric);
+            if (cell != null && "AVAILABLE".equals(cell.status()) && cell.value() != null && cell.value().signum() > 0) {
+                samples.add(cell.value());
+            }
+        }
+        if (samples.size() < MIN_HISTORICAL_SAMPLES) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "HISTORICAL_SAMPLES_INSUFFICIENT");
+        }
+        samples.sort(BigDecimal::compareTo);
+        BigDecimal low = quantile(samples, 0.20);
+        BigDecimal median = quantile(samples, 0.50);
+        BigDecimal high = quantile(samples, 0.80);
+        BigDecimal rawPriceLow = convertMultipleToPrice(selectedMetric, low, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceHigh = convertMultipleToPrice(selectedMetric, high, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
+        BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
+        return new ValuationReferenceDto(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
+                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh, samples.size());
+    }
+
+    /** 同業市場估值參考：僅在最新收市日按 coalesce(cik, figi) 發行人去重聚合 >= 5 家計算 P25 / P50 / P75；歷史日期一律 NOT_APPLICABLE。 */
+    private ValuationReferenceDto buildPeerReference(
+            String selectedMetric, String industryCode, boolean historicalDate, StockFinancialPeriod period,
+            DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
+        if (historicalDate) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
+                    MetricStatus.NOT_APPLICABLE.name(), "HISTORICAL_DATE_NOT_APPLICABLE");
+        }
+        if (industryCode == null || industryCode.isBlank()) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_CLASSIFICATION_MISSING");
+        }
+        List<Object[]> rows = latestValuations.findActiveTrackedPeerSnapshots(industryCode);
+        Map<String, List<BigDecimal>> byIssuer = new LinkedHashMap<>();
+        for (Object[] tuple : rows) {
+            if (tuple == null || tuple.length < 2 || !(tuple[0] instanceof String issuerKey)
+                    || !(tuple[1] instanceof StockValuationLatest snapshot)) {
+                continue;
+            }
+            BigDecimal val = extractLatestMetric(snapshot, selectedMetric);
+            if (val != null && val.signum() > 0) {
+                byIssuer.computeIfAbsent(issuerKey, k -> new ArrayList<>()).add(val);
+            }
+        }
+        List<BigDecimal> issuerMultiples = new ArrayList<>();
+        for (List<BigDecimal> shareClassMultiples : byIssuer.values()) {
+            shareClassMultiples.sort(BigDecimal::compareTo);
+            issuerMultiples.add(quantile(shareClassMultiples, 0.50));
+        }
+        if (issuerMultiples.size() < MIN_PEER_ISSUERS) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_PEER_COMPANIES_INSUFFICIENT");
+        }
+        issuerMultiples.sort(BigDecimal::compareTo);
+        BigDecimal low = quantile(issuerMultiples, 0.25);
+        BigDecimal median = quantile(issuerMultiples, 0.50);
+        BigDecimal high = quantile(issuerMultiples, 0.75);
+        BigDecimal rawPriceLow = convertMultipleToPrice(selectedMetric, low, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceHigh = convertMultipleToPrice(selectedMetric, high, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
+        BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
+        return new ValuationReferenceDto(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
+                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh, issuerMultiples.size());
+    }
+
+    /** 產業估值假設：僅在最新收市日讀取當前生效設定換算假設價格區間；歷史日期一律 NOT_APPLICABLE。 */
+    private ValuationReferenceDto buildIndustryAssumption(
+            String fallbackMetric, IndustryModelContext modelCtx, String industryCode, boolean historicalDate,
+            StockFinancialPeriod period, DayDenominators denoms, String quoteCurrency) {
+        String configuredMetric = modelCtx != null && modelCtx.configuredPrimaryMetric() != null && !modelCtx.configuredPrimaryMetric().isBlank()
+                ? modelCtx.configuredPrimaryMetric().trim().toUpperCase() : null;
+        String assumptionMetric = configuredMetric != null ? configuredMetric : fallbackMetric;
+        if (historicalDate) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                    MetricStatus.NOT_APPLICABLE.name(), "HISTORICAL_DATE_NOT_APPLICABLE");
+        }
+        if (industryCode == null || industryCode.isBlank()) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_CLASSIFICATION_MISSING");
+        }
+        if (configuredMetric == null) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_PRIMARY_METRIC_MISSING");
+        }
+        boolean financialInstitution = modelCtx.financialInstitution();
+        if (financialInstitution && !"PE".equals(assumptionMetric) && !"PB".equals(assumptionMetric)) {
+            String reason = "PFCF".equals(assumptionMetric) ? "PFCF_NOT_APPLICABLE_TO_INDUSTRY" : "EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY";
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                    MetricStatus.NOT_APPLICABLE.name(), reason);
+        }
+        BigDecimal assumedLow = modelCtx.assumedMultipleLow();
+        BigDecimal assumedHigh = modelCtx.assumedMultipleHigh();
+        if (assumedLow == null || assumedHigh == null || assumedLow.signum() <= 0 || assumedHigh.compareTo(assumedLow) < 0) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_FAIR_RANGE_MISSING");
+        }
+        BigDecimal multipleLow = assumedLow.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal multipleHigh = assumedHigh.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal rawPriceLow = convertMultipleToPrice(assumptionMetric, multipleLow, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceHigh = convertMultipleToPrice(assumptionMetric, multipleHigh, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
+        BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
+        return new ValuationReferenceDto(ValuationReferenceDto.KIND_INDUSTRY_ASSUMPTION, assumptionMetric,
+                MetricStatus.AVAILABLE.name(), null, multipleLow, null, multipleHigh, priceLow, priceHigh, null);
+    }
+
+    /** 以所選交易日配對之同財季每股分母將目標估值倍數換算為隱含正股價；分母非正或缺值時回傳 null。 */
+    private BigDecimal convertMultipleToPrice(
+            String metricCode, BigDecimal multiple, StockFinancialPeriod period,
+            DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
+        if (metricCode == null || multiple == null || multiple.signum() <= 0 || period == null || denoms == null
+                || !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
+            return null;
+        }
+        BigDecimal impliedPrice = switch (metricCode.toUpperCase()) {
+            case "PE" -> denoms.epsAtDay() != null && denoms.epsAtDay().signum() > 0
+                    ? multiple.multiply(denoms.epsAtDay(), MC).setScale(4, RoundingMode.HALF_UP) : null;
+            case "PB" -> MetricStatus.AVAILABLE.name().equals(period.getCommonEquityStatus())
+                    && period.getCommonEquity() != null && period.getCommonEquity().signum() > 0
+                    && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
+                    ? multiple.multiply(period.getCommonEquity(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+            case "PS" -> MetricStatus.AVAILABLE.name().equals(period.getRevenueTtmStatus())
+                    && period.getRevenueTtm() != null && period.getRevenueTtm().signum() > 0
+                    && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
+                    ? multiple.multiply(period.getRevenueTtm(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+            case "PFCF" -> !financialInstitution && MetricStatus.AVAILABLE.name().equals(period.getFreeCashFlowTtmStatus())
+                    && period.getFreeCashFlowTtm() != null && period.getFreeCashFlowTtm().signum() > 0
+                    && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
+                    ? multiple.multiply(period.getFreeCashFlowTtm(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+            case "EV_EBITDA" -> {
+                if (financialInstitution || !MetricStatus.AVAILABLE.name().equals(period.getEbitdaTtmStatus())
+                        || period.getEbitdaTtm() == null || period.getEbitdaTtm().signum() <= 0
+                        || !MetricStatus.AVAILABLE.name().equals(period.getEvAdjustmentStatus())
+                        || period.getEvAdjustment() == null
+                        || denoms.sharesAtDay() == null || denoms.sharesAtDay().signum() <= 0) {
+                    yield null;
+                }
+                BigDecimal impliedMarketCap = multiple.multiply(period.getEbitdaTtm(), MC).subtract(period.getEvAdjustment(), MC);
+                yield impliedMarketCap.signum() > 0 ? impliedMarketCap.divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+            }
+            default -> null;
+        };
+        return impliedPrice != null && impliedPrice.signum() > 0 ? impliedPrice : null;
+    }
+
+    private BigDecimal extractLatestMetric(StockValuationLatest row, String metricCode) {
+        if (row == null || metricCode == null) return null;
+        return switch (metricCode.toUpperCase()) {
+            case "PE" -> "AVAILABLE".equals(row.getPeStatus()) ? row.getPe() : null;
+            case "PB" -> "AVAILABLE".equals(row.getPbStatus()) ? row.getPb() : null;
+            case "PS" -> "AVAILABLE".equals(row.getPsStatus()) ? row.getPs() : null;
+            case "PFCF" -> "AVAILABLE".equals(row.getPfcfStatus()) ? row.getPfcf() : null;
+            case "EV_EBITDA" -> "AVAILABLE".equals(row.getEvEbitdaStatus()) ? row.getEvEbitda() : null;
+            default -> null;
+        };
+    }
+
+    static BigDecimal quantile(List<BigDecimal> sortedAscending, double p) {
+        int n = sortedAscending.size();
+        if (n == 1) return sortedAscending.getFirst().setScale(4, RoundingMode.HALF_UP);
+        double pos = p * (n - 1);
+        int lower = (int) Math.floor(pos);
+        int upper = (int) Math.ceil(pos);
+        if (lower == upper) {
+            return sortedAscending.get(lower).setScale(4, RoundingMode.HALF_UP);
+        }
+        BigDecimal weight = BigDecimal.valueOf(pos - lower);
+        BigDecimal lowVal = sortedAscending.get(lower);
+        BigDecimal highVal = sortedAscending.get(upper);
+        return lowVal.add(highVal.subtract(lowVal, MC).multiply(weight, MC), MC).setScale(4, RoundingMode.HALF_UP);
     }
 
     private void populateLatestEntity(StockValuationLatest entity, ValuationResultDto dto) {

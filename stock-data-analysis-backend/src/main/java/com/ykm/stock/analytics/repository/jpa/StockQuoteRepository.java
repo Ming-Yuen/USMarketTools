@@ -19,12 +19,6 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
     List<StockQuote> findStoredQuotes(@Param("figis") Collection<String> figis, @Param("from") LocalDate from,
                                     @Param("through") LocalDate through);
 
-    @Query("""
-            select s.figi, (select min(q.quoteDate) from StockQuote q where q.figi = s.figi)
-            from Stock s where s.figi in :figis
-            """)
-    List<Object[]> findFirstQuoteDates(@Param("figis") Collection<String> figis);
-
     StockQuote findByFigiAndQuoteDate(String figi, LocalDate quoteDate);
     StockQuote findFirstByFigiOrderByQuoteDateDesc(String figi);
     List<StockQuote> findByFigiOrderByQuoteDateDesc(String figi, Limit limit);

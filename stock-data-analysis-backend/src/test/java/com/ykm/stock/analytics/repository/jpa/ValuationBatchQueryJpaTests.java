@@ -351,4 +351,46 @@ class ValuationBatchQueryJpaTests {
             session.getTransaction().rollback();
         }
     }
+
+    @Test
+    void peerSnapshotsReturnActiveTrackedRowsWithNormalizedIssuerKeys() {
+        try (Session session = factory.openSession()) {
+            session.beginTransaction();
+            session.createNativeMutationQuery("""
+                    insert into stock(figi,symbol,active_status,stock_type,cik,tracked) values
+                    ('GOOGL_F','GOOGL','ACTIVE','Common Stock','0001652044',true),
+                    ('GOOG_F','GOOG','ACTIVE','Common Stock','0001652044',true),
+                    ('NOCIK_F','FERG','ACTIVE','Common Stock','',true),
+                    ('UNTRACKED_F','OFF1','ACTIVE','Common Stock','0000111111',false),
+                    ('INACTIVE_F','OFF2','INACTIVE','Common Stock','0000222222',true)
+                    """).executeUpdate();
+            Instant now = Instant.parse("2025-05-05T21:00:00Z");
+            for (String figi : List.of("GOOGL_F", "GOOG_F", "NOCIK_F", "UNTRACKED_F", "INACTIVE_F")) {
+                StockValuationLatest snap = new StockValuationLatest();
+                snap.setFigi(figi);
+                snap.setValuationDate(DAY);
+                snap.setAnalysisAsOf(now);
+                snap.setCalculatedAt(now);
+                snap.setIndustryCode("I78");
+                snap.setStatus("AVAILABLE");
+                snap.setPe(new BigDecimal("20.0000"));
+                snap.setPeStatus("AVAILABLE");
+                snap.setPbStatus("INSUFFICIENT_DATA");
+                snap.setPsStatus("INSUFFICIENT_DATA");
+                snap.setPfcfStatus("INSUFFICIENT_DATA");
+                snap.setEvEbitdaStatus("INSUFFICIENT_DATA");
+                session.persist(snap);
+            }
+            session.flush();
+            StockValuationLatestRepository latestRepo = new JpaRepositoryFactory(session)
+                    .getRepository(StockValuationLatestRepository.class);
+
+            List<Object[]> rows = latestRepo.findActiveTrackedPeerSnapshots("I78");
+
+            assertThat(rows).hasSize(3);
+            assertThat(rows).extracting(r -> (String) r[0])
+                    .containsExactly("0001652044", "0001652044", "NOCIK_F");
+            session.getTransaction().rollback();
+        }
+    }
 }

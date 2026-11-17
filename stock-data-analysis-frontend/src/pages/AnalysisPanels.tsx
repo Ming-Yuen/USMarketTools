@@ -18,10 +18,24 @@ export const readableState = (t: TFunction, code?: string | null) => code
   ? t("analysisReport.states." + code, { defaultValue: statusLabel(code) }) : "—";
 export const readableReason = (t: TFunction, reason: AnalysisReason) => t("analysisReport.reasons." + reason.code,
   { ...reason.params, defaultValue: reason.message || reason.code });
+const reasonFallbacks: Record<string, string> = {
+  NON_POSITIVE_FCF: "自由現金流非正，P/FCF 不適用（N.M.）",
+  NON_POSITIVE_EPS: "每股盈利非正（虧損或零盈利），PE 不適用（N.M.）",
+  NON_POSITIVE_EBITDA: "營運 EBITDA 非正，EV/EBITDA 不適用（N.M.）",
+  NON_POSITIVE_COMMON_EQUITY: "普通股權益非正，P/B 不適用（N.M.）",
+  NON_POSITIVE_REVENUE: "營業收入非正，P/S 不適用（N.M.）",
+  PFCF_NOT_APPLICABLE_TO_INDUSTRY: "銀行與保險業不適用自由現金流倍數（P/FCF）",
+  EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY: "銀行與保險業不適用企業價值倍數（EV/EBITDA）",
+  HISTORICAL_DATE_NOT_APPLICABLE: "查詢指定歷史日期時不套用最新同業快照或當前產業假設設定",
+  HISTORICAL_SAMPLES_INSUFFICIENT: "過去五年主指標有效月度樣本不足，暫不計算歷史分位區間",
+  INDUSTRY_PEER_COMPANIES_INSUFFICIENT: "主要指標不足五家不同發行人的有效同業樣本",
+  INDUSTRY_CLASSIFICATION_MISSING: "此股票尚未分配產業分類，暫無法比較同業或套用產業假設",
+  SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED: "多股類歷史經濟權比例未經 1:1 準則確認，不推算歷史市值倍數",
+  REPORTING_CURRENCY_MISMATCH: "財報幣別與股價交易幣別不一致，不自動換算匯率",
+};
 export const reasonLabel = (t: TFunction, code?: string | null) => {
   if (!code) return "沒有可用資料";
-  const fallback = code === "NON_POSITIVE_FCF" ? "自由現金流非正，P/FCF 不適用（N.M.）"
-    : code === "NON_POSITIVE_EPS" ? "每股盈利非正（虧損或零盈利），PE 不適用（N.M.）" : code;
+  const fallback = reasonFallbacks[code] ?? code;
   return t("analysisReport.reasons." + code, { defaultValue: fallback });
 };
 const metricLabels: Record<string, string> = {

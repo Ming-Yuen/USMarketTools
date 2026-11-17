@@ -119,13 +119,21 @@ public class SecCompanyFactsArchive {
     }
 
     private Metadata metadata(HttpHeaders headers) {
-        String etag = headers.getETag();
+        String etag = resolveVersionToken(headers);
         String modified = headers.getFirst(HttpHeaders.LAST_MODIFIED);
         if (etag == null || etag.isBlank() || modified == null || modified.isBlank()) throw new IllegalStateException("SEC_SHARE_ARCHIVE_VERSION_MISSING");
         Metadata result = new Metadata(etag, modified, clock.now());
         ZonedDateTime.parse(modified, DateTimeFormatter.RFC_1123_DATE_TIME);
         if (result.version().length() > 512) throw new IllegalStateException("SEC_SHARE_ARCHIVE_VERSION_TOO_LONG");
         return result;
+    }
+
+    static String resolveVersionToken(HttpHeaders headers) {
+        String etag = headers.getETag();
+        if (etag != null && !etag.isBlank()) return etag;
+        String s3VersionId = headers.getFirst("x-amz-version-id");
+        if (s3VersionId != null && !s3VersionId.isBlank()) return s3VersionId.trim();
+        return null;
     }
 
     private void requireOk(int status) {

@@ -86,6 +86,26 @@ class SecCompanyFactsArchiveTests {
         try (java.util.stream.Stream<Path> paths = Files.list(root.resolve("new"))) { assertThat(paths).isEmpty(); }
     }
 
+    @Test
+    void acceptsS3VersionIdHeaderWhenSecServerOmitsEtag() throws Exception {
+        byte[] bytes = zip("CIK0000320193.json", "{\"cik\":320193}");
+        server.expect(requestTo(SecCompanyFactsArchive.URL)).andExpect(method(HttpMethod.HEAD))
+                .andRespond(withSuccess()
+                        .header("x-amz-version-id", "G29t6K_ekVuYWkC8w5UZ0775AzmudoHf")
+                        .header("Last-Modified", modified)
+                        .header("Content-Length", String.valueOf(bytes.length)));
+        server.expect(requestTo(SecCompanyFactsArchive.URL)).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(bytes, MediaType.APPLICATION_OCTET_STREAM)
+                        .header("x-amz-version-id", "G29t6K_ekVuYWkC8w5UZ0775AzmudoHf")
+                        .header("Last-Modified", modified)
+                        .header("Content-Length", String.valueOf(bytes.length)));
+        try (SecCompanyFactsArchive.Snapshot snapshot = archive().prepare()) {
+            assertThat(snapshot.version()).isEqualTo("G29t6K_ekVuYWkC8w5UZ0775AzmudoHf|" + modified);
+            assertThat(snapshot.read("0000320193").path("cik").asInt()).isEqualTo(320193);
+        }
+        server.verify();
+    }
+
     private void expectHead(String etag) {
         server.expect(requestTo(SecCompanyFactsArchive.URL)).andExpect(method(HttpMethod.HEAD))
                 .andRespond(withSuccess().header("ETag", etag).header("Last-Modified", modified));

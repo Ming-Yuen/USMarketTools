@@ -120,7 +120,7 @@ public class SecSubmissionsArchive {
     }
 
     private Metadata metadata(HttpHeaders headers) {
-        String etag = headers.getETag();
+        String etag = SecCompanyFactsArchive.resolveVersionToken(headers);
         String modified = headers.getFirst(HttpHeaders.LAST_MODIFIED);
         if (etag == null || etag.isBlank() || modified == null || modified.isBlank())
             throw new IllegalStateException("SEC_SUBMISSIONS_ARCHIVE_VERSION_MISSING");

@@ -109,6 +109,31 @@ class SecSubmissionsArchiveTests {
         server.verify();
     }
 
+    @Test
+    void acceptsS3VersionIdHeaderWhenSecServerOmitsEtag() throws Exception {
+        when(clock.now()).thenReturn(Instant.parse("2026-11-17T12:50:00Z"));
+        byte[] zipBytes = zip(Map.of("CIK0000320193.json", "{\"cik\":\"320193\",\"sic\":\"3571\",\"filings\":{\"recent\":{}}}"));
+
+        server.expect(requestTo(SecSubmissionsArchive.URL)).andExpect(method(HttpMethod.HEAD))
+                .andRespond(withSuccess()
+                        .header("x-amz-version-id", "gJwHpZy52yUTmJl2D0W_nP7pKvAfMUin")
+                        .header("Last-Modified", modified)
+                        .header("Content-Length", String.valueOf(zipBytes.length)));
+        server.expect(requestTo(SecSubmissionsArchive.URL)).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(zipBytes, MediaType.APPLICATION_OCTET_STREAM)
+                        .header("x-amz-version-id", "gJwHpZy52yUTmJl2D0W_nP7pKvAfMUin")
+                        .header("Last-Modified", modified)
+                        .header("Content-Length", String.valueOf(zipBytes.length)));
+
+        SecSubmissionsArchive archive = new SecSubmissionsArchive(builder.build(), mapper, clock,
+                "stock-project owner@real-domain.net", root.resolve("submissions-s3").toString());
+        try (SecSubmissionsArchive.Snapshot snapshot = archive.prepare()) {
+            assertThat(snapshot.version()).isEqualTo("gJwHpZy52yUTmJl2D0W_nP7pKvAfMUin|" + modified);
+            assertThat(snapshot.readSic("0000320193")).contains("3571");
+        }
+        server.verify();
+    }
+
     private byte[] zip(Map<String, String> entries) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes)) {

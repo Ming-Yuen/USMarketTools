@@ -670,6 +670,86 @@ class SecFinancialFactsCalculatorTests {
         assertThat(calculate(List.of(a, b)).revenue().value()).isEqualByComparingTo("100");
     }
 
+    @Test
+    void samePeriodParentEquityConflictDerivesFromTotalEquityAndExplicitMinorityInterest() {
+        String end = "2026-09-30";
+        SecFinancialFact p1 = fact("StockholdersEquity", null, end, "80");
+        SecFinancialFact p2 = fact("StockholdersEquity", null, end, "90");
+        SecFinancialFact total = fact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", null, end, "100");
+        SecFinancialFact minorityZero = fact("MinorityInterest", null, end, "0");
+
+        SecFinancialFactsCalculator.Flows resolved = calculate(List.of(p1, p2, total, minorityZero));
+        assertThat(resolved.inputs().get(FinancialConcept.STOCKHOLDERS_EQUITY).value()).isEqualByComparingTo("100");
+        assertThat(resolved.equity().value()).isEqualByComparingTo("100");
+
+        // 同季母公司權益衝突且未披露 MinorityInterest 時，不假設 NCI 為 0，維持衝突拒絕
+        SecFinancialFactsCalculator.Flows withoutMinority = calculate(List.of(p1, p2, total));
+        assertThat(withoutMinority.inputs().get(FinancialConcept.STOCKHOLDERS_EQUITY).value()).isNull();
+        assertThat(withoutMinority.equity().reason()).isEqualTo("SEC_FACT_VERSION_CONFLICT");
+
+        // 負母公司權益（如 TZOO 2022-03-31：3135 - 4604 = -1469）亦按實保留
+        SecFinancialFact negP1 = fact("StockholdersEquity", null, "2022-03-31", "-1469");
+        SecFinancialFact negP2 = fact("StockholdersEquity", null, "2022-03-31", "3135");
+        SecFinancialFact negTot = fact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", null, "2022-03-31", "3135");
+        SecFinancialFact negMin = fact("MinorityInterest", null, "2022-03-31", "4604");
+        assertThat(calculate(List.of(negP1, negP2, negTot, negMin)).equity().value()).isEqualByComparingTo("-1469");
+    }
+
+    @Test
+    void futuInferredQuarterStartDoesNotOverwriteUniqueDirectSecQuarterStart() {
+        SecFinancialFact secQ2 = fact("Revenues", "2025-04-06", "2025-07-05", "300");
+        secQ2.setReportFiscalYear(2025);
+        secQ2.setReportFiscalPeriod("Q2");
+        ReportValues futuQ1 = new ReportValues("TEST", 1, LocalDate.of(2025, 3, 31), 1, 2025,
+                "USD", "US_GAAP", Map.of(), List.of(), List.of());
+        ReportValues futuQ2 = new ReportValues("TEST", 1, LocalDate.of(2025, 6, 30), 2, 2025,
+                "USD", "US_GAAP", Map.of(), List.of(), List.of());
+
+        SecFinancialFactsCalculator.PeriodSelection atApril2 = calculator.selectPeriods(
+                List.of(futuQ1, futuQ2), List.of(secQ2), LocalDate.of(2025, 4, 2), NOW);
+        assertThat(atApril2.reports()).extracting(ReportValues::periodEnd)
+                .containsExactly(LocalDate.of(2025, 3, 31));
+        assertThat(atApril2.facts()).isEmpty();
+
+        // 1) 前九月僅由 Depreciation 佐證時，全年減前九月仍推導出 Q4 起日 2025-09-29（2025-06-01 不得提前採用 Q4/年報 revFy）
+        SecFinancialFact dep9m = fact("Depreciation", "2024-12-30", "2025-09-28", "50");
+        SecFinancialFact revFy = fact("Revenues", "2024-12-30", "2025-12-28", "1000");
+        revFy.setForm("10-K");
+        assertThat(calculator.exactQuarterStart(List.of(dep9m, revFy), LocalDate.of(2025, 12, 28)))
+                .isEqualTo(LocalDate.of(2025, 9, 29));
+        assertThat(calculator.selectPeriods(List.of(), List.of(dep9m, revFy), LocalDate.of(2025, 6, 1), NOW).facts())
+                .isEmpty();
+        assertThat(calculator.selectPeriods(List.of(), List.of(dep9m, revFy), LocalDate.of(2025, 10, 15), NOW).facts())
+                .containsExactly(dep9m, revFy);
+
+        // 2) 16 週 Q4 有唯一明報（2025-09-08..12-28）且與同財年兩份前九月（09-07、09-21）中唯一一份相接時，採用明報 09-08
+        SecFinancialFact nineA = fact("Revenues", "2024-12-30", "2025-09-07", "3400");
+        SecFinancialFact nineB = fact("Revenues", "2024-12-30", "2025-09-21", "3500");
+        SecFinancialFact direct16wQ4 = fact("Revenues", "2025-09-08", "2025-12-28", "1540");
+        direct16wQ4.setForm("10-K");
+        assertThat(calculator.exactQuarterStart(List.of(nineA, nineB, revFy, direct16wQ4), LocalDate.of(2025, 12, 28)))
+                .isEqualTo(LocalDate.of(2025, 9, 8));
+
+        // 3) 已確認的 16 週 Q4（2025-12-28）可作為下一季（2026-03-22）的唯一 SEC 前季期末
+        assertThat(calculator.uniquePriorSecQuarterEnd(List.of(nineA, revFy, direct16wQ4), LocalDate.of(2026, 3, 22)))
+                .isEqualTo(LocalDate.of(2025, 12, 28));
+
+        // 4) 全年同起日佐證的 77 天 Q1（2025-10-13..12-28）直接採納明報起日 2025-10-13
+        SecFinancialFact q1Short = fact("Revenues", "2025-10-13", "2025-12-28", "200");
+        SecFinancialFact fySameStart = fact("Revenues", "2025-10-13", "2026-10-11", "900");
+        fySameStart.setForm("10-K");
+        assertThat(calculator.exactQuarterStart(List.of(q1Short, fySameStart), LocalDate.of(2025, 12, 28)))
+                .isEqualTo(LocalDate.of(2025, 10, 13));
+
+        // 5) 附註攤銷標籤（如 BYRN AmortizationOfIntangibleAssets 2022-08-30）不得單獨建立錯誤的獨立財季列搶走 2022-08-31 主表配對
+        SecFinancialFact byrnRev = fact("Revenues", "2022-06-01", "2022-08-31", "11000");
+        SecFinancialFact byrnAmortNote = fact("AmortizationOfIntangibleAssets", "2022-06-01", "2022-08-30", "120");
+        SecFinancialFactsCalculator.PeriodAlignment byrnAligned = calculator.alignReportPeriods(
+                List.of(), List.of(byrnRev, byrnAmortNote), NOW);
+        assertThat(byrnAligned.windows()).extracting(SecFinancialFactsCalculator.PeriodWindow::periodEnd)
+                .containsExactly(LocalDate.of(2022, 8, 31));
+    }
+
     private SecFinancialFactsCalculator.Flows calculate(List<SecFinancialFact> facts) {
         return calculator.calculate(facts, CIK, null, "USD", DAY, NOW, List.of());
     }

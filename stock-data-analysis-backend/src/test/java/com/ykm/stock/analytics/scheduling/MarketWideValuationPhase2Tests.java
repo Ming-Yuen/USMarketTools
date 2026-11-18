@@ -927,6 +927,314 @@ class MarketWideValuationPhase2Tests {
         assertThat(costQ3Row.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 5, 12));
     }
 
+    @Test
+    void fergPostTransitionRevenueTtmStartAndParentEquityConflictPbStayAccurate() {
+        ActiveStockWithStatus ferg = target("FERG_REV_FIGI", "FERG", "0002011641", "Ferguson Enterprises Inc", "5070");
+        ActiveStockWithStatus dpz = target("DPZ_FIGI", "DPZ", "0001286681", "Domino's Pizza Inc", "5812");
+        ActiveStockWithStatus eqConflict = target("EQ_CONF_FIGI", "EQCF", "0001999999", "Equity Conflict Corp", "7370");
+        eqConflict.status().setSplitFromDate(null);
+        eqConflict.status().setSplitDate(null);
+        stubStocksAndStatuses(List.of(ferg, dpz, eqConflict));
+
+        StockShareObservation eqObs = simpleObs("EQ_CONF_FIGI", 100L);
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(
+                simpleObs("FERG_REV_FIGI", 195545957L), simpleObs("DPZ_FIGI", 34000000L), eqObs));
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(eq("EQ_CONF_FIGI"), eq("FUTU"), any()))
+                .thenReturn(Optional.of(eqObs));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq("EQ_CONF_FIGI"), any(), any()))
+                .thenReturn(List.of(quote("EQ_CONF_FIGI", LAST_CLOSED, "3")));
+
+        List<FinancialReport> batchReports = new ArrayList<>();
+        List<SecFinancialFact> batchSec = new ArrayList<>();
+
+        // 1) FERG：舊財年 Q3 (2025-04-30)、SEC 新曆比較期 (2025-07-01..09-30)、舊曆 Q1 (2025-08-01..10-31)、5 個月 10-KT (2025-08-01..12-31)
+        //    與富途重述 Q4 (2025-12-31) + 2026 Q1..Q3：2025-12-31 單季與 2026-09-30 TTM 起日皆應為 2025-10-01（非 2025-10-02）
+        String[][] fergIncomes = {
+                {"2025-04-30", "2025", "3", "7621", "2.10"},
+                {"2025-12-31", "2025", "4", "7495", "2.05"},
+                {"2025-12-31", "2025", "7", "12833", "3.40"},
+                {"2026-03-31", "2026", "1", "7472", "2.00"},
+                {"2026-06-30", "2026", "2", "8751", "2.75"},
+                {"2026-09-30", "2026", "3", "9026", "2.95"}
+        };
+        for (String[] q : fergIncomes) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("FERG_REV_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("NonUS_GAAP");
+            inc.setObservedAt(CLOSE.minusSeconds(600));
+            inc.setItems(List.of(
+                    new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null),
+                    new FinancialReport.Item(8048L, "Diluted EPS", new BigDecimal(q[4]), null, null)));
+            batchReports.add(inc);
+        }
+        String[][] fergSecRevs = {
+                {"2025-07-01", "2025-09-30", "10-Q", "2026-11-09", "8245"},
+                {"2025-08-01", "2025-10-31", "10-Q", "2025-12-09", "8169"},
+                {"2025-08-01", "2025-12-31", "10-KT", "2026-02-27", "12833"},
+                {"2026-01-01", "2026-03-31", "10-Q", "2026-05-05", "7472"},
+                {"2026-04-01", "2026-06-30", "10-Q", "2026-08-10", "8751"},
+                {"2026-07-01", "2026-09-30", "10-Q", "2026-11-09", "9026"}
+        };
+        int fergAcc = 0;
+        for (String[] s : fergSecRevs) {
+            SecFinancialFact f = new SecFinancialFact();
+            f.setCik("0002011641");
+            f.setTaxonomy("us-gaap");
+            f.setTag("Revenues");
+            f.setUnit("USD");
+            f.setPeriodStart(LocalDate.parse(s[0]));
+            f.setPeriodEnd(LocalDate.parse(s[1]));
+            f.setForm(s[2]);
+            f.setFiled(LocalDate.parse(s[3]));
+            f.setAvailableFromDate(LocalDate.parse(s[3]).plusDays(1));
+            f.setObservedAt(CLOSE.minusSeconds(3600));
+            f.setAccession(String.format("0002011641-26-%06d", ++fergAcc));
+            f.setValue(new BigDecimal(s[4]));
+            batchSec.add(f);
+        }
+
+        // 2) DPZ：12+12+12+16 週財年（2025-09-07 -> 2025-12-28 相隔 112 天），截至 2026-09-06 TTM 起日維持 2025-09-08
+        String[][] dpzQuarters = {
+                {"2025-09-07", "2025", "3", "1140"},
+                {"2025-12-28", "2025", "4", "1540"},
+                {"2026-03-22", "2026", "1", "1110"},
+                {"2026-06-14", "2026", "2", "1130"},
+                {"2026-09-06", "2026", "3", "1286"}
+        };
+        for (String[] q : dpzQuarters) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("DPZ_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(CLOSE.minusSeconds(600));
+            inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null)));
+            batchReports.add(inc);
+        }
+
+        // 3) 832d947 母公司權益回歸：同季兩份 SEC StockholdersEquity (80, 90)、SEC 總權益 100、SEC NCI 0；
+        //    富途總權益 100、母公司權益 150、缺 NCI；市值 300 -> 普通股權益應為 100，P/B 應為 3.0（非 2.0）
+        FinancialReport eqBal = new FinancialReport();
+        eqBal.setFigi("EQ_CONF_FIGI");
+        eqBal.setStatementType(2);
+        eqBal.setPeriodType(3);
+        eqBal.setFiscalYear(2026);
+        eqBal.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        eqBal.setCurrency("USD");
+        eqBal.setAccountingStandards("US_GAAP");
+        eqBal.setObservedAt(CLOSE.minusSeconds(600));
+        eqBal.setItems(List.of(
+                new FinancialReport.Item(8084L, "Total Equity", new BigDecimal("100"), null, null),
+                new FinancialReport.Item(8085L, "Stockholders' Equity", new BigDecimal("150"), null, null)));
+        batchReports.add(eqBal);
+
+        SecFinancialFact se80 = secBalanceFact("0001999999", "2026-09-30", "10-Q", "StockholdersEquity", "80");
+        se80.setAccession("0001999999-26-000001");
+        SecFinancialFact se90 = secBalanceFact("0001999999", "2026-09-30", "10-Q", "StockholdersEquity", "90");
+        se90.setAccession("0001999999-26-000002");
+        SecFinancialFact seTot = secBalanceFact("0001999999", "2026-09-30", "10-Q",
+                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "100");
+        seTot.setAccession("0001999999-26-000001");
+        SecFinancialFact seMin = secBalanceFact("0001999999", "2026-09-30", "10-Q", "MinorityInterest", "0");
+        seMin.setAccession("0001999999-26-000001");
+        batchSec.addAll(List.of(se80, se90, seTot, seMin));
+
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(batchSec);
+
+        valuationService.rebuildFinancialPeriods(List.of("FERG_REV_FIGI", "DPZ_FIGI", "EQ_CONF_FIGI"));
+
+        StockFinancialPeriod fergQ4 = storedPeriods.get("FERG_REV_FIGI").stream()
+                .filter(p -> LocalDate.of(2025, 12, 31).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(fergQ4.getPeriodStart()).isEqualTo(LocalDate.of(2025, 10, 1));
+
+        StockFinancialPeriod fergLatest = storedPeriods.get("FERG_REV_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 30).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(fergLatest.getRevenueTtm()).isEqualByComparingTo("32744");
+        assertThat(fergLatest.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 10, 1));
+        assertThat(fergLatest.getEpsTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 10, 1));
+
+        StockFinancialPeriod dpzLatest = storedPeriods.get("DPZ_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 6).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(dpzLatest.getRevenueTtm()).isEqualByComparingTo("5066");
+        assertThat(dpzLatest.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 8));
+
+        StockFinancialPeriod eqPeriod = storedPeriods.get("EQ_CONF_FIGI").getFirst();
+        assertThat(eqPeriod.getCommonEquity()).isEqualByComparingTo("100");
+        List<ValuationResultDto> eqEvaluated = valuationService.recalculate("EQ_CONF_FIGI", LAST_CLOSED, LAST_CLOSED);
+        assertThat(eqEvaluated).singleElement().satisfies(r ->
+                assertThat(r.metrics().pb().value()).isEqualByComparingTo("3.0"));
+    }
+
+    @Test
+    void ambiguousFutuPriorsAndSecVerified16WeekQuartersResolveExactTtmStartDates() {
+        ActiveStockWithStatus amb = target("AMB_PRIOR_FIGI", "AMBP", "0001888881", "Ambiguous Prior Corp", "5812");
+        ActiveStockWithStatus sec16w = target("SEC_16W_FIGI", "S16W", "0001888882", "Sec 16W Corp", "5812");
+        stubStocksAndStatuses(List.of(amb, sec16w));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(
+                simpleObs("AMB_PRIOR_FIGI", 10000000L), simpleObs("SEC_16W_FIGI", 10000000L)));
+
+        List<FinancialReport> batchReports = new ArrayList<>();
+        List<SecFinancialFact> batchSec = new ArrayList<>();
+
+        // 1) 富途前季同時有 09-07 與 09-21 兩個合規候選，SEC 唯一單季支持 09-21 -> TTM 起日應為 2025-09-22
+        String[][] ambQuarters = {
+                {"2025-09-07", "2025", "3", "100"},
+                {"2025-09-21", "2025", "3", "105"},
+                {"2025-12-28", "2025", "4", "120"},
+                {"2026-03-29", "2026", "1", "110"},
+                {"2026-06-28", "2026", "2", "115"},
+                {"2026-09-27", "2026", "3", "125"}
+        };
+        for (String[] q : ambQuarters) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("AMB_PRIOR_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(CLOSE.minusSeconds(600));
+            inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null)));
+            batchReports.add(inc);
+        }
+        SecFinancialFact secPriorQ3 = new SecFinancialFact();
+        secPriorQ3.setCik("0001888881");
+        secPriorQ3.setTaxonomy("us-gaap");
+        secPriorQ3.setTag("Revenues");
+        secPriorQ3.setUnit("USD");
+        secPriorQ3.setPeriodStart(LocalDate.of(2025, 6, 23));
+        secPriorQ3.setPeriodEnd(LocalDate.of(2025, 9, 21));
+        secPriorQ3.setForm("10-Q");
+        secPriorQ3.setFiled(LocalDate.of(2025, 10, 30));
+        secPriorQ3.setAvailableFromDate(LocalDate.of(2025, 10, 31));
+        secPriorQ3.setObservedAt(CLOSE.minusSeconds(3600));
+        secPriorQ3.setAccession("0001888881-25-000001");
+        secPriorQ3.setValue(new BigDecimal("105"));
+        batchSec.add(secPriorQ3);
+
+        // 2) 富途前季 (09-07) 缺 fiscalYear，且 SEC 全年 (2024-12-30..2025-12-28) 與前九月 (2024-12-30..2025-09-07) 佐證 16 週 Q4 起日 2025-09-08
+        String[][] s16wQuarters = {
+                {"2025-09-07", null, "3", "1140"},
+                {"2025-12-28", "2025", "4", "1540"},
+                {"2026-03-22", "2026", "1", "1110"},
+                {"2026-06-14", "2026", "2", "1130"},
+                {"2026-09-06", "2026", "3", "1286"}
+        };
+        for (String[] q : s16wQuarters) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("SEC_16W_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(q[1] == null ? null : Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(CLOSE.minusSeconds(600));
+            inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null)));
+            batchReports.add(inc);
+        }
+        String[][] s16wSec = {
+                {"2024-12-30", "2025-09-07", "10-Q", "2025-10-15", "3400"},
+                {"2024-12-30", "2025-12-28", "10-K", "2026-02-20", "4940"},
+                {"2025-09-08", "2025-12-28", "10-K", "2026-02-20", "1540"}
+        };
+        int acc = 0;
+        for (String[] s : s16wSec) {
+            SecFinancialFact f = new SecFinancialFact();
+            f.setCik("0001888882");
+            f.setTaxonomy("us-gaap");
+            f.setTag("Revenues");
+            f.setUnit("USD");
+            f.setPeriodStart(LocalDate.parse(s[0]));
+            f.setPeriodEnd(LocalDate.parse(s[1]));
+            f.setForm(s[2]);
+            f.setFiled(LocalDate.parse(s[3]));
+            f.setAvailableFromDate(LocalDate.parse(s[3]).plusDays(1));
+            f.setObservedAt(CLOSE.minusSeconds(3600));
+            f.setAccession(String.format("0001888882-26-%06d", ++acc));
+            f.setValue(new BigDecimal(s[4]));
+            batchSec.add(f);
+        }
+
+        when(reports.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(batchReports);
+        when(secFacts.findPeriodRebuildFacts(anyCollection(), anyCollection(), any())).thenReturn(batchSec);
+
+        valuationService.rebuildFinancialPeriods(List.of("AMB_PRIOR_FIGI", "SEC_16W_FIGI"));
+
+        StockFinancialPeriod ambLatest = storedPeriods.get("AMB_PRIOR_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 27).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(ambLatest.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 22));
+
+        StockFinancialPeriod s16wLatest = storedPeriods.get("SEC_16W_FIGI").stream()
+                .filter(p -> LocalDate.of(2026, 9, 6).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(s16wLatest.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2025, 9, 8));
+
+        // 3) 已確認的 16 週 Q4（2024-12-29）在富途前季有歧義（2024-12-15 與 2024-12-29）時，仍可支撐後續四季（2025 Q1..Q4 至 2025-12-28）純 FUTU TTM 起日 2024-12-30
+        ActiveStockWithStatus nextFrom16w = target("NEXT_FROM_16W_FIGI", "NX16", "0001888883", "Next From 16W Corp", "5812");
+        stubStocksAndStatuses(List.of(amb, sec16w, nextFrom16w));
+        when(shareObservations.findLatestAt(anyCollection(), any())).thenReturn(List.of(
+                simpleObs("AMB_PRIOR_FIGI", 10000000L), simpleObs("SEC_16W_FIGI", 10000000L), simpleObs("NEXT_FROM_16W_FIGI", 10000000L)));
+        String[][] fy25After16w = {
+                {"2024-12-15", "2024", "4", "1400"},
+                {"2024-12-29", "2024", "4", "1450"},
+                {"2025-03-23", "2025", "1", "1080"},
+                {"2025-06-15", "2025", "2", "1100"},
+                {"2025-09-07", "2025", "3", "1140"},
+                {"2025-12-28", "2025", "4", "1540"}
+        };
+        for (String[] q : fy25After16w) {
+            FinancialReport inc = new FinancialReport();
+            inc.setFigi("NEXT_FROM_16W_FIGI");
+            inc.setStatementType(1);
+            inc.setFiscalYear(Integer.parseInt(q[1]));
+            inc.setPeriodType(Integer.parseInt(q[2]));
+            inc.setPeriodEnd(LocalDate.parse(q[0]));
+            inc.setCurrency("USD");
+            inc.setAccountingStandards("US_GAAP");
+            inc.setObservedAt(CLOSE.minusSeconds(600));
+            inc.setItems(List.of(new FinancialReport.Item(8001L, "Total Revenue as Reported", new BigDecimal(q[3]), null, null)));
+            batchReports.add(inc);
+        }
+        String[][] fy24Sec16w = {
+                {"2024-01-01", "2024-09-08", "10-Q", "2024-10-15", "3200"},
+                {"2024-01-01", "2024-12-29", "10-K", "2025-02-20", "4650"},
+                {"2024-09-09", "2024-12-29", "10-K", "2025-02-20", "1450"}
+        };
+        for (String[] s : fy24Sec16w) {
+            SecFinancialFact f = new SecFinancialFact();
+            f.setCik("0001888883");
+            f.setTaxonomy("us-gaap");
+            f.setTag("Revenues");
+            f.setUnit("USD");
+            f.setPeriodStart(LocalDate.parse(s[0]));
+            f.setPeriodEnd(LocalDate.parse(s[1]));
+            f.setForm(s[2]);
+            f.setFiled(LocalDate.parse(s[3]));
+            f.setAvailableFromDate(LocalDate.parse(s[3]).plusDays(1));
+            f.setObservedAt(CLOSE.minusSeconds(3600));
+            f.setAccession(String.format("0001888883-25-%06d", ++acc));
+            f.setValue(new BigDecimal(s[4]));
+            batchSec.add(f);
+        }
+
+        valuationService.rebuildFinancialPeriods(List.of("NEXT_FROM_16W_FIGI"));
+        StockFinancialPeriod after16w = storedPeriods.get("NEXT_FROM_16W_FIGI").stream()
+                .filter(p -> LocalDate.of(2025, 12, 28).equals(p.getPeriodEnd())).findFirst().orElseThrow();
+        assertThat(after16w.getRevenueTtmSource()).isEqualTo("FUTU");
+        assertThat(after16w.getRevenueTtm()).isEqualByComparingTo("4860");
+        assertThat(after16w.getRevenueTtmPeriodStart()).isEqualTo(LocalDate.of(2024, 12, 30));
+    }
+
     private SecFinancialFact secBalanceFact(String cik, String periodEnd, String form, String tag, String val) {
         SecFinancialFact fact = new SecFinancialFact();
         fact.setCik(cik);

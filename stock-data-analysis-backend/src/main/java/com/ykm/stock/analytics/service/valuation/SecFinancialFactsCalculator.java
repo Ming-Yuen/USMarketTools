@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.math.MathContext;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -113,23 +114,22 @@ public class SecFinancialFactsCalculator {
 
         Map<FiscalQuarter, Set<LocalDate>> fiscalEnds = new HashMap<>();
         Map<LocalDate, FiscalQuarter> secFiscalByEnd = new HashMap<>();
-        Map<LocalDate, LocalDate> secQuarterStartByEnd = new HashMap<>();
-        Map<LocalDate, LocalDate> secAnnualStartByEnd = new HashMap<>();
+        Map<LocalDate, Set<LocalDate>> futuInferredQuarterStartsByEnd = new HashMap<>();
+        Map<LocalDate, Set<LocalDate>> secAnnualStartsByEnd = new HashMap<>();
         Set<LocalDate> secAnnualEnds = new HashSet<>();
         Set<LocalDate> secBalanceEnds = new HashSet<>();
-        Set<Period> quarters = new HashSet<>();
+
+        SecQuarterEvidence secQuarters = collectSecQuarters(known);
+        Set<LocalDate> secQuarterEnds = secQuarters.confirmedQuarterEnds();
 
         for (SecFinancialFact fact : known) {
             if (!"us-gaap".equals(fact.getTaxonomy()) || !PERIODIC_REPORTS.contains(Objects.toString(fact.getForm(), ""))
                     || !(INCOME_PERIOD_TAGS.contains(fact.getTag()) || BALANCE_PERIOD_TAGS.contains(fact.getTag())
                     || CASH_FLOW_PERIOD_TAGS.contains(fact.getTag()))) continue;
             Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
-            if (quarter(period)) {
-                quarters.add(period);
-                secQuarterStartByEnd.putIfAbsent(period.end(), period.start());
-            } else if (annual(period)) {
+            if (annual(period)) {
                 secAnnualEnds.add(period.end());
-                secAnnualStartByEnd.putIfAbsent(period.end(), period.start());
+                secAnnualStartsByEnd.computeIfAbsent(period.end(), ignored -> new HashSet<>()).add(period.start());
             } else if (period.start() == null && BALANCE_PERIOD_TAGS.contains(fact.getTag())) {
                 secBalanceEnds.add(period.end());
             }
@@ -142,37 +142,19 @@ public class SecFinancialFactsCalculator {
                 }
             }
         }
-        // 全年起點與前三季累計可證明 Q4 的日期範圍；只用於報期配對，不相減 EPS。
-        Map<LocalDate, Set<LocalDate>> nineMonthEnds = new HashMap<>();
-        for (SecFinancialFact fact : known) {
-            Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
-            if (length(period) >= 240 && length(period) <= 300)
-                nineMonthEnds.computeIfAbsent(period.start(), ignored -> new HashSet<>()).add(period.end());
-        }
-        for (SecFinancialFact fact : known) {
-            Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
-            if (!annual(period)) continue;
-            for (LocalDate prior : nineMonthEnds.getOrDefault(period.start(), Set.of())) {
-                Period fourth = new Period(prior.plusDays(1), period.end());
-                if (quarter(fourth)) {
-                    quarters.add(fourth);
-                    secQuarterStartByEnd.putIfAbsent(fourth.end(), fourth.start());
-                }
-            }
-        }
 
         List<ReportValues> aligned = new ArrayList<>();
         Map<FiscalQuarter, Set<LocalDate>> reportEnds = new HashMap<>();
         Map<LocalDate, FiscalQuarter> futuFiscalByEnd = new HashMap<>();
         Set<LocalDate> allPeriodEnds = new HashSet<>();
-        allPeriodEnds.addAll(secQuarterStartByEnd.keySet());
+        allPeriodEnds.addAll(secQuarterEnds);
         allPeriodEnds.addAll(secAnnualEnds);
         allPeriodEnds.addAll(secBalanceEnds);
 
         for (ReportValues report : reports) {
             if (report.periodEnd().isAfter(knownDay)) continue;
             int quarter = report.periodType() == 7 ? 4 : report.periodType();
-            LocalDate resolvedEnd = resolveMatchingSecEnd(report, quarter, fiscalEnds, secQuarterStartByEnd.keySet(), secAnnualEnds, secBalanceEnds);
+            LocalDate resolvedEnd = resolveMatchingSecEnd(report, quarter, fiscalEnds, secQuarterEnds, secAnnualEnds, secBalanceEnds);
             ReportValues normalized = new ReportValues(report.figi(), report.statementType(), resolvedEnd, report.periodType(), report.fiscalYear(),
                     report.currency(), report.accountingStandards(), report.values(), report.unknownNames(), report.pendingItems());
             aligned.add(normalized);
@@ -190,8 +172,7 @@ public class SecFinancialFactsCalculator {
             if (entry.getValue().size() != 1 || starts.size() != 1) continue;
             Period period = new Period(starts.iterator().next().plusDays(1), entry.getValue().iterator().next());
             if (quarter(period)) {
-                quarters.add(period);
-                secQuarterStartByEnd.putIfAbsent(period.end(), period.start());
+                futuInferredQuarterStartsByEnd.computeIfAbsent(period.end(), ignored -> new HashSet<>()).add(period.start());
             }
         }
 
@@ -200,7 +181,8 @@ public class SecFinancialFactsCalculator {
         LocalDate prevEnd = null;
         for (LocalDate end : sortedEnds) {
             FiscalQuarter label = futuFiscalByEnd.getOrDefault(end, secFiscalByEnd.get(end));
-            LocalDate start = secQuarterStartByEnd.get(end);
+            LocalDate start = resolveQuarterWindowStart(
+                    end, secQuarters.directStartsByEnd(), secQuarters.derivedFourthStartsByEnd(), futuInferredQuarterStartsByEnd);
             if (start == null && prevEnd != null) {
                 long gap = ChronoUnit.DAYS.between(prevEnd, end);
                 if (gap >= 75 && gap <= 200) {
@@ -208,17 +190,141 @@ public class SecFinancialFactsCalculator {
                 }
             }
             if (start == null) {
-                LocalDate annualStart = secAnnualStartByEnd.get(end);
+                LocalDate priorSecQuarterEnd = uniqueAdjacentPriorQuarterEnd(secQuarterEnds, end);
+                if (priorSecQuarterEnd != null) {
+                    start = priorSecQuarterEnd.plusDays(1);
+                }
+            }
+            if (start == null) {
+                LocalDate annualStart = singleDate(secAnnualStartsByEnd.get(end));
                 if (annualStart != null && (prevEnd == null || !prevEnd.isAfter(annualStart))) {
                     start = annualStart;
                 } else if (label != null) {
-                    start = end.minusDays(90);
+                    YearMonth ym = YearMonth.from(end);
+                    if (end.equals(ym.atEndOfMonth())
+                            && (allPeriodEnds.contains(ym.plusMonths(3).atEndOfMonth())
+                                    || allPeriodEnds.contains(ym.minusMonths(3).atEndOfMonth()))) {
+                        start = ym.minusMonths(2).atDay(1);
+                    } else {
+                        start = end.minusDays(90);
+                    }
                 }
             }
             windows.add(new PeriodWindow(start, end, label == null ? null : label.year(), label == null ? null : label.quarter()));
             prevEnd = end;
         }
         return new PeriodAlignment(List.copyOf(aligned), known, List.copyOf(windows));
+    }
+
+    private record SecQuarterEvidence(
+            Map<LocalDate, Set<LocalDate>> directStartsByEnd,
+            Map<LocalDate, Set<LocalDate>> derivedFourthStartsByEnd,
+            Set<LocalDate> confirmedQuarterEnds) {}
+
+    private SecQuarterEvidence collectSecQuarters(List<SecFinancialFact> facts) {
+        Map<LocalDate, Set<LocalDate>> directStarts = new HashMap<>();
+        Map<LocalDate, Set<LocalDate>> boundaryCandidateStarts = new HashMap<>();
+        Set<LocalDate> annualStarts = new HashSet<>();
+        Map<LocalDate, Set<LocalDate>> annualStartsByEnd = new HashMap<>();
+        Map<LocalDate, Set<LocalDate>> nineMonthEnds = new HashMap<>();
+
+        for (SecFinancialFact fact : facts) {
+            if (!isPeriodicFlowFact(fact)) continue;
+            Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
+            long days = length(period);
+            if (days >= 240 && days <= 300) {
+                nineMonthEnds.computeIfAbsent(period.start(), ignored -> new HashSet<>()).add(period.end());
+                continue;
+            }
+            if (!isStatementPeriodFlowTag(fact.getTag())) continue;
+            if (annual(period)) {
+                annualStarts.add(period.start());
+                annualStartsByEnd.computeIfAbsent(period.end(), ignored -> new HashSet<>()).add(period.start());
+            } else if (quarter(period)) {
+                directStarts.computeIfAbsent(period.end(), ignored -> new HashSet<>()).add(period.start());
+            } else if (days >= 70 && days <= 125) {
+                boundaryCandidateStarts.computeIfAbsent(period.end(), ignored -> new HashSet<>()).add(period.start());
+            }
+        }
+
+        Map<LocalDate, Set<LocalDate>> derivedFourthStarts = new HashMap<>();
+        for (Map.Entry<LocalDate, Set<LocalDate>> entry : annualStartsByEnd.entrySet()) {
+            LocalDate annualEnd = entry.getKey();
+            for (LocalDate annualStart : entry.getValue()) {
+                for (LocalDate prior : nineMonthEnds.getOrDefault(annualStart, Set.of())) {
+                    Period fourth = new Period(prior.plusDays(1), annualEnd);
+                    long fourthDays = length(fourth);
+                    if (fourthDays >= 70 && fourthDays <= 125) {
+                        derivedFourthStarts.computeIfAbsent(annualEnd, ignored -> new HashSet<>()).add(fourth.start());
+                    }
+                }
+            }
+        }
+
+        for (Map.Entry<LocalDate, Set<LocalDate>> entry : boundaryCandidateStarts.entrySet()) {
+            LocalDate end = entry.getKey();
+            Set<LocalDate> fourthAtEnd = derivedFourthStarts.getOrDefault(end, Set.of());
+            for (LocalDate start : entry.getValue()) {
+                if (annualStarts.contains(start) || fourthAtEnd.contains(start)) {
+                    directStarts.computeIfAbsent(end, ignored -> new HashSet<>()).add(start);
+                }
+            }
+        }
+
+        Set<LocalDate> confirmedEnds = new HashSet<>(directStarts.keySet());
+        confirmedEnds.addAll(derivedFourthStarts.keySet());
+        return new SecQuarterEvidence(directStarts, derivedFourthStarts, confirmedEnds);
+    }
+
+    private LocalDate resolveQuarterWindowStart(
+            LocalDate end,
+            Map<LocalDate, Set<LocalDate>> directSec,
+            Map<LocalDate, Set<LocalDate>> derivedSecFourth,
+            Map<LocalDate, Set<LocalDate>> futuInferred) {
+        Set<LocalDate> direct = directSec.get(end);
+        if (direct != null && !direct.isEmpty()) return singleDate(direct);
+        Set<LocalDate> derived = derivedSecFourth.get(end);
+        if (derived != null && !derived.isEmpty()) return singleDate(derived);
+        return singleDate(futuInferred.get(end));
+    }
+
+    /** 回傳同發行人在指定期末已核實且唯一的 SEC 單季起日（含全年邊界佐證之 70～125 天單季）；衝突或不存在時回傳 null。 */
+    public LocalDate exactQuarterStart(List<SecFinancialFact> facts, LocalDate periodEnd) {
+        if (facts == null || facts.isEmpty() || periodEnd == null) return null;
+        SecQuarterEvidence evidence = collectSecQuarters(facts);
+        return resolveQuarterWindowStart(periodEnd, evidence.directStartsByEnd(), evidence.derivedFourthStartsByEnd(), Map.of());
+    }
+
+    /** 當指定期末缺直接單季 SEC 標籤時，若同發行人存在唯一一個與該期末構成合規單季長度的前一已確認 SEC 單季期末，回傳該前一期末。 */
+    public LocalDate uniquePriorSecQuarterEnd(List<SecFinancialFact> facts, LocalDate periodEnd) {
+        if (facts == null || facts.isEmpty() || periodEnd == null) return null;
+        SecQuarterEvidence evidence = collectSecQuarters(facts);
+        return uniqueAdjacentPriorQuarterEnd(evidence.confirmedQuarterEnds(), periodEnd);
+    }
+
+    private boolean isPeriodicFlowFact(SecFinancialFact fact) {
+        return fact.getPeriodStart() != null && fact.getPeriodEnd() != null
+                && "us-gaap".equals(fact.getTaxonomy())
+                && PERIODIC_REPORTS.contains(Objects.toString(fact.getForm(), ""));
+    }
+
+    private boolean isStatementPeriodFlowTag(String tag) {
+        return INCOME_PERIOD_TAGS.contains(tag) || CASH_FLOW_PERIOD_TAGS.contains(tag);
+    }
+
+    private LocalDate uniqueAdjacentPriorQuarterEnd(Set<LocalDate> candidateEnds, LocalDate end) {
+        List<LocalDate> matches = candidateEnds.stream()
+                .filter(prior -> {
+                    if (!prior.isBefore(end)) return false;
+                    long days = length(new Period(prior.plusDays(1), end));
+                    return days >= 70 && days <= 125;
+                })
+                .sorted().toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    private LocalDate singleDate(Set<LocalDate> dates) {
+        return dates != null && dates.size() == 1 ? dates.iterator().next() : null;
     }
 
     private LocalDate resolveMatchingSecEnd(ReportValues report, int quarter, Map<FiscalQuarter, Set<LocalDate>> fiscalEnds,
@@ -681,11 +787,17 @@ public class SecFinancialFactsCalculator {
     private Flow parentStockholdersEquity(List<SecFinancialFact> facts) {
         Flow parent = balance(facts, "StockholdersEquity");
         Flow total = balance(facts, "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest");
-        if (total.value() != null && (parent.periodEnd() == null || total.periodEnd().isAfter(parent.periodEnd()))) {
+        boolean missingAtLatest = parent.periodEnd() == null
+                || (total.periodEnd() != null && total.periodEnd().isAfter(parent.periodEnd()));
+        boolean samePeriodConflict = parent.value() == null
+                && total.periodEnd() != null && total.periodEnd().equals(parent.periodEnd());
+        if (missingAtLatest && total.reason() != null && total.reason().contains("CONFLICT")) return total;
+        if (total.value() != null && (missingAtLatest || samePeriodConflict)) {
             List<SecFinancialFact> sameTotalPeriod = facts.stream()
                     .filter(fact -> total.periodEnd().equals(fact.getPeriodEnd())).toList();
             Flow minority = balance(sameTotalPeriod, "MinorityInterest");
             if (minority.reason() != null && minority.reason().contains("CONFLICT")) return minority;
+            if (samePeriodConflict && minority.value() == null) return parent;
             BigDecimal minorityVal = minority.value() == null ? BigDecimal.ZERO : minority.value();
             List<Flow> parts = minority.value() == null ? List.of(total) : List.of(total, minority);
             return combineWithNote(total.value().subtract(minorityVal), parts, "TotalEquity - MinorityInterest");

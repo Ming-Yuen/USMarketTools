@@ -950,8 +950,8 @@ public class StockValuationService {
                 && ChronoUnit.DAYS.between(secCfoAtEnd.periodStart(), periodEnd) >= 350 ? secCfoAtEnd.periodStart() : null;
         List<ReportValues> reportsWithSecMissing = secFlows == null || secFlows.missingQuarters().isEmpty() ? reportsUpToP
                 : combineReportsWithMissingQuarters(reportsUpToP, secFlows.missingQuarters());
-        LocalDate ttmStart = resolveFutuTtmStart(reportsWithSecMissing, figi, 1, periodEnd, window.periodStart(), secAnnualIncStart);
-        LocalDate cfTtmStart = resolveFutuTtmStart(reportsWithSecMissing, figi, 3, periodEnd, window.periodStart(), secAnnualCfStart);
+        LocalDate ttmStart = resolveFutuTtmStart(reportsWithSecMissing, periodCikFacts, figi, 1, periodEnd, window.periodStart(), secAnnualIncStart);
+        LocalDate cfTtmStart = resolveFutuTtmStart(reportsWithSecMissing, periodCikFacts, figi, 3, periodEnd, window.periodStart(), secAnnualCfStart);
 
         ReportValues effectiveIncome = effectiveFlowStatement(income, secFlows, 1, periodEnd);
         ReportValues effectiveCashFlow = effectiveFlowStatement(cashFlow, secFlows, 3, periodEnd);
@@ -2203,8 +2203,9 @@ public class StockValuationService {
         return null;
     }
 
-    private LocalDate resolveFutuTtmStart(List<ReportValues> reports, String figi, int statementType,
-                                          LocalDate periodEnd, LocalDate quarterStart, LocalDate secAnnualStart) {
+    private LocalDate resolveFutuTtmStart(List<ReportValues> reports, List<SecFinancialFact> periodCikFacts,
+                                          String figi, int statementType, LocalDate periodEnd,
+                                          LocalDate quarterStart, LocalDate secAnnualStart) {
         List<ReportValues> periods = calculator.trailingPeriods(reports, figi, statementType, periodEnd);
         if (periods.isEmpty()) return quarterStart;
         if (periods.size() == 1 && periods.getFirst().periodType() == 7) {
@@ -2223,14 +2224,57 @@ public class StockValuationService {
         if (!calculator.areContiguousQuarters(periods, periodEnd)) {
             return quarterStart;
         }
-        LocalDate earliestEnd = periods.stream().map(ReportValues::periodEnd).min(LocalDate::compareTo).orElse(periodEnd);
-        List<ReportValues> prior = reports.stream()
+        ReportValues earliest = periods.getLast();
+        LocalDate earliestEnd = earliest.periodEnd();
+
+        LocalDate secExactStart = secCalculator.exactQuarterStart(periodCikFacts, earliestEnd);
+        if (secExactStart != null) {
+            return secExactStart;
+        }
+
+        Set<LocalDate> validPriorEnds = reports.stream()
                 .filter(r -> r.figi().equals(figi) && r.statementType() == statementType && r.periodEnd().isBefore(earliestEnd))
-                .max(Comparator.comparing(ReportValues::periodEnd)).stream().toList();
-        if (!prior.isEmpty() && ChronoUnit.DAYS.between(prior.getFirst().periodEnd(), earliestEnd) <= 125) {
-            return prior.getFirst().periodEnd().plusDays(1);
+                .filter(r -> isAdjacentPriorQuarter(r, earliest))
+                .map(ReportValues::periodEnd)
+                .collect(Collectors.toSet());
+        if (validPriorEnds.size() == 1) {
+            return validPriorEnds.iterator().next().plusDays(1);
+        }
+
+        LocalDate secPriorQuarterEnd = secCalculator.uniquePriorSecQuarterEnd(periodCikFacts, earliestEnd);
+        if (secPriorQuarterEnd != null) {
+            return secPriorQuarterEnd.plusDays(1);
+        }
+
+        if (areThreeMonthCalendarQuarters(periods)) {
+            return YearMonth.from(earliestEnd).minusMonths(2).atDay(1);
         }
         return earliestEnd.minusDays(90);
+    }
+
+    private boolean isAdjacentPriorQuarter(ReportValues candidate, ReportValues earliest) {
+        int candidateQuarter = candidate.periodType() == 7 ? 4 : candidate.periodType();
+        if (candidateQuarter < 1 || candidateQuarter > 4) return false;
+        long gapDays = ChronoUnit.DAYS.between(candidate.periodEnd(), earliest.periodEnd());
+        if (gapDays < 70 || gapDays > 125) return false;
+        if (earliest.fiscalYear() != null && candidate.fiscalYear() != null) {
+            int candidateSeq = candidate.fiscalYear() * 4 + candidateQuarter;
+            int earliestSeq = earliest.fiscalYear() * 4 + earliest.periodType();
+            return candidateSeq == earliestSeq - 1;
+        }
+        int expectedPrevQuarter = earliest.periodType() == 1 ? 4 : earliest.periodType() - 1;
+        return candidateQuarter == expectedPrevQuarter;
+    }
+
+    private boolean areThreeMonthCalendarQuarters(List<ReportValues> periods) {
+        if (periods.size() != 4) return false;
+        for (int i = 0; i < periods.size(); i++) {
+            LocalDate end = periods.get(i).periodEnd();
+            YearMonth ym = YearMonth.from(end);
+            if (!end.equals(ym.atEndOfMonth())) return false;
+            if (i > 0 && !YearMonth.from(periods.get(i - 1).periodEnd()).minusMonths(3).equals(ym)) return false;
+        }
+        return true;
     }
 
     private Instant statementObservedAt(ReportValues report, Map<ReportObservationKey, Instant> map) {

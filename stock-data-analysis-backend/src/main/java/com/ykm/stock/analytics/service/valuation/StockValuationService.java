@@ -259,7 +259,8 @@ public class StockValuationService {
                 : dayValuation.modelCode() != null ? dayValuation.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
         String selectedMetric = selectPrimaryMetricForDay(modelCtx, dayValuation.metrics(), matchedPeriod);
         DayDenominators denoms = resolveDayDenominators(stock, status, matchedPeriod, stockSplits, day, dayShareEval);
-        String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : industryCode;
+        String fallbackIndustryCode = fellBackToEffectiveLatest ? null : industryCode;
+        String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : fallbackIndustryCode;
 
         BigDecimal currentSelectedMultiple = positiveMetricValue(dayValuation.metrics(), selectedMetric);
         ValuationReferenceDto historicalRef = buildHistoricalReference(
@@ -1953,11 +1954,12 @@ public class StockValuationService {
         BigDecimal rawPriceHigh = convertMultipleToPrice(selectedMetric, high, period, denoms, quoteCurrency, financialInstitution);
         BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
         BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
+        BigDecimal priceMedian = priceLow != null && priceHigh != null ? rawPriceMedian : null;
         BigDecimal currentPercentile = midRankPercentile(samples, currentMultiple);
         return new ValuationReferenceDto(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
                 MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh,
                 samples.size(), windowCount, excludedCount, firstSampleDate, lastSampleDate,
-                currentMultiple, currentPercentile, rawPriceMedian);
+                currentMultiple, currentPercentile, priceMedian);
     }
 
     /** 同業市場估值參考：僅在最新收市日聚合相同 valuationDate 的同產業快照，按 coalesce(cik, figi) 去重 >= 5 家計算 P25 / P50 / P75。 */
@@ -2005,11 +2007,12 @@ public class StockValuationService {
         BigDecimal rawPriceHigh = convertMultipleToPrice(selectedMetric, high, period, denoms, quoteCurrency, financialInstitution);
         BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
         BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
+        BigDecimal priceMedian = priceLow != null && priceHigh != null ? rawPriceMedian : null;
         BigDecimal currentPercentile = midRankPercentile(issuerMultiples, currentMultiple);
         return new ValuationReferenceDto(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
                 MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh,
                 issuerMultiples.size(), null, null, valuationDate, valuationDate,
-                currentMultiple, currentPercentile, rawPriceMedian);
+                currentMultiple, currentPercentile, priceMedian);
     }
 
     /** 產業估值假設：僅在最新收市日讀取當前生效設定換算假設價格區間；無經驗分佈故 currentPercentile 固定為 null。 */

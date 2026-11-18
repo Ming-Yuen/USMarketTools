@@ -103,7 +103,7 @@ public class StockAnalysisService {
         }
         reasons.addAll(price.reasons());
         MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculate(
-                valuation, bundle.financials(), bundle.fundamentals(),
+                horizon, valuation, bundle.financials(), bundle.fundamentals(),
                 structure, support, tradePlans, marketResult);
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),

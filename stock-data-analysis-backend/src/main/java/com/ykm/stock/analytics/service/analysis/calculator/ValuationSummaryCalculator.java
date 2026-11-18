@@ -1,5 +1,6 @@
 package com.ykm.stock.analytics.service.analysis.calculator;
 
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisTimeframe;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
@@ -82,6 +83,19 @@ public class ValuationSummaryCalculator {
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
             MetricResult<MarketContextDto> marketContext) {
+        return calculate(AnalysisHorizon.POSITION, valuation, financials, fundamentals,
+                priceStructure, supportResistance, tradePlans, marketContext);
+    }
+
+    public MetricResult<InvestmentSummaryDto> calculate(
+            AnalysisHorizon horizon,
+            ValuationResultDto valuation,
+            FinancialsDto financials,
+            FundamentalSnapshotDto fundamentals,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<SupportResistanceDto> supportResistance,
+            MetricResult<TradePlanResultDto> tradePlans,
+            MetricResult<MarketContextDto> marketContext) {
         if (valuation == null) {
             return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                     AnalysisReasonDto.of("VALUATION_NOT_CALCULATED", "SUMMARY", "尚無估值結果，無法產生綜合估值觀察摘要。"));
@@ -143,7 +157,8 @@ public class ValuationSummaryCalculator {
 
         List<TradePlanDto> planList = tradePlans != null && tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
                 ? tradePlans.value().plans() : List.of();
-        LevelZoneDto supportZone = selectTechnicalSupportZone(supportResistance, planList, dailyLatestClose, price, band.low());
+        AnalysisHorizon effectiveHorizon = horizon == null ? AnalysisHorizon.POSITION : horizon;
+        LevelZoneDto supportZone = selectTechnicalSupportZone(effectiveHorizon, supportResistance, planList, dailyLatestClose, price, band.low());
         boolean stopBreachedOrReclaim = hasStopBreachedOrReclaim(planList, supportZone);
         boolean confirmationPending = hasConfirmationPending(planList, supportZone, permission);
 
@@ -248,10 +263,10 @@ public class ValuationSummaryCalculator {
                 high,
                 valuation.currency(),
                 histValid ? hist.priceLow() : null,
-                hist != null && "AVAILABLE".equals(hist.status()) ? hist.priceMedian() : null,
+                histValid ? hist.priceMedian() : null,
                 histValid ? hist.priceHigh() : null,
                 peerValid ? peer.priceLow() : null,
-                peer != null && "AVAILABLE".equals(peer.status()) ? peer.priceMedian() : null,
+                peerValid ? peer.priceMedian() : null,
                 peerValid ? peer.priceHigh() : null,
                 assumptionAvailable ? assumption.priceLow() : null,
                 assumptionAvailable ? assumption.priceMedian() : null,
@@ -388,6 +403,7 @@ public class ValuationSummaryCalculator {
     }
 
     private LevelZoneDto selectTechnicalSupportZone(
+            AnalysisHorizon horizon,
             MetricResult<SupportResistanceDto> supportResistance,
             List<TradePlanDto> plans,
             BigDecimal dailyLatestClose,
@@ -396,6 +412,7 @@ public class ValuationSummaryCalculator {
         if (supportResistance == null || supportResistance.status() != MetricStatus.AVAILABLE || supportResistance.value() == null) {
             return null;
         }
+        AnalysisTimeframe wantedTimeframe = horizon == AnalysisHorizon.SWING ? AnalysisTimeframe.DAILY : AnalysisTimeframe.WEEKLY;
         BigDecimal ceiling = null;
         if (currentPrice != null && bandLow != null) {
             ceiling = currentPrice.max(bandLow).multiply(new BigDecimal("1.03"), MC);
@@ -417,7 +434,7 @@ public class ValuationSummaryCalculator {
             if (z == null || z.id() == null || !seenIds.add(z.id())) {
                 continue;
             }
-            if (z.state() != ZoneState.ACTIVE || z.lower() == null || z.upper() == null) {
+            if (z.timeframe() != wantedTimeframe || z.state() != ZoneState.ACTIVE || z.lower() == null || z.upper() == null) {
                 continue;
             }
             if (z.effectiveStrength() == null || z.effectiveStrength().compareTo(MIN_SUPPORT_STRENGTH) < 0) {
@@ -497,17 +514,27 @@ public class ValuationSummaryCalculator {
 
     private boolean hasConfirmationPending(List<TradePlanDto> plans, LevelZoneDto selectedZone, EntryPermission permission) {
         if (plans != null && !plans.isEmpty()) {
-            boolean anyActive = plans.stream().anyMatch(p -> p != null && p.status() == TradePlanStatus.ACTIVE);
+            boolean anyActive = false;
+            boolean anyConfirmationRequired = false;
+            for (TradePlanDto plan : plans) {
+                if (plan == null) continue;
+                if (plan.status() == TradePlanStatus.ACTIVE) {
+                    anyActive = true;
+                }
+                boolean pending = hasPlanReason(plan, "CLOSE_CONFIRMATION_REQUIRED")
+                        || hasPlanReason(plan, "STRUCTURE_CONFIRMATION_REQUIRED");
+                if (pending) {
+                    if (selectedZone != null && selectedZone.id().equals(plan.sourceZoneId())) {
+                        return true;
+                    }
+                    anyConfirmationRequired = true;
+                }
+            }
             if (anyActive) {
                 return false;
             }
-            for (TradePlanDto plan : plans) {
-                if (plan == null) continue;
-                if (selectedZone == null || selectedZone.id().equals(plan.sourceZoneId())) {
-                    if (hasPlanReason(plan, "CLOSE_CONFIRMATION_REQUIRED") || hasPlanReason(plan, "STRUCTURE_CONFIRMATION_REQUIRED")) {
-                        return true;
-                    }
-                }
+            if (anyConfirmationRequired) {
+                return true;
             }
         }
         return permission == EntryPermission.REQUIRE_CLOSE_CONFIRMATION;

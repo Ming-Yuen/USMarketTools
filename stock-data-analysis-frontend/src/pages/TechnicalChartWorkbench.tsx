@@ -60,6 +60,30 @@ function computePresetWindow(bars: NormalizedBar[], range: RangeCode): [number, 
   return [start, total];
 }
 
+function mergeContainingZones(levels: SupportResistance | null | undefined, role: "SUPPORT" | "RESISTANCE"): {
+  zones: LevelZone[];
+  containingIds: Set<string>;
+} {
+  const containingIds = new Set<string>();
+  const out: LevelZone[] = [];
+  const seen = new Set<string>();
+  for (const z of levels?.containingZones ?? []) {
+    if (z && z.role === role && !seen.has(z.id)) {
+      seen.add(z.id);
+      containingIds.add(z.id);
+      out.push(z);
+    }
+  }
+  const directional = role === "SUPPORT" ? (levels?.supports ?? []) : (levels?.resistances ?? []);
+  for (const z of directional) {
+    if (z && !seen.has(z.id)) {
+      seen.add(z.id);
+      out.push(z);
+    }
+  }
+  return { zones: out, containingIds };
+}
+
 /** 技術與市場四維速覽卡：整合相對大盤強弱與美債環境、均線趨勢、RSI/MACD 動能與最近支撐阻力。 */
 export function DecisionSnapshotStrip({ valuation, structure, levels, market }: {
   valuation?: ValuationResult | null;
@@ -87,8 +111,10 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
   const tenYear = metricVal(market?.treasury?.tenYear);
   const curveSpread = metricVal(market?.treasury?.curve10yMinus2y);
   const marketRegime = market?.market?.status === "AVAILABLE" ? market.market.value?.regime : null;
-  const nearestSupport = levels?.supports?.[0];
-  const nearestResistance = levels?.resistances?.[0];
+  const { zones: mergedSupports, containingIds: inSupportIds } = mergeContainingZones(levels, "SUPPORT");
+  const { zones: mergedResistances, containingIds: inResistanceIds } = mergeContainingZones(levels, "RESISTANCE");
+  const nearestSupport = mergedSupports[0];
+  const nearestResistance = mergedResistances[0];
 
   const maDiff = (ma: number | null) => (price != null && ma != null && ma > 0 ? ((price - ma) / ma) * 100 : null);
 
@@ -175,13 +201,17 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
           <Box>
             <Typography variant="caption" color="success.main" fontWeight={700}>最近下方支撐</Typography>
             <Typography variant="body2">
-              {nearestSupport ? `${formatNumber(nearestSupport.lower)}–${formatNumber(nearestSupport.upper)}（${formatSignedPct(nearestSupport.distanceUpperPercent)}）` : "暫無下方支撐紀錄"}
+              {nearestSupport
+                ? `${formatNumber(nearestSupport.lower)}–${formatNumber(nearestSupport.upper)}（${inSupportIds.has(nearestSupport.id) ? "處於支撐區內" : formatSignedPct(nearestSupport.distanceUpperPercent)}）`
+                : "暫無下方支撐紀錄"}
             </Typography>
           </Box>
           <Box>
             <Typography variant="caption" color="error.main" fontWeight={700}>最近上方阻力</Typography>
             <Typography variant="body2">
-              {nearestResistance ? `${formatNumber(nearestResistance.lower)}–${formatNumber(nearestResistance.upper)}（${formatSignedPct(nearestResistance.distanceLowerPercent)}）` : "暫無上方阻力紀錄"}
+              {nearestResistance
+                ? `${formatNumber(nearestResistance.lower)}–${formatNumber(nearestResistance.upper)}（${inResistanceIds.has(nearestResistance.id) ? "處於阻力區內" : formatSignedPct(nearestResistance.distanceLowerPercent)}）`
+                : "暫無上方阻力紀錄"}
             </Typography>
           </Box>
           <Typography variant="caption" color="text.secondary">日線波動幅度 ATR(14)：{formatNumber(atr14)} {currency}</Typography>
@@ -404,7 +434,9 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
 
   const visibleZones: LevelZone[] = [];
   if (showZones && levels) {
-    for (const z of [...(levels.supports ?? []).slice(0, 3), ...(levels.resistances ?? []).slice(0, 3)]) {
+    const supZones = mergeContainingZones(levels, "SUPPORT").zones.slice(0, 3);
+    const resZones = mergeContainingZones(levels, "RESISTANCE").zones.slice(0, 3);
+    for (const z of [...supZones, ...resZones]) {
       if (z.upper >= pLow && z.lower <= pHigh) visibleZones.push(z);
     }
   }
@@ -809,7 +841,10 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
     gatedPlans.flatMap(p => (p.reasons ?? []).map(r => readableReason(t, r))),
   ));
 
-  const renderZoneTable = (title: string, zones: LevelZone[] | undefined, color: string) => (
+  const { zones: ladderSupports, containingIds: containingSupportIds } = mergeContainingZones(levels, "SUPPORT");
+  const { zones: ladderResistances, containingIds: containingResistanceIds } = mergeContainingZones(levels, "RESISTANCE");
+
+  const renderZoneTable = (title: string, zones: LevelZone[] | undefined, containingIds: Set<string>, color: string) => (
     <Box>
       <Typography variant="subtitle2" fontWeight={700} sx={{ color, mb: 0.8 }}>{title}</Typography>
       {zones?.length ? <TableContainer><Table size="small">
@@ -823,7 +858,7 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
           <TableCell sx={{ whiteSpace: "nowrap" }}>{readableState(t, z.timeframe)}</TableCell>
           <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatNumber(z.lower)}–{formatNumber(z.upper)}</TableCell>
           <TableCell align="right" sx={{ whiteSpace: "nowrap", color }}>
-            {formatSignedPct(z.role === "SUPPORT" ? z.distanceUpperPercent : z.distanceLowerPercent)}
+            {containingIds.has(z.id) ? "處於區間內" : formatSignedPct(z.role === "SUPPORT" ? z.distanceUpperPercent : z.distanceLowerPercent)}
           </TableCell>
           <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatNumber(z.effectiveStrength, 1)}（{readableState(t, z.strengthLabel)}）</TableCell>
         </TableRow>)}</TableBody>
@@ -883,8 +918,8 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
 
     <Divider sx={{ my: 2 }} />
     <Grid container spacing={3}>
-      <Grid size={{ xs: 12, md: 6 }}>{renderZoneTable("下方支撐防守階梯（由近至遠）", levels?.supports, "#15803d")}</Grid>
-      <Grid size={{ xs: 12, md: 6 }}>{renderZoneTable("上方阻力減倉階梯（由近至遠）", levels?.resistances, "#b91c1c")}</Grid>
+      <Grid size={{ xs: 12, md: 6 }}>{renderZoneTable("下方支撐防守階梯（由近至遠）", ladderSupports, containingSupportIds, "#15803d")}</Grid>
+      <Grid size={{ xs: 12, md: 6 }}>{renderZoneTable("上方阻力減倉階梯（由近至遠）", ladderResistances, containingResistanceIds, "#b91c1c")}</Grid>
     </Grid>
   </Paper>;
 }

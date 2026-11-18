@@ -120,6 +120,9 @@ class ValuationSummaryCalculatorTests {
         assertThat(summary.fairValue().low()).isEqualByComparingTo("120");
         assertThat(summary.fairValue().mid()).isEqualByComparingTo("150");
         assertThat(summary.fairValue().high()).isEqualByComparingTo("180");
+        // 被剔除之殘缺錨點不得殘留 peerMid 或觸發 ANCHOR_DIVERGENCE
+        assertThat(summary.fairValue().peerMid()).isNull();
+        assertThat(summary.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code).doesNotContain("ANCHOR_DIVERGENCE");
         // 100 < 120 * 0.90 (108) -> DEEP_UNDERVALUED
         assertThat(summary.verdict()).isEqualTo("DEEP_UNDERVALUED");
     }
@@ -224,6 +227,32 @@ class ValuationSummaryCalculatorTests {
                 marketContext("4.10", "160", EntryPermission.ALLOW, false)).value();
         assertThat(trap.fundamentalBacking()).isEqualTo("WEAKENING");
         assertThat(trap.stance()).isEqualTo("CAUTION_VALUE_TRAP");
+
+        // 5) 週期對齊與待確認兜底：POSITION 只配對 WEEKLY 支撐；即使存在強度更高的 DAILY 支撐 D1，若 WEEKLY 方案處於 STRUCTURE_CONFIRMATION_REQUIRED，絕不誤報 ACCUMULATE_AT_SUPPORT
+        LevelZoneDto strongerDailyZone = new LevelZoneDto("D1", AnalysisTimeframe.DAILY, new BigDecimal("166"), new BigDecimal("171"),
+                ZoneRole.SUPPORT, new BigDecimal("85"), CLOSE, 4, CLOSE, ZoneState.ACTIVE, new BigDecimal("168.5"), new BigDecimal("4"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("85"), 1, CLOSE, null, List.of(), List.of(), 3, 0, 2, null, null, RetestState.NONE, false, List.of());
+        MetricResult<SupportResistanceDto> mixedZones = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(activeZone, strongerDailyZone), List.of(), List.of(), List.of()));
+        TradePlanDto weeklyPendingPlan = new TradePlanDto("PW", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, EntryMethod.ZONE_LIMIT,
+                null, null, List.of(), MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TP", "NA")),
+                TradePlanStatus.WAITING_TRIGGER, List.of(AnalysisReasonDto.of("STRUCTURE_CONFIRMATION_REQUIRED", "TRADE_PLAN", "結構待確認")),
+                "Z1", 1, AnalysisTimeframe.WEEKLY, CLOSE, DAY.plusDays(5), List.of());
+        MetricResult<TradePlanResultDto> weeklyPendingPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(weeklyPendingPlan), new BigDecimal("170"), DAY, null, List.of(), List.of(), true));
+
+        InvestmentSummaryDto positionPending = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, strong, structure(TrendState.UPTREND, "170"), mixedZones, weeklyPendingPlans,
+                marketContext("4.10", "160", EntryPermission.ALLOW, false)).value();
+        assertThat(positionPending.technicalSupportZoneId()).isEqualTo("Z1");
+        assertThat(positionPending.stance()).isEqualTo("WAIT_FOR_STABILIZATION");
+
+        InvestmentSummaryDto swingPaired = calculator.calculate(
+                AnalysisHorizon.SWING, undervalued, null, strong, structure(TrendState.UPTREND, "170"), mixedZones, null,
+                marketContext("4.10", "160", EntryPermission.ALLOW, false)).value();
+        assertThat(swingPaired.technicalSupportZoneId()).isEqualTo("D1");
+        assertThat(swingPaired.technicalSupportTimeframe()).isEqualTo("DAILY");
+        assertThat(swingPaired.stance()).isEqualTo("ACCUMULATE_AT_SUPPORT");
     }
 
     private FundamentalSnapshotDto fundamentals(

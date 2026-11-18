@@ -537,3 +537,35 @@ test("renders L1 executive summary before chart and reference panels, collapses 
   expect(futuExpandBtn).toHaveAttribute("aria-expanded", "true");
   expect(within(futuSection).getByText("P/E：12.60")).toBeVisible();
 });
+
+test("renders containingZones support across K-line band, decision snapshot strip, and support ladder when price is inside zone", () => {
+  const bars = Array.from({ length: 12 }, (_, i) => ({
+    sessionDate: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 168, high: 173, low: 166, close: 170,
+    volume: { status: "AVAILABLE", value: 6000000, reasons: [] },
+  }));
+  report.valuation.price = 170;
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: { priceDataThrough: "2026-10-12", timeframes: [{ timeframe: "DAILY", bars, majorTrend: { status: "AVAILABLE", value: { state: "UPTREND" }, reasons: [] } }] },
+  };
+  report.supportResistance = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      supports: [],
+      resistances: [],
+      containingZones: [
+        { id: "contain-sup-1", timeframe: "WEEKLY", role: "SUPPORT", lower: 165, upper: 172, center: 168.5, effectiveStrength: 65, strengthLabel: "HIGH", state: "ACTIVE", distanceLowerPercent: -2.94, distanceUpperPercent: 1.18 },
+      ],
+    },
+  };
+  render(<StockAnalysisPage />);
+
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  expect(chartSection.querySelector('g[data-zone-label="contain-sup-1"]')).not.toBeNull();
+  expect(screen.getByText(/165\.00–172\.00（處於支撐區內）/)).toBeInTheDocument();
+
+  const levelsSection = screen.getByRole("region", { name: "關鍵價位與技術觀察方案" });
+  expect(within(levelsSection).getByText("165.00–172.00")).toBeInTheDocument();
+  expect(within(levelsSection).getByText("處於區間內")).toBeInTheDocument();
+});

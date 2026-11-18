@@ -25,6 +25,39 @@ export interface ValuationReference {
   currentMultiple?: number | null;
   currentPercentile?: number | null;
   priceMedian?: number | null;
+  peerScope?: "CUSTOM_PEERS" | "SAME_TIER" | "ADJACENT_TIER" | "ALL_INDUSTRY" | string | null;
+  targetMarketCapTier?: "MEGA_LARGE" | "MID" | "SMALL" | string | null;
+  peerFallbackReason?: string | null;
+  industryAllMetricCode?: string | null;
+  industryAllMedianMultiple?: number | null;
+  industryAllSampleCount?: number | null;
+  peerRevenueGrowthYoyMedian?: number | null;
+  peerRevenueGrowthCount?: number | null;
+  peerRoeMedian?: number | null;
+  peerRoeCount?: number | null;
+  peerFcfMarginMedian?: number | null;
+  peerFcfMarginCount?: number | null;
+  warningCodes?: string[];
+}
+
+export interface CustomPeerItem {
+  figi: string;
+  symbol: string;
+  name: string | null;
+  industryCode: string | null;
+  active: boolean;
+  tracked: boolean;
+  valuationDate: string | null;
+  currency: string | null;
+  marketCap: number | null;
+  marketCapTier: string | null;
+}
+
+export interface CustomPeerGroup {
+  figi: string;
+  preferredMetric: string | null;
+  supportedMetrics: string[];
+  peers: CustomPeerItem[];
 }
 
 export interface ValuationResult {

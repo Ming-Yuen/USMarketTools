@@ -6,6 +6,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDt
 import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEarningsForecastRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
 import org.junit.jupiter.api.Test;
@@ -26,7 +27,8 @@ class StockObservationServiceTests {
     private static final Instant CUTOFF = Instant.parse("2026-11-11T21:00:00Z");
     private final StockEarningsForecastRepository forecasts = mock(StockEarningsForecastRepository.class);
     private final StockShareObservationRepository shareObservations = mock(StockShareObservationRepository.class);
-    private final StockObservationService service = new StockObservationService(forecasts, shareObservations);
+    private final FinancialReportRepository financialReports = mock(FinancialReportRepository.class);
+    private final StockObservationService service = new StockObservationService(forecasts, shareObservations, financialReports);
 
     @Test
     void nativePartialMetricsAreUsableWithoutDemandingAllThree() {
@@ -41,10 +43,13 @@ class StockObservationServiceTests {
         forecast.setFiscalPeriod("2026Q4");
         forecast.setPeriodType("QUARTERLY");
         forecast.setCurrency("USD");
+        forecast.setObservationDate(DAY);
+        forecast.setObservedAt(CUTOFF);
+        forecast.setSource("FUTU");
         forecast.setEps(new BigDecimal("-0.23"));
-        when(forecasts.findLatestForStock(FIGI, CUTOFF)).thenReturn(List.of(forecast));
+        when(forecasts.findLatestForStock(FIGI, DAY, CUTOFF)).thenReturn(List.of(forecast));
 
-        FutuObservationsDto result = service.read(FIGI, CUTOFF);
+        FutuObservationsDto result = service.read(FIGI, DAY, CUTOFF);
 
         assertThat(result.valuation()).isNull();
         assertThat(result.earnings()).singleElement().satisfies(item -> {
@@ -52,6 +57,8 @@ class StockObservationServiceTests {
             assertThat(item.periodStart()).isNull();
             assertThat(item.periodEnd()).isNull();
         });
+        assertThat(result.forward()).isNotNull();
+        assertThat(result.forward().forwardPe().reasons().getFirst().code()).isEqualTo("ANNUAL_EARNINGS_FORECAST_MISSING");
     }
 
     @Test
@@ -83,7 +90,7 @@ class StockObservationServiceTests {
     }
 
     @Test
-    void readsFutuNativeValuationMultiplesFromLatestQualifiedShareObservation() {
+    void readsFutuNativeValuationMultiplesWithoutBackfillingDerivedForwardIntoNativeCard() {
         StockShareObservation obs = new StockShareObservation();
         obs.setFigi(FIGI);
         obs.setSource("FUTU");
@@ -94,9 +101,9 @@ class StockObservationServiceTests {
         obs.setPbRate(new BigDecimal("49.18"));
         when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(FIGI, "FUTU", CUTOFF))
                 .thenReturn(Optional.of(obs));
-        when(forecasts.findLatestForStock(FIGI, CUTOFF)).thenReturn(List.of());
+        when(forecasts.findLatestForStock(FIGI, DAY, CUTOFF)).thenReturn(List.of());
 
-        FutuObservationsDto result = service.read(FIGI, CUTOFF);
+        FutuObservationsDto result = service.read(FIGI, DAY, CUTOFF);
 
         assertThat(result.valuation()).isNotNull();
         assertThat(result.valuation().observationDate()).isEqualTo(DAY);
@@ -105,6 +112,7 @@ class StockObservationServiceTests {
         assertThat(result.valuation().pb()).isEqualByComparingTo("49.18");
         assertThat(result.valuation().ps()).isNull();
         assertThat(result.valuation().forwardPe()).isNull();
+        assertThat(result.valuation().forwardPs()).isNull();
     }
 
     @Test
@@ -116,9 +124,9 @@ class StockObservationServiceTests {
         legacyObs.setIssuedShares(15_000_000_000L);
         when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(FIGI, "FUTU", CUTOFF))
                 .thenReturn(Optional.of(legacyObs));
-        when(forecasts.findLatestForStock(FIGI, CUTOFF)).thenReturn(List.of());
+        when(forecasts.findLatestForStock(FIGI, DAY, CUTOFF)).thenReturn(List.of());
 
-        FutuObservationsDto result = service.read(FIGI, CUTOFF);
+        FutuObservationsDto result = service.read(FIGI, DAY, CUTOFF);
 
         assertThat(result.valuation()).isNull();
     }

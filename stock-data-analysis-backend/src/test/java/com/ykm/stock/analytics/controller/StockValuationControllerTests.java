@@ -2,6 +2,7 @@ package com.ykm.stock.analytics.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.CustomPeerGroupDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.service.futu.FutuStockDataService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
@@ -20,8 +21,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -102,6 +105,50 @@ class StockValuationControllerTests {
                 .andExpect(jsonPath("$[0].metrics.pe.value").value(25));
 
         verify(localValuations).recalculate("F1", day, day);
+    }
+
+    @Test
+    void customPeersEndpointsSupportReadReplaceClearAndRejectEmptyPutBody() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 17);
+        CustomPeerGroupDto saved = new CustomPeerGroupDto(
+                "AMZN-FIGI",
+                "EV_EBITDA",
+                List.of("PE", "PB", "PS", "PFCF", "EV_EBITDA"),
+                List.of(new CustomPeerGroupDto.PeerItem(
+                        "MSFT-FIGI", "MSFT", "Microsoft", "I10", true, true, day,
+                        "USD", new BigDecimal("3000000000000"), "MEGA_LARGE"))
+        );
+        when(localValuations.getCustomPeers("AMZN-FIGI")).thenReturn(saved);
+        when(localValuations.saveCustomPeers("AMZN-FIGI", List.of("MSFT-FIGI"), "EV_EBITDA")).thenReturn(saved);
+        CustomPeerGroupDto cleared = new CustomPeerGroupDto(
+                "AMZN-FIGI", null, List.of("PE", "PB", "PS", "PFCF", "EV_EBITDA"), List.of());
+        when(localValuations.clearCustomPeers("AMZN-FIGI")).thenReturn(cleared);
+
+        mvc.perform(get("/valuation/{figi}/custom-peers", "AMZN-FIGI"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.preferredMetric").value("EV_EBITDA"))
+                .andExpect(jsonPath("$.peers[0].symbol").value("MSFT"));
+
+        mvc.perform(put("/valuation/{figi}/custom-peers", "AMZN-FIGI")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"peerFigis\":[\"MSFT-FIGI\"],\"preferredMetric\":\"EV_EBITDA\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.peers[0].figi").value("MSFT-FIGI"));
+        verify(localValuations).saveCustomPeers("AMZN-FIGI", List.of("MSFT-FIGI"), "EV_EBITDA");
+
+        mvc.perform(put("/valuation/{figi}/custom-peers", "AMZN-FIGI")
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(put("/valuation/{figi}/custom-peers", "AMZN-FIGI")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"preferredMetric\":\"PE\"}"))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(delete("/valuation/{figi}/custom-peers", "AMZN-FIGI"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.peers").isEmpty());
+        verify(localValuations).clearCustomPeers("AMZN-FIGI");
     }
 
     @Test

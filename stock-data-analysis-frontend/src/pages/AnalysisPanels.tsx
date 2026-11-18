@@ -1,14 +1,34 @@
-import React from "react";
-import { Accordion, AccordionDetails, AccordionSummary, Box, Divider, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import React, { useState } from "react";
+import {
+  Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress,
+  Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControl, InputLabel,
+  MenuItem, Paper, Select, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography,
+} from "@mui/material";
 import { ExpandMore } from "@mui/icons-material";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { TFunction } from "i18next";
-import { AnalysisReason, MetricResult, MomentumAnalysis, MomentumVolume } from "../services/types/dto/analysis";
-import { ValuationReference } from "../services/types/dto/valuation";
+import { apiClient } from "../services/apiClient";
+import { apiConfig } from "../apiConfig";
+import { AnalysisReason, FundamentalSnapshot, MetricResult, MomentumAnalysis, MomentumVolume } from "../services/types/dto/analysis";
+import { StockScreenItem, StockScreenResponse } from "../services/types/dto/stock";
+import { CustomPeerGroup, CustomPeerItem, ValuationReference } from "../services/types/dto/valuation";
 
 export const formatNumber = (value?: number | null, digits = 2) => value == null || !Number.isFinite(value)
   ? "—" : value.toLocaleString("zh-HK", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const number = formatNumber;
+
+export const formatCompactMarketCap = (value?: number | null, currency?: string | null) => {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+  const cur = currency?.toUpperCase() ?? "";
+  const prefix = cur === "USD" ? "$" : "";
+  const suffix = cur && cur !== "USD" ? ` ${cur}` : "";
+  if (value >= 1e12) return `${prefix}${(value / 1e12).toFixed(2)}T${suffix}`;
+  if (value >= 1e9) return `${prefix}${(value / 1e9).toFixed(2)}B${suffix}`;
+  if (value >= 1e6) return `${prefix}${(value / 1e6).toFixed(1)}M${suffix}`;
+  return `${prefix}${formatNumber(value, 0)}${suffix}`;
+};
+
 const statusLabels: Record<string, string> = {
   AVAILABLE: "可用", PARTIAL: "部分可用", STALE: "資料過期", INSUFFICIENT_DATA: "資料不足",
   UNVERIFIED: "尚未確認", NOT_APPLICABLE: "不適用", UNAVAILABLE: "暫不可用", UNRESOLVED: "資料待補",
@@ -18,6 +38,7 @@ export const readableState = (t: TFunction, code?: string | null) => code
   ? t("analysisReport.states." + code, { defaultValue: statusLabel(code) }) : "—";
 export const readableReason = (t: TFunction, reason: AnalysisReason) => t("analysisReport.reasons." + reason.code,
   { ...reason.params, defaultValue: reason.message || reason.code });
+
 const reasonFallbacks: Record<string, string> = {
   NON_POSITIVE_FCF: "自由現金流非正，P/FCF 不適用（N.M.）",
   NON_POSITIVE_EPS: "每股盈利非正（虧損或零盈利），PE 不適用（N.M.）",
@@ -31,33 +52,385 @@ const reasonFallbacks: Record<string, string> = {
   INDUSTRY_PEER_COMPANIES_INSUFFICIENT: "主要指標不足五家不同發行人的有效同業樣本",
   INDUSTRY_CLASSIFICATION_MISSING: "此股票尚未分配產業分類，暫無法比較同業或套用產業假設",
   SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED: "多股類歷史經濟權比例未經 1:1 準則確認，不推算歷史市值倍數",
-  REPORTING_CURRENCY_MISMATCH: "財報幣別與股價交易幣別不一致，不自動換算匯率",
+  REPORTING_CURRENCY_MISMATCH: "財報或預期幣別與股價交易幣別不一致，不自動換算匯率",
+  CUSTOM_PEERS_INSUFFICIENT: "自訂對標有效樣本未滿 3 家，已自動退回產業分層比較",
+  EARNINGS_FORECAST_MISSING: "目前尚無已入庫的市場盈利預期紀錄",
+  NO_UNREPORTED_FORECAST_PERIOD: "目前無合資格財期可供修正比較",
+  ANNUAL_EARNINGS_FORECAST_MISSING: "缺少可用的未結束年度預期",
+  FORECAST_FISCAL_PERIOD_UNVERIFIED: "年度預期缺少明確結算日且無法核實尚未結束",
+  EARNINGS_FORECAST_STALE: "市場預期距估值日已逾 45 天未更新（資料過期）",
+  FORECAST_REVISION_BASE_MISSING: "此財期缺少滿對應天數之可比歷史觀察基準",
+  NON_POSITIVE_FORWARD_EPS: "市場預期年度 EPS 為虧損或零，Forward P/E 不適用（N.M.）",
+  NON_POSITIVE_FORWARD_REVENUE: "市場預期年度營收非正，Forward P/S 不適用（N.M.）",
+  FORWARD_EPS_GROWTH_BELOW_PEG_THRESHOLD: "預期 EPS 隱含成長率低於 5% 門檻，不計算 Forward PEG",
+  FORWARD_EPS_GROWTH_ABOVE_PEG_CAP: "預期 EPS 隱含成長率逾 100% 上限，不計算 Forward PEG",
+  NON_POSITIVE_PRIOR_FORECAST_EPS: "基期預期 EPS 為虧損或零，不計算百分比修正",
+  NON_POSITIVE_PRIOR_FORECAST_REVENUE: "基期預期營收非正，不計算百分比修正",
 };
 export const reasonLabel = (t: TFunction, code?: string | null) => {
   if (!code) return "沒有可用資料";
   const fallback = reasonFallbacks[code] ?? code;
   return t("analysisReport.reasons." + code, { defaultValue: fallback });
 };
+
 const metricLabels: Record<string, string> = {
   pe: "P/E", pb: "P/B", ps: "P/S", pfcf: "P/FCF", evEbitda: "EV/EBITDA",
   PE: "P/E", PB: "P/B", PS: "P/S", PFCF: "P/FCF", EV_EBITDA: "EV/EBITDA",
 };
 export const metricLabel = (code?: string | null) => code ? metricLabels[code] ?? code : "—";
 
-export function ValuationReferencePanel({ title, description, reference, currency }: {
-  title: string; description: string; reference: ValuationReference | null | undefined; currency: string | null | undefined;
+export const TIER_LABELS: Record<string, string> = {
+  MEGA_LARGE: "大型／巨型股（≥$10B）",
+  MID: "中型股（$2B–$10B）",
+  SMALL: "小型股（<$2B）",
+};
+export const TIER_SHORT_LABELS: Record<string, string> = {
+  MEGA_LARGE: "大型股",
+  MID: "中型股",
+  SMALL: "小型股",
+};
+export const PEER_SCOPE_LABELS: Record<string, string> = {
+  CUSTOM_PEERS: "自訂對標組",
+  SAME_TIER: "同規模同業",
+  ADJACENT_TIER: "擴展相鄰規模同業",
+  ALL_INDUSTRY: "全產業同業",
+};
+const PEER_WARNING_LABELS: Record<string, string> = {
+  CUSTOM_PEER_MARKET_CAP_MISMATCH: "自訂對標組內有對手市值與本股相差逾 10 倍，留意規模溢價差異。",
+  CUSTOM_PEER_GROWTH_DIVERGENCE: "自訂對標組營收成長中位數與本股差距達 20 個百分點以上，留意成長階段差異。",
+};
+
+const formatPctValue = (ratio?: number | null, signed = false) => {
+  if (ratio == null || !Number.isFinite(ratio)) return "—";
+  const pct = ratio * 100;
+  return (signed && pct > 0 ? "+" : "") + pct.toFixed(2) + "%";
+};
+
+function CustomPeerDialog({ open, onClose, figi, symbol }: {
+  open: boolean;
+  onClose: () => void;
+  figi: string;
+  symbol?: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadedFigi, setLoadedFigi] = useState<string | null>(null);
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [supportedMetrics, setSupportedMetrics] = useState<string[]>([]);
+  const [preferredMetric, setPreferredMetric] = useState<string>("");
+  const [peers, setPeers] = useState<CustomPeerItem[]>([]);
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [searchResults, setSearchResults] = useState<StockScreenItem[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  React.useEffect(() => {
+    if (!open || !figi) return;
+    let cancelled = false;
+    setLoading(true);
+    setLoadFailed(false);
+    setLoadedFigi(null);
+    setError(null);
+    setSupportedMetrics([]);
+    setPreferredMetric("");
+    setPeers([]);
+    setSearchKeyword("");
+    setSearchResults([]);
+    apiClient.get<CustomPeerGroup>(`valuation/${encodeURIComponent(figi)}/custom-peers`)
+      .then(res => {
+        if (cancelled) return;
+        setSupportedMetrics(res.data.supportedMetrics ?? []);
+        setPreferredMetric(res.data.preferredMetric ?? "");
+        setPeers(res.data.peers ?? []);
+        setLoadedFigi(figi);
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setLoadFailed(true);
+          setError(err?.response?.data?.message || err?.message || "讀取自訂對標設定失敗。");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [open, figi, reloadSeq]);
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = searchKeyword.trim();
+    if (!q) return;
+    setSearching(true);
+    setError(null);
+    try {
+      const res = await apiClient.get<StockScreenResponse>(apiConfig.getStockScreen.url, {
+        params: { symbol: q, page: 0, size: 10 },
+      });
+      setSearchResults((res.data.items ?? []).filter(item => item.figi !== figi));
+    } catch (err: any) {
+      setError(err?.response?.data?.message || err?.message || "搜尋股票失敗。");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const addPeer = (item: StockScreenItem) => {
+    if (peers.some(p => p.figi === item.figi)) return;
+    setPeers([...peers, {
+      figi: item.figi,
+      symbol: item.symbol,
+      name: item.name,
+      industryCode: item.industryCode,
+      active: true,
+      tracked: true,
+      valuationDate: item.valuationDate,
+      currency: item.currency ?? "USD",
+      marketCap: item.marketCap ?? null,
+      marketCapTier: item.marketCapTier ?? null,
+    }]);
+  };
+
+  const removePeer = (peerFigi: string) => {
+    setPeers(peers.filter(p => p.figi !== peerFigi));
+  };
+
+  const invalidateRelatedCaches = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["analysis-report", figi] }),
+      queryClient.invalidateQueries({ queryKey: ["custom-peers", figi] }),
+      queryClient.invalidateQueries({ queryKey: ["stock-screen"] }),
+    ]);
+  };
+
+  const canMutate = !loading && !saving && !loadFailed && loadedFigi === figi;
+
+  const handleSave = async () => {
+    if (!canMutate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await apiClient.put<CustomPeerGroup>(`valuation/${encodeURIComponent(figi)}/custom-peers`, {
+        peerFigis: peers.map(p => p.figi),
+        preferredMetric: preferredMetric || null,
+      });
+      await invalidateRelatedCaches();
+      onClose();
+    } catch (err: any) {
+      setError(err?.response?.data?.message || err?.message || "儲存自訂對標失敗。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!canMutate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      if (typeof apiClient.delete === "function") {
+        await apiClient.delete<CustomPeerGroup>(`valuation/${encodeURIComponent(figi)}/custom-peers`);
+      } else {
+        await apiClient.put<CustomPeerGroup>(`valuation/${encodeURIComponent(figi)}/custom-peers`, {
+          peerFigis: [],
+          preferredMetric: null,
+        });
+      }
+      await invalidateRelatedCaches();
+      onClose();
+    } catch (err: any) {
+      setError(err?.response?.data?.message || err?.message || "清除自訂對標失敗。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={saving ? undefined : onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>{symbol ? `${symbol} · ` : ""}設定多業務自訂對標同業</DialogTitle>
+      <DialogContent dividers>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          針對跨界多業務公司（如 AMZN、TSLA），可指定至少 3 家不同發行人之有效對手作為同業比較基準；未滿 3 家有效樣本時將自動退回預設產業規模分層。
+        </Typography>
+        {error && (
+          <Alert
+            severity="error"
+            sx={{ mb: 1.5 }}
+            action={loadFailed ? <Button color="inherit" size="small" onClick={() => setReloadSeq(s => s + 1)}>重試載入</Button> : undefined}
+          >
+            {error}
+          </Alert>
+        )}
+        {loading ? (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
+            <CircularProgress size={20} /><Typography>讀取設定中…</Typography>
+          </Stack>
+        ) : loadFailed ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+            目前無法讀取既有自訂對標設定；為避免誤覆寫現有名單，請重試載入或先取消。
+          </Typography>
+        ) : (
+          <Stack spacing={2}>
+            <FormControl size="small" fullWidth>
+              <InputLabel id="custom-peer-metric-label">對標估值指標（選填覆寫）</InputLabel>
+              <Select
+                labelId="custom-peer-metric-label"
+                label="對標估值指標（選填覆寫）"
+                value={preferredMetric}
+                onChange={e => setPreferredMetric(e.target.value)}
+              >
+                <MenuItem value="">自動跟隨本股當日主指標</MenuItem>
+                {supportedMetrics.map(code => (
+                  <MenuItem key={code} value={code}>{metricLabel(code)}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Box component="form" onSubmit={e => void handleSearch(e)}>
+              <Stack direction="row" spacing={1}>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="搜尋對標股票代碼或名稱"
+                  value={searchKeyword}
+                  onChange={e => setSearchKeyword(e.target.value)}
+                />
+                <Button type="submit" variant="outlined" disabled={searching}>搜尋</Button>
+              </Stack>
+            </Box>
+
+            {searchResults.length > 0 && (
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 160, overflowY: "auto" }}>
+                <Stack spacing={0.5}>
+                  {searchResults.map(item => {
+                    const added = peers.some(p => p.figi === item.figi);
+                    return (
+                      <Stack key={item.figi} direction="row" justifyContent="space-between" alignItems="center">
+                        <Typography variant="body2">
+                          <b>{item.symbol}</b> · {item.name}
+                          {item.marketCap != null ? ` · ${formatCompactMarketCap(item.marketCap, item.currency)}` : ""}
+                        </Typography>
+                        <Button size="small" disabled={added} onClick={() => addPeer(item)}>
+                          {added ? "已加入" : "加入"}
+                        </Button>
+                      </Stack>
+                    );
+                  })}
+                </Stack>
+              </Paper>
+            )}
+
+            <Box>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.8 }}>
+                已選對標名單（{peers.length} 檔，需至少 3 家有效發行人）
+              </Typography>
+              {peers.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">目前未設定自訂對標，採用預設產業規模分層。</Typography>
+              ) : (
+                <Stack spacing={0.8}>
+                  {peers.map(p => (
+                    <Stack key={p.figi} direction="row" justifyContent="space-between" alignItems="center"
+                      sx={{ p: 0.8, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+                      <Box>
+                        <Typography variant="body2">
+                          <b>{p.symbol}</b> {p.name ? `· ${p.name}` : ""}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {p.marketCap != null ? `市值 ${formatCompactMarketCap(p.marketCap, p.currency)}` : "尚無市值快照"}
+                          {!p.tracked || !p.active ? " · 已停追或非活躍（不計入有效樣本）" : ""}
+                        </Typography>
+                      </Box>
+                      <Button size="small" color="error" onClick={() => removePeer(p.figi)}>移除</Button>
+                    </Stack>
+                  ))}
+                </Stack>
+              )}
+            </Box>
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button color="warning" onClick={() => void handleClear()} disabled={!canMutate}>
+          清除並還原預設分層
+        </Button>
+        <Button onClick={onClose} disabled={saving}>取消</Button>
+        <Button variant="contained" onClick={() => void handleSave()} disabled={!canMutate}>
+          儲存自訂對標
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+export function ValuationReferencePanel({
+  title, description, reference, currency, figi, symbol, fundamentals, isHistoricalDate,
+}: {
+  title: string;
+  description: string;
+  reference: ValuationReference | null | undefined;
+  currency: string | null | undefined;
+  figi?: string;
+  symbol?: string | null;
+  fundamentals?: FundamentalSnapshot | null;
+  isHistoricalDate?: boolean;
 }) {
   const { t } = useTranslation();
+  const [dialogOpen, setDialogOpen] = useState(false);
   const available = reference?.status === "AVAILABLE";
   const assumption = reference?.kind === "INDUSTRY_ASSUMPTION";
   const historical = reference?.kind === "HISTORICAL_MARKET";
   const peer = reference?.kind === "PEER_MARKET";
+
+  const scopeLabel = peer && reference?.peerScope
+    ? (PEER_SCOPE_LABELS[reference.peerScope] ?? reference.peerScope)
+    : null;
+  const tierShort = peer && reference?.targetMarketCapTier
+    ? (TIER_SHORT_LABELS[reference.targetMarketCapTier] ?? reference.targetMarketCapTier)
+    : null;
+
+  const selfRevYoy = fundamentals?.revenueGrowthYoy?.status === "AVAILABLE" ? fundamentals.revenueGrowthYoy.value : null;
+  const selfRoe = fundamentals?.roe?.status === "AVAILABLE" ? fundamentals.roe.value : null;
+  const selfFcfMargin = fundamentals && !fundamentals.financialInstitution && fundamentals.fcfMargin?.status === "AVAILABLE"
+    ? fundamentals.fcfMargin.value : null;
+
+  const hasPeerFundamentals = peer && available && reference && (
+    reference.peerRevenueGrowthYoyMedian != null
+    || reference.peerRoeMedian != null
+    || reference.peerFcfMarginMedian != null
+  );
+
   return <Paper component="section" aria-label={title} variant="outlined" sx={{ p: 2.5, height: "100%" }}>
-    <Typography variant="h6" fontWeight={700}>{title}</Typography>
+    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+      <Box>
+        <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+          <Typography variant="h6" fontWeight={700}>{title}</Typography>
+          {scopeLabel && (
+            <Chip
+              size="small"
+              color={reference?.peerScope === "CUSTOM_PEERS" ? "secondary" : "primary"}
+              variant="outlined"
+              label={reference?.peerScope === "SAME_TIER" && tierShort ? `${scopeLabel}（${tierShort}）` : scopeLabel}
+            />
+          )}
+        </Stack>
+      </Box>
+      {peer && figi && !isHistoricalDate && reference?.status !== "NOT_APPLICABLE" && (
+        <Button size="small" variant="outlined" onClick={() => setDialogOpen(true)}>
+          設定自訂對標
+        </Button>
+      )}
+    </Stack>
+
     <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>{description}</Typography>
     <Stack spacing={0.7}>
       <Typography>狀態：{statusLabel(reference?.status)}</Typography>
       <Typography>指標：{metricLabel(reference?.metricCode)}</Typography>
+      {peer && reference?.peerFallbackReason && (
+        <Typography variant="caption" color="warning.main">
+          {reasonLabel(t, reference.peerFallbackReason)}
+        </Typography>
+      )}
       {available && reference ? <>
         <Typography>{assumption ? "假設倍數" : "市場倍數區間"}：<b>{formatNumber(reference.multipleLow)}–{formatNumber(reference.multipleHigh)} 倍</b></Typography>
         {historical && <Typography>
@@ -69,6 +442,13 @@ export function ValuationReferencePanel({ title, description, reference, currenc
           市場中位數：{formatNumber(reference.multipleMedian)} 倍 · 同日有效公司數：{reference.sampleCount ?? "—"}
           {reference.sampleEndDate ? `（${reference.sampleEndDate}）` : ""}
         </Typography>}
+        {peer && reference.industryAllMedianMultiple != null && reference.peerScope !== "ALL_INDUSTRY" && (
+          <Typography variant="body2" color="text.secondary">
+            全產業{reference.industryAllMetricCode ? ` ${metricLabel(reference.industryAllMetricCode)} ` : ""}中位數副標：
+            {formatNumber(reference.industryAllMedianMultiple)} 倍
+            {reference.industryAllSampleCount != null ? `（共 ${reference.industryAllSampleCount} 家，僅供對照未混入參考帶）` : "（僅供對照）"}
+          </Typography>
+        )}
         {!assumption && reference.currentMultiple != null && (
           <Typography variant="body2">
             當期倍數：{formatNumber(reference.currentMultiple)} 倍
@@ -92,6 +472,43 @@ export function ValuationReferencePanel({ title, description, reference, currenc
           </Typography>
         )}
         {reference.priceLow == null || reference.priceHigh == null ? <Typography variant="body2" color="text.secondary">倍數可用，但價格換算條件不足；不以零補值。</Typography> : null}
+
+        {hasPeerFundamentals && (
+          <Box sx={{ mt: 0.8, p: 1.2, bgcolor: "action.hover", borderRadius: 1 }}>
+            <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.4 }}>
+              同業成長與獲利中位數對照（分辨高成長溢價 vs 價值陷阱）
+            </Typography>
+            <Stack spacing={0.3}>
+              {reference.peerRevenueGrowthYoyMedian != null && (
+                <Typography variant="caption" color="text.secondary">
+                  營收 YoY 中位數：<b>{formatPctValue(reference.peerRevenueGrowthYoyMedian, true)}</b>
+                  {reference.peerRevenueGrowthCount ? `（${reference.peerRevenueGrowthCount}家）` : ""}
+                  {selfRevYoy != null ? ` · 本股：${formatPctValue(selfRevYoy, true)}` : ""}
+                </Typography>
+              )}
+              {reference.peerRoeMedian != null && (
+                <Typography variant="caption" color="text.secondary">
+                  ROE 中位數：<b>{formatPctValue(reference.peerRoeMedian)}</b>
+                  {reference.peerRoeCount ? `（${reference.peerRoeCount}家）` : ""}
+                  {selfRoe != null ? ` · 本股：${formatPctValue(selfRoe)}` : ""}
+                </Typography>
+              )}
+              {reference.peerFcfMarginMedian != null && (
+                <Typography variant="caption" color="text.secondary">
+                  FCF Margin 中位數：<b>{formatPctValue(reference.peerFcfMarginMedian)}</b>
+                  {reference.peerFcfMarginCount ? `（${reference.peerFcfMarginCount}家）` : ""}
+                  {selfFcfMargin != null ? ` · 本股：${formatPctValue(selfFcfMargin)}` : ""}
+                </Typography>
+              )}
+            </Stack>
+          </Box>
+        )}
+
+        {peer && reference.warningCodes && reference.warningCodes.length > 0 && (
+          <Alert severity="info" sx={{ py: 0.3, px: 1 }}>
+            {reference.warningCodes.map(c => PEER_WARNING_LABELS[c] ?? c).join(" ")}
+          </Alert>
+        )}
       </> : <>
         <Typography color="text.secondary">{reasonLabel(t, reference?.reasonCode)}</Typography>
         {historical && reference?.windowSampleCount != null && reference.sampleCount != null && (
@@ -107,6 +524,15 @@ export function ValuationReferencePanel({ title, description, reference, currenc
           ? "歷史倍數以各月末收盤價配對同財季最新修訂財報計算（非當日投資者即時已知之 Point-in-Time 回測值），不等同內在價值或買賣指令。"
           : "這是同交易日實際市場資料的比較基準，不等同內在價值或買賣指令。"}</Typography>
     </Stack>
+
+    {peer && figi && dialogOpen && (
+      <CustomPeerDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        figi={figi}
+        symbol={symbol}
+      />
+    )}
   </Paper>;
 }
 

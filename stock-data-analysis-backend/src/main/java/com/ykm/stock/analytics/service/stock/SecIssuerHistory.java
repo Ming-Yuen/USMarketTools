@@ -45,7 +45,24 @@ public class SecIssuerHistory {
         return previous;
     }
 
+    /** 將任意前任或現任 CIK 對稱歸一化至已登錄接續鏈的最新現任根 CIK；無接續紀錄時回傳原值。 */
+    public String canonicalCik(String cik) {
+        if (cik == null || cik.isBlank()) return null;
+        String current = cik.trim();
+        Set<String> seen = new LinkedHashSet<>();
+        while (seen.add(current)) {
+            Transition successor = successor(current);
+            if (successor == null) return current;
+            current = successor.current();
+        }
+        throw new IllegalStateException("SEC_ISSUER_TRANSITION_CYCLE:" + cik);
+    }
+
     private Transition transition(String current) {
         return transitions.stream().filter(entry -> entry.current().equals(current)).findFirst().orElse(null);
+    }
+
+    private Transition successor(String previous) {
+        return transitions.stream().filter(entry -> entry.previous().equals(previous)).findFirst().orElse(null);
     }
 }

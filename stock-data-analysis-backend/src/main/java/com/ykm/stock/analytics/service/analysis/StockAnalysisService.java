@@ -19,6 +19,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDt
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.service.analysis.StockObservationService.ForwardObservationContext;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
@@ -49,7 +50,7 @@ public class StockAnalysisService {
     private final StockValuationService stockValuations;
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
 
-    /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史、技術交易計畫與綜合估值摘要；不觸發外部下載或寫庫。 */
+    /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史、前瞻預期觀察、技術交易計畫與綜合估值摘要；不觸發外部下載或寫庫。 */
     @Transactional(readOnly = true)
     public StockAnalysisReportDto analyze(AnalysisReportRequest request) {
         Stock stock = stocks.findById(request.figi())
@@ -63,20 +64,35 @@ public class StockAnalysisService {
         Instant cutoff = calendar.getSessionCloseAt(day);
         // 預設報告讀取目前已取得的觀察；歷史報告限定在所選交易日收市時間。
         Instant supplementalCutoff = request.valuationDate() == null ? readAt : cutoff;
-        AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
 
-        FutuObservationsDto observations = stockObservations.read(stock.getFigi(), supplementalCutoff);
         String industryCode = industries.findAt(stock.getFigi(), cutoff).map(row -> row.getIndustry().getCode()).orElse(null);
         ReportValuationBundle bundle = stockValuations.evaluateForReport(stock, day, cutoff, supplementalCutoff, industryCode);
         ValuationResultDto valuation = bundle.valuation();
 
-        // 當預設最新日查詢因收市後行情尚未同步而由 evaluateForReport 回退至 effectiveLatest 時，同步重建技術與市場分析錨點
-        LocalDate resolvedReportDate = request.valuationDate() == null && valuation != null && valuation.valuationDate() != null
-                ? valuation.valuationDate() : day;
+        // 當預設最新日查詢因收市後行情尚未同步而由 evaluateForReport 回退至 effectiveLatest 時，同步對齊前瞻、技術與市場分析錨點
+        LocalDate resolvedReportDate = request.valuationDate() == null
+                ? (bundle.resolvedValuationDate() != null ? bundle.resolvedValuationDate()
+                        : (valuation != null && valuation.valuationDate() != null ? valuation.valuationDate() : day))
+                : day;
         if (!resolvedReportDate.equals(day)) {
             cutoff = calendar.getSessionCloseAt(resolvedReportDate);
-            context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
         }
+        AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
+
+        FutuObservationsDto observations = stockObservations.readWithForward(new ForwardObservationContext(
+                stock.getFigi(),
+                resolvedReportDate,
+                supplementalCutoff,
+                stock.getCurrency(),
+                bundle.closePriceAtDay() != null ? bundle.closePriceAtDay() : (valuation == null ? null : valuation.price()),
+                bundle.marketCapAtDay(),
+                bundle.sharesReasonAtDay(),
+                bundle.epsAtDay(),
+                bundle.peReasonAtDay(),
+                bundle.splits(),
+                bundle.splitSyncError(),
+                bundle.storedPeriods()
+        ));
 
         List<AnalysisReasonDto> reasons = new ArrayList<>();
         if (valuation == null) {
@@ -103,7 +119,7 @@ public class StockAnalysisService {
         }
         reasons.addAll(price.reasons());
         MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculate(
-                horizon, valuation, bundle.financials(), bundle.fundamentals(),
+                horizon, valuation, bundle.financials(), bundle.fundamentals(), observations,
                 structure, support, tradePlans, marketResult);
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),

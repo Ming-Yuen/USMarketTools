@@ -23,6 +23,7 @@ import com.ykm.stock.analytics.service.stock.EarningsForecastSyncService;
 import com.ykm.stock.analytics.service.stock.StockService;
 import com.ykm.stock.analytics.service.stock.StockService.BatchTrackedUpdateResult;
 import com.ykm.stock.analytics.service.stock.StockService.TrackedUpdateResult;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatus;
@@ -57,7 +58,8 @@ class StockTrackedAndControllerTests {
     private final NamedParameterJdbcTemplate jdbc = mock(NamedParameterJdbcTemplate.class);
     private final StockService stockService = new StockService(
             stockRepository, statusRepository, industryRepository, converter, conceptRepository, jdbc);
-    private final StockController controller = new StockController(stockService);
+    private final StockValuationService valuationService = mock(StockValuationService.class);
+    private final StockController controller = new StockController(stockService, valuationService);
 
     /** Scenario：PATCH /stock/{figi}/tracked 與 POST /stock/tracked/batch 支援單筆與批量停追／恢復，未知 FIGI 整批拒絕。 */
     @Test
@@ -71,12 +73,20 @@ class StockTrackedAndControllerTests {
         assertThat(single).isEqualTo(new TrackedUpdateResult("F1", "AAPL", false));
         assertThat(aapl.isTracked()).isFalse();
         verify(stockRepository).saveAndFlush(aapl);
+        verify(valuationService).onTrackedChanged(List.of("F1"));
 
+        // 重複送出相同狀態（false -> false）不重算同業估值快照
+        org.mockito.Mockito.clearInvocations(valuationService);
+        controller.updateTracked("F1", new TrackedRequest(false));
+        verify(valuationService, never()).onTrackedChanged(any());
+
+        // 批量更新時僅傳播實際狀態改變的 F1（F2 原本即為 true）
         BatchTrackedUpdateResult batch = controller.updateTrackedBatch(new BatchTrackedRequest(List.of("F1", "F2"), true));
         assertThat(batch.updatedCount()).isEqualTo(2);
         assertThat(aapl.isTracked()).isTrue();
         assertThat(msft.isTracked()).isTrue();
         verify(stockRepository).saveAllAndFlush(List.of(aapl, msft));
+        verify(valuationService).onTrackedChanged(List.of("F1"));
 
         when(stockRepository.findAllById(anyCollection())).thenReturn(List.of(aapl));
         assertThatThrownBy(() -> controller.updateTrackedBatch(new BatchTrackedRequest(List.of("F1", "MISSING"), false)))

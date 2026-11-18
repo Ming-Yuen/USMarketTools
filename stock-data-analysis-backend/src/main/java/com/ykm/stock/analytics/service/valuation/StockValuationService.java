@@ -6,6 +6,7 @@ import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.enums.FinancialConcept;
 import com.ykm.stock.analytics.enums.ValuationReason;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.CustomPeerGroupDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto.FinancialValue;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
@@ -17,6 +18,7 @@ import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockCustomPeer;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
 import com.ykm.stock.analytics.model.entity.StockQuote;
@@ -27,6 +29,7 @@ import com.ykm.stock.analytics.model.entity.StockValuationLatest;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
+import com.ykm.stock.analytics.repository.jpa.StockCustomPeerRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
@@ -37,6 +40,7 @@ import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.calculator.StockSplitCalculator;
+import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
 import com.ykm.stock.analytics.service.valuation.FinancialReportValuationCalculator.MarketMultiples;
@@ -51,6 +55,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -74,6 +80,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -89,10 +97,22 @@ public class StockValuationService {
     private static final BigDecimal TEN_PERCENT = new BigDecimal("0.10");
     private static final Set<String> US_DOMESTIC_GAAP_FORMS = Set.of("10-K", "10-K/A", "10-KT", "10-KT/A", "10-Q", "10-Q/A");
     private static final Set<String> PERIODIC_SHARE_FORMS = Set.of("10-K", "10-K/A", "10-KT", "10-KT/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A");
+    private static final Set<String> PERIODIC_STATEMENT_FORMS = Set.of(
+            "10-K", "10-K/A", "10-KT", "10-KT/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A", "6-K", "6-K/A");
     private static final int REBUILD_BATCH_SIZE = 40;
     private static final int LATEST_BATCH_SIZE = 100;
     private static final int MIN_HISTORICAL_SAMPLES = 6;
     private static final int MIN_PEER_ISSUERS = 5;
+    private static final int MIN_CUSTOM_PEER_ISSUERS = 3;
+    private static final BigDecimal MEGA_LARGE_CAP_THRESHOLD = new BigDecimal("10000000000");
+    private static final BigDecimal MID_CAP_THRESHOLD = new BigDecimal("2000000000");
+    private static final BigDecimal CUSTOM_PEER_CAP_RATIO_WARN = BigDecimal.TEN;
+    private static final BigDecimal CUSTOM_PEER_GROWTH_DIFF_WARN = new BigDecimal("0.20");
+    public static final String TIER_MEGA_LARGE = "MEGA_LARGE";
+    public static final String TIER_MID = "MID";
+    public static final String TIER_SMALL = "SMALL";
+    private static final List<String> NON_FIN_SUPPORTED_METRICS = List.of("PE", "PB", "PS", "PFCF", "EV_EBITDA");
+    private static final List<String> FIN_SUPPORTED_METRICS = List.of("PE", "PB");
 
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
@@ -105,6 +125,7 @@ public class StockValuationService {
     private final IndustryValuationConfigRepository industryConfigs;
     private final StockFinancialPeriodRepository financialPeriods;
     private final StockValuationLatestRepository latestValuations;
+    private final StockCustomPeerRepository customPeers;
     private final MarketStatusService calendar;
     private final DateTimeService dateTimeService;
     private final SecIssuerHistory issuerHistory;
@@ -114,6 +135,7 @@ public class StockValuationService {
     private final FinancialReportValuationCalculator calculator = new FinancialReportValuationCalculator();
     private final SecFinancialFactsCalculator secCalculator = new SecFinancialFactsCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
+    private final ReentrantLock localPublishLock = new ReentrantLock();
 
     private record ReportObservationKey(int statementType, LocalDate periodEnd, int periodType) {}
 
@@ -167,13 +189,30 @@ public class StockValuationService {
         return evaluateHistoryRange(stock, from, end, monthly, now);
     }
 
-    /** 供個股分析報告讀取指定交易日即時估值、當期 14 項財務原料、5 年月末序列與拆股對齊基本面快照（純唯讀，不寫庫）。 */
+    /** 供個股分析報告讀取指定交易日即時估值、當期 14 項財務原料、5 年月末序列、基本面快照與前瞻估值對齊上下文（純唯讀，不寫庫）。 */
     public record ReportValuationBundle(
             ValuationResultDto valuation,
             FinancialsDto financials,
             List<ValuationResultDto> history,
-            FundamentalSnapshotDto fundamentals
+            FundamentalSnapshotDto fundamentals,
+            LocalDate resolvedValuationDate,
+            BigDecimal closePriceAtDay,
+            BigDecimal marketCapAtDay,
+            String sharesReasonAtDay,
+            BigDecimal epsAtDay,
+            String peReasonAtDay,
+            List<StockSplit> splits,
+            String splitSyncError,
+            List<StockFinancialPeriod> storedPeriods
     ) {
+        public ReportValuationBundle(ValuationResultDto valuation, FinancialsDto financials,
+                                     List<ValuationResultDto> history, FundamentalSnapshotDto fundamentals) {
+            this(valuation, financials, history, fundamentals,
+                    valuation == null ? null : valuation.valuationDate(),
+                    valuation == null ? null : valuation.price(),
+                    null, null, null, null, List.of(), null, List.of());
+        }
+
         public ReportValuationBundle(ValuationResultDto valuation, FinancialsDto financials, List<ValuationResultDto> history) {
             this(valuation, financials, history, null);
         }
@@ -184,9 +223,6 @@ public class StockValuationService {
         String figi = stock.getFigi();
         List<StockFinancialPeriod> periods = financialPeriods.findByFigiOrderByPeriodEndAsc(figi);
         Optional<StockValuationLatest> storedLatest = latestValuations.findById(figi);
-        if (periods.isEmpty() && storedLatest.isEmpty()) {
-            return new ReportValuationBundle(null, null, List.of(), null);
-        }
 
         Instant now = dateTimeService.now();
         LocalDate lastClosed = calendar.getLastClosedTradingDay(now);
@@ -194,6 +230,46 @@ public class StockValuationService {
         LocalDate effectiveLatest = effectiveLatestQuoteDate(status, lastClosed);
         boolean defaultLatestRequest = supplementalCutoff != null && supplementalCutoff.isAfter(cutoff);
         LocalDate earliestTargetDay = defaultLatestRequest && effectiveLatest.isBefore(day) ? effectiveLatest : day;
+
+        if (periods.isEmpty() && storedLatest.isEmpty()) {
+            StockQuote singleQuote = quotes.findByFigiAndQuoteDate(figi, day);
+            if (defaultLatestRequest && singleQuote == null && day.equals(lastClosed) && effectiveLatest.isBefore(day)) {
+                StockQuote fallbackQuote = quotes.findByFigiAndQuoteDate(figi, effectiveLatest);
+                if (fallbackQuote != null) {
+                    day = effectiveLatest;
+                    cutoff = calendar.getSessionCloseAt(day);
+                    singleQuote = fallbackQuote;
+                }
+            }
+            List<StockSplit> emptyPeriodSplits = splits.findByFigiInOrderByExecutionDateAsc(List.of(figi));
+            LocalDate latestSess = defaultLatestRequest ? effectiveLatest : lastClosed;
+            String cikNoPeriod = resolveCik(stock, day);
+            boolean multiNoPeriod = cikNoPeriod != null && !stocks.findMultiSecurityIssuers(List.of(cikNoPeriod), ActiveStatus.ACTIVE).isEmpty();
+            Instant obsCutoffNoPeriod = defaultLatestRequest ? now : (supplementalCutoff != null ? supplementalCutoff : cutoff);
+            StockShareObservation latestObsNoPeriod = shareObservations
+                    .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", obsCutoffNoPeriod).orElse(null);
+            StockShareObservation cutoffObsNoPeriod = defaultLatestRequest && day.equals(latestSess) ? latestObsNoPeriod
+                    : shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", obsCutoffNoPeriod).orElse(null);
+            StockShareObservation closingSnapNoPeriod = null;
+            if (day.equals(latestSess)) {
+                List<StockShareObservation> snaps = shareObservations.findLatestClosingSnapshotAt(
+                        List.of(figi), calendar.getSessionOpenAt(day), cutoff, obsCutoffNoPeriod);
+                if (!snaps.isEmpty()) closingSnapNoPeriod = snaps.getFirst();
+            }
+            StockShareObservation primaryObsNoPeriod = closingSnapNoPeriod != null ? closingSnapNoPeriod : cutoffObsNoPeriod;
+            boolean verifiedNoPeriod = multiNoPeriod && (defaultLatestRequest
+                    ? isMultiClassVerifiedOneToOne(cikNoPeriod, latestObsNoPeriod, emptyPeriodSplits, now)
+                    : isMultiClassVerifiedAtCutoff(cikNoPeriod, primaryObsNoPeriod, day, obsCutoffNoPeriod, emptyPeriodSplits));
+            BigDecimal closeNoPeriod = singleQuote != null ? singleQuote.getClosePrice() : null;
+            ShareEvaluation shareEvalNoPeriod = evaluateQuoteOnlyMarketCap(
+                    singleQuote, emptyPeriodSplits, status, primaryObsNoPeriod,
+                    multiNoPeriod, verifiedNoPeriod, day, cutoff, obsCutoffNoPeriod, latestSess);
+            return new ReportValuationBundle(
+                    null, null, List.of(), null, day, closeNoPeriod,
+                    shareEvalNoPeriod.marketCap(), shareEvalNoPeriod.sharesReason(),
+                    null, "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE", emptyPeriodSplits, splitSyncError(status), List.of());
+        }
+
         LocalDate historyFrom = earliestTargetDay.minusYears(5);
 
         List<StockQuote> quoteRows = quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(figi, historyFrom, day);
@@ -233,7 +309,8 @@ public class StockValuationService {
         StockFinancialPeriod matchedPeriod = matchPeriod(periods, day);
         StockShareObservation primaryObs = closingSnap != null ? closingSnap : cutoffObs;
         // 單次計算當日股數與市值，共用傳入估值、14 項財務原料、價格換算分母與基本面快照，消除口徑微差
-        ShareEvaluation dayShareEval = matchedPeriod == null ? null
+        ShareEvaluation dayShareEval = matchedPeriod == null
+                ? evaluateQuoteOnlyMarketCap(targetQuote, stockSplits, status, primaryObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest)
                 : evaluateDayShares(targetQuote, matchedPeriod, stockSplits, status,
                         primaryObs, cutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest);
 
@@ -262,22 +339,13 @@ public class StockValuationService {
         String fallbackIndustryCode = fellBackToEffectiveLatest ? null : industryCode;
         String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : fallbackIndustryCode;
 
-        BigDecimal currentSelectedMultiple = positiveMetricValue(dayValuation.metrics(), selectedMetric);
-        ValuationReferenceDto historicalRef = buildHistoricalReference(
-                selectedMetric, currentSelectedMultiple, monthlyHistory, matchedPeriod, denoms, stock.getCurrency(), financialInstitution, day);
-        ValuationReferenceDto peerRef = buildPeerReference(
-                selectedMetric, currentSelectedMultiple, resolvedIndustryCode, day, historicalDate, matchedPeriod, denoms, stock.getCurrency(), financialInstitution);
-        ValuationReferenceDto assumptionRef = buildIndustryAssumption(
-                selectedMetric, dayValuation.metrics(), modelCtx, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency());
-
-        ValuationResultDto enrichedValuation = dayValuation.withReferences(
-                resolvedModelCode, selectedMetric, historicalRef, peerRef, assumptionRef);
-
         BigDecimal closePrice = targetQuote != null ? targetQuote.getClosePrice() : null;
         BigDecimal peAtDay = positiveMetricValue(dayValuation.metrics(), "PE");
         String peMetricReason = dayValuation.metrics() != null && dayValuation.metrics().pe() != null
                 && dayValuation.metrics().pe().reasonCode() != null
                 ? dayValuation.metrics().pe().reasonCode() : denoms.peReason();
+        BigDecimal dayMarketCap = dayShareEval == null ? null : dayShareEval.marketCap();
+        String daySharesReason = dayShareEval == null ? null : dayShareEval.sharesReason();
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 periods,
                 matchedPeriod,
@@ -285,8 +353,8 @@ public class StockValuationService {
                 day,
                 stock.getCurrency(),
                 closePrice,
-                dayShareEval == null ? null : dayShareEval.marketCap(),
-                dayShareEval == null ? null : dayShareEval.sharesReason(),
+                dayMarketCap,
+                daySharesReason,
                 denoms.epsAtDay(),
                 peMetricReason,
                 peAtDay,
@@ -294,7 +362,97 @@ public class StockValuationService {
                 splitSyncError(status)
         ));
 
-        return new ReportValuationBundle(enrichedValuation, financialsDto, monthlyHistory, fundamentalsDto);
+        BigDecimal currentSelectedMultiple = positiveMetricValue(dayValuation.metrics(), selectedMetric);
+        ValuationReferenceDto historicalRef = buildHistoricalReference(
+                selectedMetric, currentSelectedMultiple, monthlyHistory, matchedPeriod, denoms, stock.getCurrency(), financialInstitution, day);
+        BigDecimal targetRevGrowthYoy = extractAvailableMetric(fundamentalsDto == null ? null : fundamentalsDto.revenueGrowthYoy());
+        ValuationReferenceDto peerRef = buildPeerReference(
+                stock, selectedMetric, dayValuation.metrics(), resolvedIndustryCode, day, historicalDate,
+                matchedPeriod, denoms, stock.getCurrency(), dayMarketCap, targetRevGrowthYoy, financialInstitution);
+        ValuationReferenceDto assumptionRef = buildIndustryAssumption(
+                selectedMetric, dayValuation.metrics(), modelCtx, resolvedIndustryCode, historicalDate, matchedPeriod, denoms, stock.getCurrency());
+
+        ValuationResultDto enrichedValuation = dayValuation.withReferences(
+                resolvedModelCode, selectedMetric, historicalRef, peerRef, assumptionRef);
+
+        // 顯式查詢指定估值日截點時，前瞻預期對比之市值與 TTM EPS 僅採用截至該截點已公開之股數與盈利版本
+        BigDecimal forwardMarketCap = dayMarketCap;
+        String forwardSharesReason = daySharesReason;
+        BigDecimal forwardEpsAtDay = denoms.epsAtDay();
+        String forwardPeReason = peMetricReason;
+        if (!defaultLatestRequest) {
+            Instant forwardCutoff = supplementalCutoff != null ? supplementalCutoff : cutoff;
+            LocalDate queryDay = day;
+            StockShareObservation strictCutoffObs = shareObservations
+                    .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", forwardCutoff).orElse(null);
+            StockShareObservation strictClosingSnap = null;
+            if (day.equals(latestSessionForRequest)) {
+                List<StockShareObservation> strictSnaps = shareObservations.findLatestClosingSnapshotAt(
+                        List.of(figi), calendar.getSessionOpenAt(day), cutoff, forwardCutoff);
+                if (!strictSnaps.isEmpty()) strictClosingSnap = strictSnaps.getFirst();
+            }
+            StockShareObservation strictPrimaryObs = strictClosingSnap != null ? strictClosingSnap : strictCutoffObs;
+            boolean forwardVerifiedOneToOne = multiSecurityIssuer
+                    && isMultiClassVerifiedAtCutoff(cik, strictPrimaryObs, queryDay, forwardCutoff, stockSplits);
+
+            List<StockFinancialPeriod> publishedPeriods = periods.stream()
+                    .filter(p -> isPeriodPublishedAtCutoff(p, queryDay, forwardCutoff))
+                    .toList();
+            StockFinancialPeriod latestPublished = matchPeriod(publishedPeriods, day);
+            List<StockFinancialPeriod> shareKnownPeriods = periods.stream()
+                    .filter(p -> hasCutoffEligibleShares(p, queryDay, forwardCutoff))
+                    .toList();
+            StockFinancialPeriod shareMatched = matchPeriod(shareKnownPeriods, day);
+
+            ShareEvaluation forwardShareEval;
+            if (latestPublished != null && hasCutoffEligibleShares(latestPublished, queryDay, forwardCutoff)) {
+                forwardShareEval = evaluateDayShares(targetQuote, latestPublished, stockSplits, status,
+                        strictPrimaryObs, strictCutoffObs, multiSecurityIssuer, forwardVerifiedOneToOne,
+                        day, cutoff, forwardCutoff, latestSessionForRequest);
+            } else {
+                ShareEvaluation obsEval = evaluateQuoteOnlyMarketCap(targetQuote, stockSplits, status,
+                        strictPrimaryObs, multiSecurityIssuer, forwardVerifiedOneToOne,
+                        day, cutoff, forwardCutoff, latestSessionForRequest);
+                if (obsEval.sharesAtDay() != null || shareMatched == null) {
+                    forwardShareEval = obsEval;
+                } else {
+                    forwardShareEval = evaluateDayShares(targetQuote, shareMatched, stockSplits, status,
+                            strictPrimaryObs, strictCutoffObs, multiSecurityIssuer, forwardVerifiedOneToOne,
+                            day, cutoff, forwardCutoff, latestSessionForRequest);
+                }
+            }
+
+            List<StockFinancialPeriod> epsKnownPeriods = periods.stream()
+                    .filter(p -> {
+                        if (p.getPeriodEnd() == null || p.getPeriodEnd().isAfter(queryDay)) return false;
+                        Instant epsAvail = p.getEpsTtmAvailableAt() != null ? p.getEpsTtmAvailableAt() : p.getAvailableAt();
+                        if (epsAvail == null || epsAvail.isAfter(forwardCutoff)) return false;
+                        boolean usesSec = p.getEpsTtmSource() != null && p.getEpsTtmSource().contains("SEC");
+                        if (!usesSec) return true;
+                        LocalDate epsSecFrom = p.getEpsTtmSecAvailableFromDate() != null
+                                ? p.getEpsTtmSecAvailableFromDate() : p.getSecAvailableFromDate();
+                        return epsSecFrom == null || !epsSecFrom.isAfter(queryDay);
+                    })
+                    .toList();
+            StockFinancialPeriod epsMatched = matchPeriod(epsKnownPeriods, day);
+            boolean epsBlockedByMultiClass = epsMatched != null && multiSecurityIssuer && !forwardVerifiedOneToOne
+                    && epsMatched.getEpsTtmSource() != null && epsMatched.getEpsTtmSource().contains("SEC");
+            if (epsBlockedByMultiClass) {
+                forwardEpsAtDay = null;
+                forwardPeReason = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
+            } else {
+                DayDenominators cutoffDenoms = resolveDayDenominators(stock, status, epsMatched, stockSplits, day, forwardShareEval);
+                forwardEpsAtDay = cutoffDenoms.epsAtDay();
+                forwardPeReason = cutoffDenoms.peReason();
+            }
+            forwardMarketCap = forwardShareEval == null ? null : forwardShareEval.marketCap();
+            forwardSharesReason = forwardShareEval == null ? null : forwardShareEval.sharesReason();
+        }
+
+        return new ReportValuationBundle(
+                enrichedValuation, financialsDto, monthlyHistory, fundamentalsDto,
+                day, closePrice, forwardMarketCap, forwardSharesReason, forwardEpsAtDay, forwardPeReason,
+                stockSplits, splitSyncError(status), periods);
     }
 
     /** 當財報、SEC 披露或拆股有變更時，整股重建財季分母並刷新最新收市估值快照。 */
@@ -377,107 +535,1015 @@ public class StockValuationService {
         }
     }
 
-    /** 批次刷新指定股票的最新估值快照（requestedDate 為 null 時按各股最新已入庫收市行情日，避免行情尚未同步時沖掉既有有效快照）。 */
+    private record PendingTargetEvaluation(
+            Stock stock,
+            LocalDate valuationDate,
+            Instant priorCalculatedAt,
+            ValuationResultDto evaluated,
+            StockValuationLatest builtSnapshot,
+            String selectedMetric,
+            String industryCode,
+            boolean financialInstitution,
+            StockFinancialPeriod matchedPeriod,
+            DayDenominators denoms,
+            ValuationReferenceDto historicalRef,
+            BigDecimal marketCap,
+            BigDecimal revenueGrowthYoy,
+            boolean directRefresh
+    ) {}
+
+    private record IssuerSnapshotRow(String rawIssuerKey, StockValuationLatest snapshot) {}
+
+    private record IndustryDateKey(String industryCode, LocalDate valuationDate) {}
+
+    private record IssuerPeerAggregate(
+            String canonicalIssuerKey,
+            BigDecimal usdMarketCapMedian,
+            String marketCapTier,
+            Map<String, BigDecimal> metricMedians,
+            BigDecimal revenueGrowthYoyMedian,
+            BigDecimal roeMedian,
+            BigDecimal fcfMarginMedian
+    ) {}
+
+    private void addIndustryDatePair(Set<IndustryDateKey> pairs, String industryCode, LocalDate valuationDate) {
+        if (industryCode != null && !industryCode.isBlank() && valuationDate != null) {
+            pairs.add(new IndustryDateKey(industryCode, valuationDate));
+        }
+    }
+
+    private List<String> queryFigisByIndustryDatePairs(Set<IndustryDateKey> pairs) {
+        if (pairs == null || pairs.isEmpty()) return List.of();
+        Map<LocalDate, Set<String>> industriesByDate = new LinkedHashMap<>();
+        for (IndustryDateKey pair : pairs) {
+            industriesByDate.computeIfAbsent(pair.valuationDate(), k -> new LinkedHashSet<>()).add(pair.industryCode());
+        }
+        Set<String> figis = new LinkedHashSet<>();
+        for (Map.Entry<LocalDate, Set<String>> entry : industriesByDate.entrySet()) {
+            List<String> rows = latestValuations.findActiveTrackedFigisByIndustryCodesAndDates(
+                    entry.getValue(), List.of(entry.getKey()));
+            if (rows != null) {
+                figis.addAll(rows);
+            }
+        }
+        return List.copyOf(figis);
+    }
+
+    /** 批次刷新指定股票的最新估值快照（兩階段計算：先記憶體評估個股與五年分位，再整合變更前後同業與自訂對標一次性寫入完整快照與 verdict）。 */
     public void refreshLatestValuations(Collection<String> figis, LocalDate requestedDate) {
         if (figis == null || figis.isEmpty()) return;
-        List<String> orderedFigis = figis.stream().filter(Objects::nonNull).distinct().toList();
+        List<String> orderedFigis = figis.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(s -> !s.isBlank()).distinct().toList();
+        if (orderedFigis.isEmpty()) return;
         Instant calculatedAt = dateTimeService.now();
         LocalDate lastClosed = calendar.getLastClosedTradingDay(calculatedAt);
 
+        Map<String, PendingTargetEvaluation> pendingByFigi = new LinkedHashMap<>();
+        Set<IndustryDateKey> directAffectedPairs = new LinkedHashSet<>();
+
+        // 階段一：批次載入個股輸入，於記憶體完成當日倍數、基本面與五年月末歷史參考計算（不提前寫入缺 verdict 的半成品）
         for (List<String> batchFigis : Lists.partition(orderedFigis, LATEST_BATCH_SIZE)) {
+            Map<String, StockValuationLatest> priorLatestMap = latestValuations.findByFigiIn(batchFigis).stream()
+                    .collect(Collectors.toMap(StockValuationLatest::getFigi, row -> row));
+
             List<Stock> batchStocks = stocks.findAllById(batchFigis).stream()
                     .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
                             && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
                     .toList();
             if (batchStocks.isEmpty()) continue;
 
-            List<String> activeFigis = batchStocks.stream().map(Stock::getFigi).toList();
-            Map<String, StockStatus> statusPreview = statuses.findAllById(activeFigis).stream()
-                    .collect(Collectors.toMap(StockStatus::getFigi, row -> row));
-            Map<String, LocalDate> dateByFigi = new HashMap<>();
-            Set<LocalDate> distinctDates = new LinkedHashSet<>();
-            for (String figi : activeFigis) {
-                LocalDate targetDay = requestedDate != null ? requestedDate : effectiveLatestQuoteDate(statusPreview.get(figi), lastClosed);
-                dateByFigi.put(figi, targetDay);
-                distinctDates.add(targetDay);
+            List<PendingTargetEvaluation> batchEvaluated = evaluateTargetBatchInMemory(
+                    batchStocks, priorLatestMap, requestedDate, null, lastClosed, calculatedAt, true);
+            for (PendingTargetEvaluation item : batchEvaluated) {
+                String evaluatedFigi = item.stock().getFigi();
+                pendingByFigi.put(evaluatedFigi, item);
+                StockValuationLatest prior = priorLatestMap.get(evaluatedFigi);
+                if (prior != null) {
+                    addIndustryDatePair(directAffectedPairs, prior.getIndustryCode(), prior.getValuationDate());
+                }
+                addIndustryDatePair(directAffectedPairs, item.industryCode(), item.valuationDate());
+            }
+        }
+        if (pendingByFigi.isEmpty()) return;
+
+        // 階段二：僅針對本輪直接變動股票的新舊精確 (industryCode, valuationDate) 配對與一層自訂引用收集反向目標
+        Set<String> actuallyUpdatedDirectFigis = new LinkedHashSet<>(pendingByFigi.keySet());
+        Set<String> externalCandidateFigis = new LinkedHashSet<>(queryFigisByIndustryDatePairs(directAffectedPairs));
+        List<String> customReferencers = customPeers.findEligibleTargetFigisByPeerFigiIn(actuallyUpdatedDirectFigis);
+        if (customReferencers != null) externalCandidateFigis.addAll(customReferencers);
+        externalCandidateFigis.removeAll(actuallyUpdatedDirectFigis);
+
+        loadExternalAffectedEvaluations(externalCandidateFigis, pendingByFigi, lastClosed, calculatedAt);
+
+        commitEvaluatedTargetsWithPeerVerdicts(pendingByFigi, Set.of(), lastClosed, calculatedAt);
+    }
+
+    /** 當人工追蹤開關（tracked）變更時，於單一發布鎖內同步刷新恢復追蹤股快照及受影響同業／自訂引用者的 verdict。 */
+    public void onTrackedChanged(Collection<String> changedFigis) {
+        if (changedFigis == null || changedFigis.isEmpty()) return;
+        List<String> normalized = changedFigis.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(s -> !s.isBlank()).distinct().toList();
+        if (normalized.isEmpty()) return;
+
+        Instant calculatedAt = dateTimeService.now();
+        LocalDate lastClosed = calendar.getLastClosedTradingDay(calculatedAt);
+        List<Stock> foundStocks = stocks.findAllById(normalized);
+        List<Stock> reEnabledStocks = foundStocks.stream()
+                .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
+                        && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                .toList();
+        Set<String> reEnabledFigis = reEnabledStocks.stream().map(Stock::getFigi).collect(Collectors.toCollection(LinkedHashSet::new));
+        List<String> disabled = normalized.stream().filter(f -> !reEnabledFigis.contains(f)).toList();
+
+        Map<String, PendingTargetEvaluation> pendingByFigi = new LinkedHashMap<>();
+        Set<IndustryDateKey> directAffectedPairs = new LinkedHashSet<>();
+
+        if (!reEnabledStocks.isEmpty()) {
+            for (List<Stock> batchStocks : Lists.partition(reEnabledStocks, LATEST_BATCH_SIZE)) {
+                List<String> batchFigis = batchStocks.stream().map(Stock::getFigi).toList();
+                Map<String, StockValuationLatest> priorMap = latestValuations.findByFigiIn(batchFigis).stream()
+                        .collect(Collectors.toMap(StockValuationLatest::getFigi, row -> row));
+                List<PendingTargetEvaluation> batchEval = evaluateTargetBatchInMemory(
+                        batchStocks, priorMap, null, null, lastClosed, calculatedAt, true);
+                for (PendingTargetEvaluation item : batchEval) {
+                    String f = item.stock().getFigi();
+                    pendingByFigi.put(f, item);
+                    StockValuationLatest prior = priorMap.get(f);
+                    if (prior != null) {
+                        addIndustryDatePair(directAffectedPairs, prior.getIndustryCode(), prior.getValuationDate());
+                    }
+                    addIndustryDatePair(directAffectedPairs, item.industryCode(), item.valuationDate());
+                }
+            }
+        }
+
+        if (!disabled.isEmpty()) {
+            for (StockValuationLatest prior : latestValuations.findByFigiIn(disabled)) {
+                addIndustryDatePair(directAffectedPairs, prior.getIndustryCode(), prior.getValuationDate());
+            }
+        }
+
+        Set<String> reverseProbeKeys = new LinkedHashSet<>(pendingByFigi.keySet());
+        reverseProbeKeys.addAll(disabled);
+        if (reverseProbeKeys.isEmpty()) return;
+
+        Set<String> externalAffected = new LinkedHashSet<>(queryFigisByIndustryDatePairs(directAffectedPairs));
+        List<String> referencers = customPeers.findEligibleTargetFigisByPeerFigiIn(reverseProbeKeys);
+        if (referencers != null) externalAffected.addAll(referencers);
+        externalAffected.removeAll(reverseProbeKeys);
+
+        loadExternalAffectedEvaluations(externalAffected, pendingByFigi, lastClosed, calculatedAt);
+        // 即使預檢時無受影響對象，仍進入發布鎖與狀態列鎖重查，防止停追提交前另一交易併發新增引用而漏算
+        commitEvaluatedTargetsWithPeerVerdicts(pendingByFigi, disabled, lastClosed, calculatedAt);
+    }
+
+    private LocalDate resolveTargetModelValuationDate(String figi, LocalDate lastClosed) {
+        Optional<StockValuationLatest> stored = latestValuations.findById(figi);
+        if (stored.isPresent() && stored.get().getValuationDate() != null) {
+            return stored.get().getValuationDate();
+        }
+        StockStatus st = statuses.findById(figi).orElse(null);
+        return effectiveLatestQuoteDate(st, lastClosed);
+    }
+
+    /** Controller 入口：讀取指定股票的自訂同業對標組設定、可選覆寫指標及各對手最新追蹤／市值狀態。 */
+    @Transactional(readOnly = true)
+    public CustomPeerGroupDto getCustomPeers(String figi) {
+        Stock target = requireTargetStock(figi);
+        Instant now = dateTimeService.now();
+        LocalDate lastClosed = calendar.getLastClosedTradingDay(now);
+        LocalDate modelDate = resolveTargetModelValuationDate(target.getFigi(), lastClosed);
+        IndustryModelContext modelCtx = resolveIndustryModel(target, null, calendar.getSessionCloseAt(modelDate), now);
+        List<String> supported = modelCtx != null && modelCtx.financialInstitution() ? FIN_SUPPORTED_METRICS : NON_FIN_SUPPORTED_METRICS;
+
+        List<StockCustomPeer> rows = customPeers.findByFigiOrderBySortOrderAsc(target.getFigi());
+        if (rows.isEmpty()) {
+            return new CustomPeerGroupDto(target.getFigi(), null, supported, List.of());
+        }
+        String preferredMetric = rows.getFirst().getPreferredMetric();
+        List<String> peerFigis = rows.stream().map(StockCustomPeer::getPeerFigi).toList();
+        Map<String, Stock> peerStockMap = stocks.findAllById(peerFigis).stream()
+                .collect(Collectors.toMap(Stock::getFigi, s -> s));
+        Map<String, StockValuationLatest> peerLatestMap = latestValuations.findByFigiIn(peerFigis).stream()
+                .collect(Collectors.toMap(StockValuationLatest::getFigi, v -> v));
+
+        List<CustomPeerGroupDto.PeerItem> items = new ArrayList<>(rows.size());
+        for (StockCustomPeer row : rows) {
+            Stock ps = peerStockMap.get(row.getPeerFigi());
+            StockValuationLatest pv = peerLatestMap.get(row.getPeerFigi());
+            String pInd = pv != null && pv.getIndustryCode() != null ? pv.getIndustryCode()
+                    : (ps != null && ps.getClassification() != null ? ps.getClassification().getCode() : null);
+            String pCur = pv != null && pv.getCurrency() != null ? pv.getCurrency() : (ps != null ? ps.getCurrency() : null);
+            items.add(new CustomPeerGroupDto.PeerItem(
+                    row.getPeerFigi(),
+                    ps != null ? ps.getSymbol() : row.getPeerFigi(),
+                    ps != null ? ps.getLongName() : null,
+                    pInd,
+                    ps != null && ps.getActiveStatus() == ActiveStatus.ACTIVE,
+                    ps != null && ps.isTracked(),
+                    pv != null ? pv.getValuationDate() : null,
+                    pCur,
+                    pv != null ? pv.getMarketCap() : null,
+                    pv != null ? pv.getMarketCapTier() : null
+            ));
+        }
+        return new CustomPeerGroupDto(target.getFigi(), preferredMetric, supported, items);
+    }
+
+    /** Controller 入口：整組原子替換自訂對標清單與選填覆寫指標，並於同一交易鎖內同步更新目標股最新快照之 verdict。 */
+    public CustomPeerGroupDto saveCustomPeers(String figi, List<String> peerFigis, String preferredMetric) {
+        if (peerFigis == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_PEERS_LIST_REQUIRED");
+        }
+        Stock target = requireTargetStock(figi);
+        Instant now = dateTimeService.now();
+        LocalDate lastClosed = calendar.getLastClosedTradingDay(now);
+        LocalDate modelDate = resolveTargetModelValuationDate(target.getFigi(), lastClosed);
+        IndustryModelContext modelCtx = resolveIndustryModel(target, null, calendar.getSessionCloseAt(modelDate), now);
+        boolean financial = modelCtx != null && modelCtx.financialInstitution();
+        List<String> supported = financial ? FIN_SUPPORTED_METRICS : NON_FIN_SUPPORTED_METRICS;
+
+        String normalizedMetric = preferredMetric != null && !preferredMetric.isBlank()
+                ? preferredMetric.trim().toUpperCase() : null;
+        if (normalizedMetric != null && !supported.contains(normalizedMetric)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_CUSTOM_PEER_METRIC");
+        }
+
+        List<String> deduplicated = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String pf : peerFigis) {
+            if (pf == null || pf.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_PEER_FIGI_BLANK");
+            }
+            String trimmed = pf.trim();
+            if (seen.add(trimmed)) {
+                deduplicated.add(trimmed);
+            }
+        }
+
+        if (!deduplicated.isEmpty()) {
+            Map<String, Stock> peerMap = stocks.findAllById(deduplicated).stream()
+                    .collect(Collectors.toMap(Stock::getFigi, s -> s));
+            if (peerMap.size() != deduplicated.size()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PEER_STOCK_NOT_FOUND");
+            }
+            for (String pf : deduplicated) {
+                Stock peerStock = peerMap.get(pf);
+                if (!SecurityTypePolicy.isOperatingCompanyType(peerStock.getStockType())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_CUSTOM_PEER_TYPE");
+                }
+                if (isSelfOrSiblingIssuer(target, modelDate, peerStock.getCik(), peerStock.getFigi())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_PEER_SELF_OR_SIBLING_FORBIDDEN");
+                }
+            }
+        }
+
+        // 先取得統一發布鎖，再按與批次刷新一致之 FIGI 字典序單次鎖定目標股與被引用對手，完成替換與 verdict 更新
+        List<String> lockOrder = new ArrayList<>();
+        lockOrder.add(target.getFigi());
+        lockOrder.addAll(deduplicated);
+        List<String> sortedLocks = lockOrder.stream().distinct().sorted().toList();
+
+        runWithPublishLock(() -> transactions.executeWithoutResult(tx -> {
+            entityManager.flush();
+            entityManager.clear();
+            statuses.acquireValuationPublishLock();
+            statuses.findAllByIdForUpdate(sortedLocks);
+
+            Stock lockedTarget = stocks.findById(target.getFigi()).orElse(target);
+            StockValuationLatest existing = latestValuations.findById(target.getFigi()).orElse(null);
+            LocalDate lockedModelDate = existing != null && existing.getValuationDate() != null
+                    ? existing.getValuationDate() : modelDate;
+            IndustryModelContext lockedModelCtx = resolveIndustryModel(
+                    lockedTarget, null, calendar.getSessionCloseAt(lockedModelDate), now);
+            List<String> lockedSupported = lockedModelCtx != null && lockedModelCtx.financialInstitution()
+                    ? FIN_SUPPORTED_METRICS : NON_FIN_SUPPORTED_METRICS;
+            if (normalizedMetric != null && !lockedSupported.contains(normalizedMetric)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_CUSTOM_PEER_METRIC");
             }
 
-            Map<String, Map<LocalDate, StockQuote>> quotesByFigiAndDate = new HashMap<>();
-            Map<LocalDate, Map<String, StockShareObservation>> closingSnapsByDate = new HashMap<>();
-            for (LocalDate d : distinctDates) {
-                Instant dClose = calendar.getSessionCloseAt(d);
-                for (StockQuote q : quotes.findStoredQuotes(activeFigis, d)) {
+            customPeers.deleteByFigi(target.getFigi());
+            customPeers.flush();
+            List<StockCustomPeer> persistedRows = new ArrayList<>(deduplicated.size());
+            for (int i = 0; i < deduplicated.size(); i++) {
+                StockCustomPeer row = new StockCustomPeer();
+                row.setFigi(target.getFigi());
+                row.setPeerFigi(deduplicated.get(i));
+                row.setPreferredMetric(normalizedMetric);
+                row.setSortOrder(i);
+                row.setUpdatedAt(now);
+                entityManager.persist(row);
+                persistedRows.add(row);
+            }
+            entityManager.flush();
+
+            if (existing != null && existing.getValuationDate() != null
+                    && lockedTarget.isTracked()
+                    && lockedTarget.getActiveStatus() == ActiveStatus.ACTIVE) {
+                LocalDate valDate = existing.getValuationDate();
+                Instant evalCut = laterInstant(laterInstant(now, dateTimeService.now()), existing.getCalculatedAt());
+                List<PendingTargetEvaluation> freshEvalList = evaluateTargetBatchInMemory(
+                        List.of(lockedTarget),
+                        Map.of(target.getFigi(), existing),
+                        null,
+                        Map.of(target.getFigi(), valDate),
+                        lastClosed,
+                        evalCut,
+                        false
+                );
+                if (!freshEvalList.isEmpty()) {
+                    PendingTargetEvaluation freshEval = freshEvalList.getFirst();
+                    List<IssuerSnapshotRow> customCandidateRows = new ArrayList<>();
+                    if (!deduplicated.isEmpty()) {
+                        List<Object[]> rawCustom = latestValuations.findActiveTrackedCustomPeerSnapshots(deduplicated, List.of(valDate));
+                        if (rawCustom != null) {
+                            for (Object[] tuple : rawCustom) {
+                                if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                                        && tuple[1] instanceof StockValuationLatest snap) {
+                                    customCandidateRows.add(new IssuerSnapshotRow(rawKey, snap));
+                                }
+                            }
+                        }
+                    }
+                    List<IssuerSnapshotRow> industryCandidateRows = new ArrayList<>();
+                    if (freshEval.industryCode() != null && !freshEval.industryCode().isBlank()) {
+                        List<Object[]> rawInd = latestValuations.findActiveTrackedPeerSnapshots(freshEval.industryCode(), valDate);
+                        if (rawInd != null) {
+                            for (Object[] tuple : rawInd) {
+                                if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                                        && tuple[1] instanceof StockValuationLatest snap) {
+                                    industryCandidateRows.add(new IssuerSnapshotRow(rawKey, snap));
+                                }
+                            }
+                        }
+                    }
+                    ValuationReferenceDto peerRef = computePeerReferenceFromSnapshots(
+                            lockedTarget,
+                            freshEval.selectedMetric(),
+                            freshEval.evaluated().metrics(),
+                            freshEval.industryCode(),
+                            valDate,
+                            false,
+                            freshEval.matchedPeriod(),
+                            freshEval.denoms(),
+                            lockedTarget.getCurrency(),
+                            freshEval.marketCap(),
+                            freshEval.revenueGrowthYoy(),
+                            freshEval.financialInstitution(),
+                            persistedRows,
+                            customCandidateRows,
+                            industryCandidateRows
+                    );
+                    String verdict = ValuationSummaryCalculator.computeObjectiveVerdict(
+                            freshEval.evaluated().price(), freshEval.historicalRef(), peerRef);
+                    existing.setVerdict(verdict);
+                    entityManager.merge(existing);
+                    entityManager.flush();
+                }
+            }
+        }));
+
+        return getCustomPeers(target.getFigi());
+    }
+
+    /** Controller 入口：清空目標股自訂對標組並即時還原為預設產業規模分層 verdict。 */
+    public CustomPeerGroupDto clearCustomPeers(String figi) {
+        return saveCustomPeers(figi, List.of(), null);
+    }
+
+    private Stock requireTargetStock(String figi) {
+        if (figi == null || figi.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "figi is required");
+        }
+        Stock stock = stocks.findById(figi.trim())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND"));
+        if (!SecurityTypePolicy.isOperatingCompanyType(stock.getStockType())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "STOCK_TYPE_NOT_SUPPORTED");
+        }
+        return stock;
+    }
+
+    private List<PendingTargetEvaluation> evaluateTargetBatchInMemory(
+            List<Stock> batchStocks,
+            Map<String, StockValuationLatest> priorLatestMap,
+            LocalDate requestedDate,
+            Map<String, LocalDate> explicitDateByFigi,
+            LocalDate lastClosed,
+            Instant calculatedAt,
+            boolean directRefresh) {
+        List<String> activeFigis = batchStocks.stream().map(Stock::getFigi).toList();
+        Map<String, StockStatus> statusPreview = statuses.findAllById(activeFigis).stream()
+                .collect(Collectors.toMap(StockStatus::getFigi, row -> row));
+
+        Map<String, LocalDate> dateByFigi = new HashMap<>();
+        Map<LocalDate, List<Stock>> stocksByDate = new LinkedHashMap<>();
+        for (Stock stock : batchStocks) {
+            String figi = stock.getFigi();
+            LocalDate targetDay = explicitDateByFigi != null && explicitDateByFigi.containsKey(figi)
+                    ? explicitDateByFigi.get(figi)
+                    : (requestedDate != null ? requestedDate : effectiveLatestQuoteDate(statusPreview.get(figi), lastClosed));
+            StockValuationLatest prior = priorLatestMap.get(figi);
+            if (directRefresh && prior != null && prior.getValuationDate() != null && targetDay.isBefore(prior.getValuationDate())) {
+                continue;
+            }
+            dateByFigi.put(figi, targetDay);
+            stocksByDate.computeIfAbsent(targetDay, k -> new ArrayList<>()).add(stock);
+        }
+        if (dateByFigi.isEmpty()) return List.of();
+
+        List<String> eligibleFigis = new ArrayList<>(dateByFigi.keySet());
+        Map<String, Map<LocalDate, StockQuote>> quotesByFigiAndDate = new HashMap<>();
+        Map<LocalDate, Map<String, StockShareObservation>> closingSnapsByDate = new HashMap<>();
+        Map<String, Map<LocalDate, StockQuote>> monthEndQuotesByFigi = new HashMap<>();
+        Map<String, IndustryModelContext> modelsByFigi = new HashMap<>();
+
+        for (Map.Entry<LocalDate, List<Stock>> entry : stocksByDate.entrySet()) {
+            LocalDate d = entry.getKey();
+            List<Stock> dateStocks = entry.getValue();
+            List<String> dateFigis = dateStocks.stream().map(Stock::getFigi).toList();
+            Instant dClose = calendar.getSessionCloseAt(d);
+
+            List<StockQuote> dayQuotes = quotes.findStoredQuotes(dateFigis, d);
+            if (dayQuotes != null) {
+                for (StockQuote q : dayQuotes) {
                     quotesByFigiAndDate.computeIfAbsent(q.getFigi(), k -> new HashMap<>()).put(d, q);
                 }
-                Map<String, StockShareObservation> snaps = shareObservations
-                        .findLatestClosingSnapshotAt(activeFigis, calendar.getSessionOpenAt(d), dClose, calculatedAt)
-                        .stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
-                closingSnapsByDate.put(d, snaps);
+            }
+            List<StockShareObservation> snapsList = shareObservations
+                    .findLatestClosingSnapshotAt(dateFigis, calendar.getSessionOpenAt(d), dClose, calculatedAt);
+            Map<String, StockShareObservation> snaps = snapsList == null ? Map.of()
+                    : snapsList.stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
+            closingSnapsByDate.put(d, snaps);
+
+            List<StockQuote> monthRows = quotes.findMonthEndQuotes(dateFigis, d.minusYears(5), d);
+            Map<String, List<StockQuote>> groupedMonthRows = new HashMap<>();
+            if (monthRows != null) {
+                for (StockQuote mq : monthRows) {
+                    groupedMonthRows.computeIfAbsent(mq.getFigi(), k -> new ArrayList<>()).add(mq);
+                }
+            }
+            for (String f : dateFigis) {
+                List<StockQuote> sorted = new ArrayList<>(groupedMonthRows.getOrDefault(f, List.of()));
+                StockQuote dayQ = quotesByFigiAndDate.getOrDefault(f, Map.of()).get(d);
+                if (dayQ != null && sorted.stream().noneMatch(item -> d.equals(item.getQuoteDate()))) {
+                    sorted.add(dayQ);
+                }
+                sorted.sort(Comparator.comparing(StockQuote::getQuoteDate));
+                Map<LocalDate, StockQuote> qMap = new LinkedHashMap<>();
+                for (StockQuote sq : sorted) {
+                    if (!sq.getQuoteDate().isAfter(d)) {
+                        qMap.put(sq.getQuoteDate(), sq);
+                    }
+                }
+                monthEndQuotesByFigi.put(f, qMap);
             }
 
-            Map<String, List<StockFinancialPeriod>> periodsByFigi = financialPeriods.findByFigiInOrderByFigiAscPeriodEndAsc(activeFigis)
-                    .stream().collect(Collectors.groupingBy(StockFinancialPeriod::getFigi));
-            Map<String, List<StockSplit>> splitsByFigi = splits.findByFigiInOrderByExecutionDateAsc(activeFigis).stream()
-                    .collect(Collectors.groupingBy(StockSplit::getFigi));
+            modelsByFigi.putAll(resolveBatchIndustryModels(dateStocks, dClose, calculatedAt));
+        }
 
-            Set<String> ciks = batchStocks.stream().map(Stock::getCik).filter(Objects::nonNull)
-                    .filter(c -> !c.isBlank()).collect(Collectors.toSet());
-            Set<String> multiSecurityIssuers = ciks.isEmpty() ? Set.of()
-                    : stocks.findMultiSecurityIssuers(ciks, ActiveStatus.ACTIVE);
+        Map<String, List<StockFinancialPeriod>> periodsByFigi = financialPeriods.findByFigiInOrderByFigiAscPeriodEndAsc(eligibleFigis)
+                .stream().collect(Collectors.groupingBy(StockFinancialPeriod::getFigi));
+        Map<String, List<StockSplit>> splitsByFigi = splits.findByFigiInOrderByExecutionDateAsc(eligibleFigis).stream()
+                .collect(Collectors.groupingBy(StockSplit::getFigi));
 
-            Map<String, StockShareObservation> latestObsMap = shareObservations.findLatestAt(activeFigis, calculatedAt).stream()
-                    .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
-            Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed), calculatedAt);
+        Set<String> ciks = new LinkedHashSet<>();
+        for (Stock s : batchStocks) {
+            LocalDate d = dateByFigi.get(s.getFigi());
+            if (d != null) {
+                String resolved = resolveCik(s, d);
+                if (resolved != null && !resolved.isBlank()) ciks.add(resolved);
+            }
+        }
+        Set<String> multiSecurityIssuers = ciks.isEmpty() ? Set.of()
+                : stocks.findMultiSecurityIssuers(ciks, ActiveStatus.ACTIVE);
+        Map<String, List<SecFinancialFact>> multiClassShareFactsByCik = multiSecurityIssuers.isEmpty() ? Map.of()
+                : secFacts.findLatestIssuerShareFacts(multiSecurityIssuers, calculatedAt).stream()
+                        .collect(Collectors.groupingBy(SecFinancialFact::getCik));
+        List<StockShareObservation> latestObsRows = shareObservations.findLatestAt(eligibleFigis, calculatedAt);
+        Map<String, StockShareObservation> latestObsMap = latestObsRows == null ? Map.of()
+                : latestObsRows.stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
 
-            transactions.executeWithoutResult(tx -> {
-                Map<String, StockStatus> lockedStatuses = statuses.findAllByIdForUpdate(activeFigis).stream()
-                        .collect(Collectors.toMap(StockStatus::getFigi, row -> row));
-                Map<String, StockValuationLatest> existingLatest = latestValuations.findByFigiIn(activeFigis).stream()
-                        .collect(Collectors.toMap(StockValuationLatest::getFigi, row -> row));
+        List<PendingTargetEvaluation> results = new ArrayList<>(eligibleFigis.size());
+        for (Stock stock : batchStocks) {
+            String figi = stock.getFigi();
+            LocalDate stockValDate = dateByFigi.get(figi);
+            if (stockValDate == null) continue;
+            StockStatus status = statusPreview.get(figi);
+            if (directRefresh && status == null) continue;
 
-                List<StockStatus> updatedStatuses = new ArrayList<>();
-                for (Stock stock : batchStocks) {
-                    String figi = stock.getFigi();
-                    StockStatus status = lockedStatuses.get(figi);
-                    if (status == null) continue;
-                    LocalDate stockValDate = dateByFigi.getOrDefault(figi, lastClosed);
-                    LocalDate stockEffectiveLatest = effectiveLatestQuoteDate(status, lastClosed);
-                    Instant stockCutoff = calendar.getSessionCloseAt(stockValDate);
-                    StockQuote stockQuote = quotesByFigiAndDate.getOrDefault(figi, Map.of()).get(stockValDate);
+            LocalDate stockEffectiveLatest = effectiveLatestQuoteDate(status, lastClosed);
+            Instant stockCutoff = calendar.getSessionCloseAt(stockValDate);
+            StockQuote stockQuote = quotesByFigiAndDate.getOrDefault(figi, Map.of()).get(stockValDate);
+            List<StockFinancialPeriod> stockPeriods = periodsByFigi.getOrDefault(figi, List.of());
+            StockFinancialPeriod matched = matchPeriod(stockPeriods, stockValDate);
+            List<StockSplit> stockSplits = splitsByFigi.getOrDefault(figi, List.of());
+            String cik = resolveCik(stock, stockValDate);
+            boolean multiClass = cik != null && multiSecurityIssuers.contains(cik);
+            StockShareObservation latestObs = latestObsMap.get(figi);
+            StockShareObservation closingSnap = closingSnapsByDate.getOrDefault(stockValDate, Map.of()).get(figi);
+            StockShareObservation primaryObs = closingSnap != null ? closingSnap : latestObs;
+            boolean verifiedOneToOne = multiClass && isMultiClassVerifiedFromRawFacts(
+                    latestObs, multiClassShareFactsByCik.getOrDefault(cik, List.of()), stockSplits, calculatedAt);
+            IndustryModelContext modelCtx = modelsByFigi.get(figi);
+            boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
 
-                    List<StockFinancialPeriod> stockPeriods = periodsByFigi.getOrDefault(figi, List.of());
-                    StockFinancialPeriod matched = matchPeriod(stockPeriods, stockValDate);
-                    List<StockSplit> stockSplits = splitsByFigi.getOrDefault(figi, List.of());
-                    String cik = resolveCik(stock, stockValDate);
-                    boolean multiClass = cik != null && multiSecurityIssuers.contains(cik);
-                    StockShareObservation latestObs = latestObsMap.get(figi);
-                    StockShareObservation closingSnap = closingSnapsByDate.getOrDefault(stockValDate, Map.of()).get(figi);
-                    StockShareObservation primaryObs = closingSnap != null ? closingSnap : latestObs;
-                    boolean verifiedOneToOne = multiClass && isMultiClassVerifiedOneToOne(cik, latestObs, stockSplits, calculatedAt);
+            ShareEvaluation dayShareEval = matched == null
+                    ? evaluateQuoteOnlyMarketCap(stockQuote, stockSplits, status, primaryObs, multiClass, verifiedOneToOne, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest)
+                    : evaluateDayShares(stockQuote, matched, stockSplits, status,
+                            primaryObs, latestObs, multiClass, verifiedOneToOne, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest);
 
-                    ValuationResultDto evaluated = evaluateSingleDay(
-                            stock, status, stockQuote, matched, stockSplits,
-                            primaryObs, latestObs, multiClass, verifiedOneToOne,
-                            modelsByFigi.get(figi), stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest);
+            ValuationResultDto evaluated = evaluateSingleDay(
+                    stock, status, stockQuote, matched, stockSplits,
+                    primaryObs, latestObs, multiClass, verifiedOneToOne,
+                    modelCtx, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest, dayShareEval);
 
-                    StockValuationLatest target = existingLatest.getOrDefault(figi, new StockValuationLatest());
-                    populateLatestEntity(target, evaluated);
-                    if (existingLatest.containsKey(figi)) {
+            String selectedMetric = selectPrimaryMetricForDay(modelCtx, evaluated.metrics(), matched);
+            String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
+                    : evaluated.modelCode() != null ? evaluated.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
+            ValuationResultDto normalizedEvaluated = evaluated.withReferences(resolvedModelCode, selectedMetric, null, null, null);
+            DayDenominators denoms = resolveDayDenominators(stock, status, matched, stockSplits, stockValDate, dayShareEval);
+
+            Map<LocalDate, StockQuote> monthQuoteMap = monthEndQuotesByFigi.getOrDefault(figi, Map.of());
+            List<ValuationResultDto> monthlyHistory = buildHistoryFromLoaded(
+                    stock, status, monthQuoteMap, stockPeriods, stockSplits, closingSnap, latestObs,
+                    multiClass, verifiedOneToOne, modelCtx, stockEffectiveLatest, calculatedAt, true);
+            BigDecimal currentSelectedMultiple = positiveMetricValue(normalizedEvaluated.metrics(), selectedMetric);
+            ValuationReferenceDto historicalRef = buildHistoricalReference(
+                    selectedMetric, currentSelectedMultiple, monthlyHistory, matched, denoms,
+                    stock.getCurrency(), financialInstitution, stockValDate);
+
+            BigDecimal closePrice = stockQuote != null ? stockQuote.getClosePrice() : null;
+            BigDecimal peAtDay = positiveMetricValue(normalizedEvaluated.metrics(), "PE");
+            String peMetricReason = normalizedEvaluated.metrics() != null && normalizedEvaluated.metrics().pe() != null
+                    && normalizedEvaluated.metrics().pe().reasonCode() != null
+                    ? normalizedEvaluated.metrics().pe().reasonCode() : denoms.peReason();
+            BigDecimal marketCap = dayShareEval == null ? null : dayShareEval.marketCap();
+            String sharesReason = dayShareEval == null ? null : dayShareEval.sharesReason();
+            FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
+                    stockPeriods, matched, stockSplits, stockValDate, stock.getCurrency(),
+                    closePrice, marketCap, sharesReason, denoms.epsAtDay(), peMetricReason, peAtDay,
+                    financialInstitution, splitSyncError(status)
+            ));
+
+            BigDecimal revGrowthYoy = extractAvailableMetric(fundamentalsDto == null ? null : fundamentalsDto.revenueGrowthYoy());
+            BigDecimal roe = extractAvailableMetric(fundamentalsDto == null ? null : fundamentalsDto.roe());
+            BigDecimal fcfMargin = financialInstitution ? null
+                    : extractAvailableMetric(fundamentalsDto == null ? null : fundamentalsDto.fcfMargin());
+            String marketCapTier = resolveMarketCapTier(stock.getCurrency(), marketCap);
+            BigDecimal histPercentile = historicalRef != null && "AVAILABLE".equals(historicalRef.status())
+                    ? historicalRef.currentPercentile() : null;
+
+            StockValuationLatest snapshot = new StockValuationLatest();
+            populateLatestEntity(snapshot, normalizedEvaluated, marketCap, marketCapTier, revGrowthYoy, roe, fcfMargin, histPercentile, null);
+
+            String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null
+                    ? modelCtx.industryCode() : normalizedEvaluated.industryCode();
+            StockValuationLatest priorRow = priorLatestMap.get(figi);
+            Instant priorCalcAt = priorRow != null ? priorRow.getCalculatedAt() : null;
+            results.add(new PendingTargetEvaluation(
+                    stock, stockValDate, priorCalcAt, normalizedEvaluated, snapshot, selectedMetric,
+                    resolvedIndustryCode, financialInstitution, matched, denoms, historicalRef,
+                    marketCap, revGrowthYoy, directRefresh
+            ));
+        }
+        return results;
+    }
+
+    private void loadExternalAffectedEvaluations(
+            Set<String> externalFigis,
+            Map<String, PendingTargetEvaluation> pendingByFigi,
+            LocalDate lastClosed,
+            Instant calculatedAt) {
+        if (externalFigis == null || externalFigis.isEmpty()) return;
+        for (List<String> part : Lists.partition(new ArrayList<>(externalFigis), LATEST_BATCH_SIZE)) {
+            Map<String, StockValuationLatest> storedMap = latestValuations.findByFigiIn(part).stream()
+                    .filter(v -> v.getValuationDate() != null)
+                    .collect(Collectors.toMap(StockValuationLatest::getFigi, v -> v));
+            if (storedMap.isEmpty()) continue;
+
+            List<Stock> extStocks = stocks.findAllById(storedMap.keySet()).stream()
+                    .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
+                            && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                    .toList();
+            if (extStocks.isEmpty()) continue;
+
+            Map<String, LocalDate> explicitDates = new HashMap<>();
+            for (Stock s : extStocks) {
+                StockValuationLatest sv = storedMap.get(s.getFigi());
+                if (sv != null && sv.getValuationDate() != null) {
+                    explicitDates.put(s.getFigi(), sv.getValuationDate());
+                }
+            }
+            List<PendingTargetEvaluation> extEvaluated = evaluateTargetBatchInMemory(
+                    extStocks, storedMap, null, explicitDates, lastClosed, calculatedAt, false);
+            for (PendingTargetEvaluation item : extEvaluated) {
+                pendingByFigi.put(item.stock().getFigi(), item);
+            }
+        }
+    }
+
+    private void runWithPublishLock(Runnable publishTx) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            localPublishLock.lock();
+            boolean registered = false;
+            try {
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCompletion(int status) {
+                            localPublishLock.unlock();
+                        }
+                    });
+                    registered = true;
+                }
+                publishTx.run();
+            } finally {
+                if (!registered) {
+                    localPublishLock.unlock();
+                }
+            }
+            return;
+        }
+        localPublishLock.lock();
+        try {
+            publishTx.run();
+        } finally {
+            localPublishLock.unlock();
+        }
+    }
+
+    private void commitEvaluatedTargetsWithPeerVerdicts(
+            Map<String, PendingTargetEvaluation> pendingByFigi,
+            Collection<String> explicitlyDisabledFigis,
+            LocalDate lastClosed,
+            Instant calculatedAt) {
+        Set<String> initialCheck = new LinkedHashSet<>(pendingByFigi.keySet());
+        if (explicitlyDisabledFigis != null) {
+            initialCheck.addAll(explicitlyDisabledFigis);
+        }
+        if (initialCheck.isEmpty()) return;
+
+        // 先取得統一交易層級發布鎖，於鎖內先確認真正將完整發布之變動集，再依精確 (industryCode, valuationDate) 配對決定反向目標並單次排序取鎖
+        runWithPublishLock(() -> transactions.executeWithoutResult(tx -> {
+            entityManager.flush();
+            entityManager.clear();
+            statuses.acquireValuationPublishLock();
+
+            Map<String, PendingTargetEvaluation> workingPending = new LinkedHashMap<>(pendingByFigi);
+            Set<String> directInputFigis = new LinkedHashSet<>();
+            for (Map.Entry<String, PendingTargetEvaluation> entry : workingPending.entrySet()) {
+                if (entry.getValue() != null && entry.getValue().directRefresh()) {
+                    directInputFigis.add(entry.getKey());
+                }
+            }
+            if (explicitlyDisabledFigis != null) {
+                directInputFigis.addAll(explicitlyDisabledFigis);
+            }
+            if (directInputFigis.isEmpty()) return;
+
+            Map<String, Stock> preDirectStocks = new HashMap<>();
+            Map<String, StockStatus> preDirectStatuses = new HashMap<>();
+            Map<String, StockValuationLatest> preDirectLatest = new HashMap<>();
+            for (List<String> directPart : Lists.partition(new ArrayList<>(directInputFigis), 500)) {
+                List<Stock> sRows = stocks.findAllById(directPart);
+                if (sRows != null) {
+                    for (Stock s : sRows) preDirectStocks.put(s.getFigi(), s);
+                }
+                List<StockStatus> stRows = statuses.findAllById(directPart);
+                if (stRows != null) {
+                    for (StockStatus st : stRows) preDirectStatuses.put(st.getFigi(), st);
+                }
+                List<StockValuationLatest> lvRows = latestValuations.findByFigiIn(directPart);
+                if (lvRows != null) {
+                    for (StockValuationLatest lv : lvRows) preDirectLatest.put(lv.getFigi(), lv);
+                }
+            }
+
+            Set<String> preCommittableDirectFigis = new LinkedHashSet<>();
+            Set<String> preUntrackedFigis = new HashSet<>();
+            if (explicitlyDisabledFigis != null) {
+                preUntrackedFigis.addAll(explicitlyDisabledFigis);
+            }
+            Set<IndustryDateKey> changedPairs = new LinkedHashSet<>();
+
+            for (String figi : directInputFigis) {
+                StockValuationLatest ex = preDirectLatest.get(figi);
+                if (explicitlyDisabledFigis != null && explicitlyDisabledFigis.contains(figi)) {
+                    if (ex != null) {
+                        addIndustryDatePair(changedPairs, ex.getIndustryCode(), ex.getValuationDate());
+                    }
+                    continue;
+                }
+                PendingTargetEvaluation pending = workingPending.get(figi);
+                StockStatus st = preDirectStatuses.get(figi);
+                Stock curStock = preDirectStocks.get(figi);
+                if (curStock == null && pending != null) {
+                    curStock = pending.stock();
+                }
+                if (curStock != null && (!curStock.isTracked() || curStock.getActiveStatus() != ActiveStatus.ACTIVE)) {
+                    preUntrackedFigis.add(figi);
+                    continue;
+                }
+                if (pending == null || st == null || !pending.directRefresh()) {
+                    continue;
+                }
+                LocalDate valDate = pending.valuationDate();
+                if (ex != null && ex.getValuationDate() != null) {
+                    if (valDate.isBefore(ex.getValuationDate())) {
+                        continue;
+                    }
+                    if (valDate.equals(ex.getValuationDate())
+                            && ex.getCalculatedAt() != null
+                            && calculatedAt.isBefore(ex.getCalculatedAt())) {
+                        continue;
+                    }
+                }
+                preCommittableDirectFigis.add(figi);
+                if (ex != null) {
+                    addIndustryDatePair(changedPairs, ex.getIndustryCode(), ex.getValuationDate());
+                }
+                addIndustryDatePair(changedPairs, pending.industryCode(), valDate);
+            }
+
+            Set<String> effectiveChangedOrDisabled = new LinkedHashSet<>(preCommittableDirectFigis);
+            if (explicitlyDisabledFigis != null) {
+                effectiveChangedOrDisabled.addAll(explicitlyDisabledFigis);
+            }
+            if (effectiveChangedOrDisabled.isEmpty()) {
+                return;
+            }
+
+            // 因版本較新而跳過完整覆寫的直接目標（如快批已先發布的 A），若屬於實際變動集 B 的同業或自訂引用者，仍保留於 reverseTargetFigis 僅更新 verdict
+            Set<String> reverseTargetFigis = new LinkedHashSet<>(queryFigisByIndustryDatePairs(changedPairs));
+            List<String> currentReferencers = customPeers.findEligibleTargetFigisByPeerFigiIn(effectiveChangedOrDisabled);
+            if (currentReferencers != null) reverseTargetFigis.addAll(currentReferencers);
+            reverseTargetFigis.removeAll(effectiveChangedOrDisabled);
+            reverseTargetFigis.removeAll(preUntrackedFigis);
+
+            workingPending.keySet().removeIf(k -> !preCommittableDirectFigis.contains(k) && !reverseTargetFigis.contains(k));
+
+            TreeSet<String> allLockSet = new TreeSet<>(effectiveChangedOrDisabled);
+            allLockSet.addAll(reverseTargetFigis);
+            if (allLockSet.isEmpty()) return;
+            List<String> sortedLocks = List.copyOf(allLockSet);
+
+            Map<String, StockStatus> lockedStatuses = new HashMap<>();
+            Map<String, Stock> lockedStocks = new HashMap<>();
+            Map<String, StockValuationLatest> existingLatest = new HashMap<>();
+            Map<String, List<StockCustomPeer>> lockedCustomMap = new HashMap<>();
+            Set<String> allReferencedCustomPeerFigis = new LinkedHashSet<>();
+
+            for (List<String> lockBatch : Lists.partition(sortedLocks, 500)) {
+                List<StockStatus> statusRows = statuses.findAllByIdForUpdate(lockBatch);
+                if (statusRows != null) {
+                    for (StockStatus st : statusRows) lockedStatuses.put(st.getFigi(), st);
+                }
+                List<Stock> stockRows = stocks.findAllById(lockBatch);
+                if (stockRows != null) {
+                    for (Stock s : stockRows) lockedStocks.put(s.getFigi(), s);
+                }
+                List<StockValuationLatest> latestRows = latestValuations.findByFigiIn(lockBatch);
+                if (latestRows != null) {
+                    for (StockValuationLatest lv : latestRows) existingLatest.put(lv.getFigi(), lv);
+                }
+                List<StockCustomPeer> customRows = customPeers.findByFigiInOrderByFigiAscSortOrderAsc(lockBatch);
+                if (customRows != null) {
+                    for (StockCustomPeer r : customRows) {
+                        lockedCustomMap.computeIfAbsent(r.getFigi(), k -> new ArrayList<>()).add(r);
+                        allReferencedCustomPeerFigis.add(r.getPeerFigi());
+                    }
+                }
+            }
+
+            Set<String> committableDirectFigis = new LinkedHashSet<>();
+            Set<String> concurrentlyUntrackedFigis = new HashSet<>(preUntrackedFigis);
+
+            for (String figi : sortedLocks) {
+                PendingTargetEvaluation pending = workingPending.get(figi);
+                StockStatus status = lockedStatuses.get(figi);
+                Stock currentStock = lockedStocks.get(figi);
+                if (currentStock == null && pending != null) {
+                    currentStock = pending.stock();
+                }
+                if (currentStock != null && (!currentStock.isTracked() || currentStock.getActiveStatus() != ActiveStatus.ACTIVE)) {
+                    concurrentlyUntrackedFigis.add(figi);
+                    continue;
+                }
+                if (!preCommittableDirectFigis.contains(figi) || pending == null || status == null || !pending.directRefresh()) {
+                    continue;
+                }
+                StockValuationLatest ex = existingLatest.get(figi);
+                LocalDate valDate = pending.valuationDate();
+                if (ex != null && ex.getValuationDate() != null) {
+                    if (valDate.isBefore(ex.getValuationDate())) {
+                        continue;
+                    }
+                    if (valDate.equals(ex.getValuationDate())
+                            && ex.getCalculatedAt() != null
+                            && calculatedAt.isBefore(ex.getCalculatedAt())) {
+                        continue;
+                    }
+                }
+                committableDirectFigis.add(figi);
+            }
+
+            if (committableDirectFigis.isEmpty() && (explicitlyDisabledFigis == null || explicitlyDisabledFigis.isEmpty())) {
+                return;
+            }
+
+            // 批次補評鎖內新增、版本變更或由較新直接目標降級為僅更新 verdict 之反向目標
+            Instant evalCutoff = laterInstant(calculatedAt, dateTimeService.now());
+            List<Stock> toEvalStocks = new ArrayList<>();
+            Map<String, StockValuationLatest> toEvalStored = new HashMap<>();
+            Map<String, LocalDate> toEvalDates = new HashMap<>();
+            for (String revFigi : reverseTargetFigis) {
+                if (concurrentlyUntrackedFigis.contains(revFigi)) {
+                    workingPending.remove(revFigi);
+                    continue;
+                }
+                Stock s = lockedStocks.get(revFigi);
+                StockValuationLatest ex = existingLatest.get(revFigi);
+                if (s == null || ex == null || ex.getValuationDate() == null
+                        || !s.isTracked() || s.getActiveStatus() != ActiveStatus.ACTIVE
+                        || !SecurityTypePolicy.isOperatingCompanyType(s.getStockType())) {
+                    workingPending.remove(revFigi);
+                    continue;
+                }
+                PendingTargetEvaluation pre = workingPending.get(revFigi);
+                boolean needsEval = pre == null
+                        || pre.directRefresh()
+                        || !Objects.equals(ex.getValuationDate(), pre.valuationDate())
+                        || !Objects.equals(ex.getCalculatedAt(), pre.priorCalculatedAt());
+                if (needsEval) {
+                    workingPending.remove(revFigi);
+                    toEvalStocks.add(s);
+                    toEvalStored.put(revFigi, ex);
+                    toEvalDates.put(revFigi, ex.getValuationDate());
+                    evalCutoff = laterInstant(evalCutoff, ex.getCalculatedAt());
+                }
+            }
+            if (!toEvalStocks.isEmpty()) {
+                for (List<Stock> evalPart : Lists.partition(toEvalStocks, LATEST_BATCH_SIZE)) {
+                    List<PendingTargetEvaluation> evaluatedBatch = evaluateTargetBatchInMemory(
+                            evalPart, toEvalStored, null, toEvalDates, lastClosed, evalCutoff, false);
+                    for (PendingTargetEvaluation item : evaluatedBatch) {
+                        workingPending.put(item.stock().getFigi(), item);
+                    }
+                }
+            }
+
+            if (workingPending.isEmpty()) {
+                return;
+            }
+
+            List<String> finalTargets = workingPending.keySet().stream().sorted().toList();
+            Set<String> snapshotLoadIndustries = new LinkedHashSet<>();
+            Set<LocalDate> snapshotLoadDates = new LinkedHashSet<>();
+            for (IndustryDateKey pair : changedPairs) {
+                snapshotLoadIndustries.add(pair.industryCode());
+                snapshotLoadDates.add(pair.valuationDate());
+            }
+            for (String figi : finalTargets) {
+                PendingTargetEvaluation item = workingPending.get(figi);
+                if (item != null) {
+                    if (item.industryCode() != null && !item.industryCode().isBlank()) {
+                        snapshotLoadIndustries.add(item.industryCode());
+                    }
+                    if (item.valuationDate() != null) {
+                        snapshotLoadDates.add(item.valuationDate());
+                    }
+                }
+            }
+
+            Set<String> excludedFromDbOverlay = new HashSet<>(committableDirectFigis);
+            excludedFromDbOverlay.addAll(concurrentlyUntrackedFigis);
+
+            Map<String, IssuerSnapshotRow> snapshotOverlayByFigi = new LinkedHashMap<>();
+            if (!snapshotLoadIndustries.isEmpty() && !snapshotLoadDates.isEmpty()) {
+                List<Object[]> dbIndustryRows = latestValuations.findActiveTrackedPeerSnapshotsIn(
+                        snapshotLoadIndustries, snapshotLoadDates);
+                if (dbIndustryRows != null) {
+                    for (Object[] tuple : dbIndustryRows) {
+                        if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                                && tuple[1] instanceof StockValuationLatest snap) {
+                            if (!excludedFromDbOverlay.contains(snap.getFigi())) {
+                                snapshotOverlayByFigi.put(snap.getFigi(), new IssuerSnapshotRow(rawKey, snap));
+                            }
+                        }
+                    }
+                }
+            }
+            if (!allReferencedCustomPeerFigis.isEmpty() && !snapshotLoadDates.isEmpty()) {
+                List<Object[]> dbCustomRows = latestValuations.findActiveTrackedCustomPeerSnapshots(
+                        allReferencedCustomPeerFigis, snapshotLoadDates);
+                if (dbCustomRows != null) {
+                    for (Object[] tuple : dbCustomRows) {
+                        if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                                && tuple[1] instanceof StockValuationLatest snap) {
+                            if (!excludedFromDbOverlay.contains(snap.getFigi())) {
+                                snapshotOverlayByFigi.put(snap.getFigi(), new IssuerSnapshotRow(rawKey, snap));
+                            }
+                        }
+                    }
+                }
+            }
+            for (String figi : committableDirectFigis) {
+                PendingTargetEvaluation item = workingPending.get(figi);
+                Stock s = lockedStocks.getOrDefault(figi, item.stock());
+                String rawKey = s.getCik() != null && !s.getCik().isBlank() ? s.getCik() : s.getFigi();
+                snapshotOverlayByFigi.put(figi, new IssuerSnapshotRow(rawKey, item.builtSnapshot()));
+            }
+
+            Map<String, List<IssuerSnapshotRow>> overlayByIndustryAndDate = new HashMap<>();
+            for (IssuerSnapshotRow row : snapshotOverlayByFigi.values()) {
+                StockValuationLatest snap = row.snapshot();
+                if (snap.getIndustryCode() != null && snap.getValuationDate() != null) {
+                    String key = snap.getIndustryCode() + "|" + snap.getValuationDate();
+                    overlayByIndustryAndDate.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+                }
+            }
+
+            List<StockStatus> updatedStatuses = new ArrayList<>();
+            for (String figi : finalTargets) {
+                PendingTargetEvaluation pending = workingPending.get(figi);
+                StockStatus status = lockedStatuses.get(figi);
+                if (pending == null || status == null || concurrentlyUntrackedFigis.contains(figi)) {
+                    continue;
+                }
+                if (pending.directRefresh() && !committableDirectFigis.contains(figi)) {
+                    continue;
+                }
+                Stock currentStock = lockedStocks.getOrDefault(figi, pending.stock());
+                StockValuationLatest existing = existingLatest.get(figi);
+                LocalDate valDate = pending.valuationDate();
+                if (!pending.directRefresh() && (existing == null || !Objects.equals(existing.getValuationDate(), valDate))) {
+                    continue;
+                }
+
+                List<StockCustomPeer> targetCustom = lockedCustomMap.getOrDefault(figi, List.of());
+                List<IssuerSnapshotRow> customCandidateRows = new ArrayList<>(targetCustom.size());
+                for (StockCustomPeer cp : targetCustom) {
+                    IssuerSnapshotRow r = snapshotOverlayByFigi.get(cp.getPeerFigi());
+                    if (r != null) customCandidateRows.add(r);
+                }
+                List<IssuerSnapshotRow> industryCandidateRows = pending.industryCode() == null ? List.of()
+                        : overlayByIndustryAndDate.getOrDefault(pending.industryCode() + "|" + valDate, List.of());
+
+                ValuationReferenceDto peerRef = computePeerReferenceFromSnapshots(
+                        currentStock,
+                        pending.selectedMetric(),
+                        pending.evaluated().metrics(),
+                        pending.industryCode(),
+                        valDate,
+                        false,
+                        pending.matchedPeriod(),
+                        pending.denoms(),
+                        currentStock.getCurrency(),
+                        pending.marketCap(),
+                        pending.revenueGrowthYoy(),
+                        pending.financialInstitution(),
+                        targetCustom,
+                        customCandidateRows,
+                        industryCandidateRows
+                );
+
+                String verdict = ValuationSummaryCalculator.computeObjectiveVerdict(
+                        pending.evaluated().price(), pending.historicalRef(), peerRef);
+
+                if (pending.directRefresh()) {
+                    StockValuationLatest target = existing != null ? existing : new StockValuationLatest();
+                    populateLatestEntity(
+                            target,
+                            pending.evaluated(),
+                            pending.builtSnapshot().getMarketCap(),
+                            pending.builtSnapshot().getMarketCapTier(),
+                            pending.builtSnapshot().getRevenueGrowthYoy(),
+                            pending.builtSnapshot().getRoe(),
+                            pending.builtSnapshot().getFcfMargin(),
+                            pending.builtSnapshot().getHistoricalPercentile(),
+                            verdict
+                    );
+                    target.setCalculatedAt(calculatedAt);
+                    if (existing != null) {
                         entityManager.merge(target);
                     } else {
                         entityManager.persist(target);
                     }
-
-                    if (target.hasAvailableMetric() && (status.getValuationDate() == null || !stockValDate.isBefore(status.getValuationDate()))) {
-                        status.setValuationDate(stockValDate);
+                    if (target.hasAvailableMetric() && (status.getValuationDate() == null || !valDate.isBefore(status.getValuationDate()))) {
+                        status.setValuationDate(valDate);
                     }
-                    status.setValuationMessage(truncateSummary(stockValDate + ":" + formatStatusSummary(target)));
+                    status.setValuationMessage(truncateSummary(valDate + ":" + formatStatusSummary(target)));
                     updatedStatuses.add(status);
+                } else {
+                    existing.setVerdict(verdict);
+                    entityManager.merge(existing);
                 }
-                entityManager.flush();
+            }
+            entityManager.flush();
+            if (!updatedStatuses.isEmpty()) {
                 statuses.saveAllAndFlush(updatedStatuses);
-            });
-        }
+            }
+        }));
     }
 
     /** 找出尚未建立任何財季分母列但已有財報或 SEC 紀錄的股票 FIGI。 */
@@ -736,6 +1802,30 @@ public class StockValuationService {
         return denomReason != null ? denomReason.name() : calcReason;
     }
 
+    private ShareEvaluation evaluateQuoteOnlyMarketCap(
+            StockQuote quote, List<StockSplit> stockSplits, StockStatus status,
+            StockShareObservation obs, boolean multiClass, boolean verifiedOneToOne,
+            LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed) {
+        if (quote == null || quote.getClosePrice() == null || quote.getClosePrice().signum() <= 0) {
+            return new ShareEvaluation(null, null, null, null, "CLOSING_PRICE_MISSING", null);
+        }
+        String splitError = splitSyncError(status);
+        BigDecimal price = quote.getClosePrice();
+        if (day.equals(lastClosed)) {
+            if (sameCloseSnapshot(obs, quote, day, cutoff, calculatedAt)) {
+                BigDecimal mktCap = obs.effectiveMarketCap();
+                return new ShareEvaluation(mktCap, mktCap.divide(price, MC), "FUTU_CLOSE_SNAPSHOT", obs.getObservedAt(), null, null);
+            }
+            if (obs != null) {
+                return evaluateObservedMarketCap(price, obs, multiClass, stockSplits, splitError, day, false);
+            }
+        } else if ((!multiClass || verifiedOneToOne) && obs != null) {
+            return evaluateObservedMarketCap(price, obs, multiClass, stockSplits, splitError, day, true);
+        }
+        String reason = multiClass && !verifiedOneToOne ? "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED" : "VALUATION_DATE_SHARES_MISSING";
+        return new ShareEvaluation(null, null, null, null, reason, null);
+    }
+
     private ShareEvaluation evaluateDayShares(
             StockQuote quote, StockFinancialPeriod period, List<StockSplit> stockSplits, StockStatus status,
             StockShareObservation primaryObs, StockShareObservation fallbackObs,
@@ -786,7 +1876,7 @@ public class StockValuationService {
                     period.getSharesOutstandingAvailableAt(), null, period.getSharesOutstandingCalculation());
         }
         if (fallbackObs != null) {
-            return evaluateObservedMarketCap(price, fallbackObs, false, stockSplits, splitError, day, true);
+            return evaluateObservedMarketCap(price, fallbackObs, multiClass, stockSplits, splitError, day, true);
         }
         String fallbackReason = multiClass && day.equals(lastClosed) ? "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED"
                 : !multiClass && period.getSharesOutstandingReason() != null
@@ -830,7 +1920,7 @@ public class StockValuationService {
             return new ShareEvaluation(null, sharesAtDay, src, period.getSharesOutstandingAvailableAt(), null, period.getSharesOutstandingCalculation());
         }
         if (fallbackObs != null) {
-            return evaluateObservedMarketCap(null, fallbackObs, false, stockSplits, splitError, day, true);
+            return evaluateObservedMarketCap(null, fallbackObs, multiClass, stockSplits, splitError, day, true);
         }
         String fallbackReason = multiClass && day.equals(lastClosed) ? "SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED"
                 : !multiClass && period.getSharesOutstandingReason() != null
@@ -1103,10 +2193,51 @@ public class StockValuationService {
         }
         row.setAvailableAt(maxAvail);
         row.setSecAvailableFromDate(maxSecAvail);
+        SecFinancialFact earliestPeriodicSec = selectEarliestPeriodicSecEvidence(periodCikFacts, periodEnd, calculatedAt);
+        if (earliestPeriodicSec != null) {
+            row.setSecPeriodicObservedAt(earliestPeriodicSec.getObservedAt());
+            row.setSecPeriodicAvailableFromDate(earliestPeriodicSec.getAvailableFromDate());
+            if (row.getSecCik() == null && periodCik != null) {
+                row.setSecCik(periodCik);
+            }
+        }
         if (!usedSecFlows.isEmpty() && periodCik != null) {
             row.setSecCik(periodCik);
         }
         return row;
+    }
+
+    private SecFinancialFact selectEarliestPeriodicSecEvidence(
+            List<SecFinancialFact> periodCikFacts, LocalDate periodEnd, Instant calculatedAt) {
+        if (periodCikFacts == null || periodCikFacts.isEmpty() || periodEnd == null) {
+            return null;
+        }
+        SecFinancialFact best = null;
+        Instant bestReadyAt = null;
+        for (SecFinancialFact f : periodCikFacts) {
+            if (f == null || !"us-gaap".equals(f.getTaxonomy()) || "shares".equals(f.getUnit())) continue;
+            String form = Objects.toString(f.getForm(), "");
+            if (!PERIODIC_STATEMENT_FORMS.contains(form)) continue;
+            if (("6-K".equals(form) || "6-K/A".equals(form))
+                    && (f.getReportFiscalYear() == null || f.getReportFiscalPeriod() == null)) {
+                continue;
+            }
+            if (f.getPeriodEnd() == null || Math.abs(ChronoUnit.DAYS.between(f.getPeriodEnd(), periodEnd)) > 7) continue;
+            if (f.getFiled() == null || f.getPeriodEnd().isAfter(f.getFiled())) continue;
+            if (f.getAvailableFromDate() == null || f.getObservedAt() == null || f.getObservedAt().isAfter(calculatedAt)) continue;
+
+            Instant effectiveStart = f.getAvailableFromDate().atStartOfDay(MarketStatusService.NY_ZONE).toInstant();
+            Instant readyAt = laterInstant(f.getObservedAt(), effectiveStart);
+            if (best == null
+                    || readyAt.isBefore(bestReadyAt)
+                    || (readyAt.equals(bestReadyAt) && f.getAvailableFromDate().isBefore(best.getAvailableFromDate()))
+                    || (readyAt.equals(bestReadyAt) && f.getAvailableFromDate().equals(best.getAvailableFromDate())
+                            && f.getObservedAt().isBefore(best.getObservedAt()))) {
+                best = f;
+                bestReadyAt = readyAt;
+            }
+        }
+        return best;
     }
 
     private record ResolvedFlow(BigDecimal value, String status, ValuationReason reason, String source,
@@ -1208,6 +2339,7 @@ public class StockValuationService {
                 row.setEpsTtmCalculation("SEC 稀釋 EPS TTM");
                 row.setEpsTtmPeriodStart(secEps.periodStart());
                 row.setEpsTtmAvailableAt(secEps.observedAt());
+                row.setEpsTtmSecAvailableFromDate(secEps.availableFrom());
                 row.setEpsShareBasisDate(secBasisDate);
                 return;
             }
@@ -1218,6 +2350,7 @@ public class StockValuationService {
             row.setEpsTtmSource("SEC");
             row.setEpsTtmPeriodStart(secEps.periodStart());
             row.setEpsTtmAvailableAt(secEps.observedAt());
+            row.setEpsTtmSecAvailableFromDate(secEps.availableFrom());
             return;
         }
 
@@ -1226,12 +2359,14 @@ public class StockValuationService {
             String src = mixedEps.isEmpty() ? "FUTU" : "FUTU_AND_SEC";
             String calc = epsPeriod != null && epsPeriod.periodType() == 7 ? "Futu 直接申報年度稀釋 EPS" : "Futu 四季稀釋 EPS 之和";
             Instant avail = mixedEps.stream().map(Flow::observedAt).filter(Objects::nonNull).reduce(incomeObs, this::laterInstant);
+            LocalDate epsSecAvailFrom = mixedEps.stream().map(Flow::availableFrom).filter(Objects::nonNull).reduce(null, this::laterDate);
             row.setEpsTtm(futuEps.value());
             row.setEpsTtmStatus(MetricStatus.AVAILABLE.name());
             row.setEpsTtmSource(src);
             row.setEpsTtmCalculation(calc);
             row.setEpsTtmPeriodStart(futuStart);
             row.setEpsTtmAvailableAt(avail);
+            row.setEpsTtmSecAvailableFromDate(epsSecAvailFrom);
             row.setEpsShareBasisDate(resolvedBasisDate);
             return;
         }
@@ -1570,6 +2705,7 @@ public class StockValuationService {
             row.setSharesOutstandingSource("SEC_FILING_SHARES");
             row.setSharesOutstandingCalculation("SEC " + secShare.getTag() + "（基準日 " + secShare.getPeriodEnd() + "）");
             row.setSharesOutstandingAvailableAt(secShare.getObservedAt());
+            row.setSharesSecAvailableFromDate(secShare.getAvailableFromDate());
             row.setSharesBasisDate(secShare.getPeriodEnd());
             row.setSecShareAccession(secShare.getAccession());
             if (splitSyncError(status) == null || secShare.getPeriodEnd().equals(periodEnd)) {
@@ -1721,6 +2857,43 @@ public class StockValuationService {
             return secEps.periodEnd();
         }
         return null;
+    }
+
+    private boolean isPeriodPublishedAtCutoff(StockFinancialPeriod p, LocalDate queryDay, Instant cutoffAt) {
+        return ForwardValuationCalculator.isPeriodReportedAtCutoff(p, queryDay, cutoffAt)
+                || hasCutoffEligibleShares(p, queryDay, cutoffAt);
+    }
+
+    private boolean hasCutoffEligibleShares(StockFinancialPeriod p, LocalDate queryDay, Instant cutoffAt) {
+        if (p == null || p.getPeriodEnd() == null || p.getPeriodEnd().isAfter(queryDay)
+                || p.getSharesOutstanding() == null || p.getSharesBasisDate() == null
+                || p.getSharesBasisDate().isAfter(queryDay)
+                || p.getSharesOutstandingAvailableAt() == null
+                || p.getSharesOutstandingAvailableAt().isAfter(cutoffAt)) {
+            return false;
+        }
+        boolean usesSecShares = p.getSecShareAccession() != null
+                || "SEC_FILING_SHARES".equals(p.getSharesOutstandingSource());
+        if (!usesSecShares) {
+            return true;
+        }
+        LocalDate shareSecFrom = p.getSharesSecAvailableFromDate() != null
+                ? p.getSharesSecAvailableFromDate() : p.getSecAvailableFromDate();
+        return shareSecFrom == null || !shareSecFrom.isAfter(queryDay);
+    }
+
+    private boolean isMultiClassVerifiedAtCutoff(String cik, StockShareObservation obs, LocalDate queryDay,
+                                                 Instant cutoffAt, List<StockSplit> stockSplits) {
+        if (obs == null || cik == null) return false;
+        List<SecFinancialFact> rawFacts = secFacts.findLatestIssuerShareFacts(List.of(cik), cutoffAt);
+        if (rawFacts == null || rawFacts.isEmpty()) return false;
+        List<SecFinancialFact> cutoffEligible = rawFacts.stream()
+                .filter(f -> f.getPeriodEnd() != null && !f.getPeriodEnd().isAfter(queryDay)
+                        && f.getFiled() != null && !f.getFiled().isAfter(queryDay)
+                        && (f.getAvailableFromDate() == null || !f.getAvailableFromDate().isAfter(queryDay))
+                        && f.getObservedAt() != null && !f.getObservedAt().isAfter(cutoffAt))
+                .toList();
+        return isMultiClassVerifiedFromRawFacts(obs, cutoffEligible, stockSplits, cutoffAt);
     }
 
     private boolean isMultiClassVerifiedOneToOne(String cik, StockShareObservation obs,
@@ -1962,57 +3135,455 @@ public class StockValuationService {
                 currentMultiple, currentPercentile, priceMedian);
     }
 
-    /** 同業市場估值參考：僅在最新收市日聚合相同 valuationDate 的同產業快照，按 coalesce(cik, figi) 去重 >= 5 家計算 P25 / P50 / P75。 */
+    /** 市值量級切分：僅對 currency = 'USD' 且 marketCap > 0 計算，否則固定為 null。 */
+    public static String resolveMarketCapTier(String currency, BigDecimal marketCap) {
+        if (!"USD".equalsIgnoreCase(currency) || marketCap == null || marketCap.signum() <= 0) {
+            return null;
+        }
+        if (marketCap.compareTo(MEGA_LARGE_CAP_THRESHOLD) >= 0) {
+            return TIER_MEGA_LARGE;
+        }
+        if (marketCap.compareTo(MID_CAP_THRESHOLD) >= 0) {
+            return TIER_MID;
+        }
+        return TIER_SMALL;
+    }
+
+    private BigDecimal extractAvailableMetric(MetricResult<BigDecimal> metric) {
+        if (metric != null && metric.status() == MetricStatus.AVAILABLE && metric.value() != null) {
+            return metric.value();
+        }
+        return null;
+    }
+
+    private String canonicalIssuerKey(String rawKey, String figi) {
+        if (rawKey != null && !rawKey.isBlank()) {
+            String trimmed = rawKey.trim();
+            if (trimmed.matches("[0-9]{10}")) {
+                return issuerHistory.canonicalCik(trimmed);
+            }
+            return trimmed;
+        }
+        return figi;
+    }
+
+    private boolean isSelfOrSiblingIssuer(Stock targetStock, LocalDate day, String candidateRawKey, String candidateFigi) {
+        if (targetStock == null) return false;
+        if (targetStock.getFigi().equals(candidateFigi)) return true;
+        String candCanonical = canonicalIssuerKey(candidateRawKey, candidateFigi);
+        if (targetStock.getCik() != null && !targetStock.getCik().isBlank()) {
+            String targetCurrentCanon = issuerHistory.canonicalCik(targetStock.getCik());
+            if (Objects.equals(targetCurrentCanon, candCanonical)) return true;
+            String dayCik = resolveCik(targetStock, day);
+            if (dayCik != null && Objects.equals(issuerHistory.canonicalCik(dayCik), candCanonical)) return true;
+        }
+        return false;
+    }
+
+    /** 同業市場估值參考（個股報告入口）：支援 CUSTOM_PEERS -> SAME_TIER -> ADJACENT_TIER -> ALL_INDUSTRY 四級回退與基本面中位數對照。 */
     private ValuationReferenceDto buildPeerReference(
-            String selectedMetric, BigDecimal currentMultiple, String industryCode, LocalDate valuationDate, boolean historicalDate,
-            StockFinancialPeriod period, DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
+            Stock targetStock,
+            String selectedMetric,
+            ValuationResultDto.Metrics targetMetrics,
+            String industryCode,
+            LocalDate valuationDate,
+            boolean historicalDate,
+            StockFinancialPeriod period,
+            DayDenominators denoms,
+            String quoteCurrency,
+            BigDecimal targetMarketCap,
+            BigDecimal targetRevGrowthYoy,
+            boolean financialInstitution) {
         if (historicalDate || valuationDate == null) {
             return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
                     MetricStatus.NOT_APPLICABLE.name(), "HISTORICAL_DATE_NOT_APPLICABLE");
         }
-        if (industryCode == null || industryCode.isBlank()) {
-            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
-                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_CLASSIFICATION_MISSING");
+
+        List<StockCustomPeer> configuredCustom = customPeers.findByFigiOrderBySortOrderAsc(targetStock.getFigi());
+        List<IssuerSnapshotRow> customSnapshotRows = new ArrayList<>();
+        if (configuredCustom != null && !configuredCustom.isEmpty()) {
+            List<String> peerFigis = configuredCustom.stream().map(StockCustomPeer::getPeerFigi).toList();
+            List<Object[]> rawCustom = latestValuations.findActiveTrackedCustomPeerSnapshots(peerFigis, List.of(valuationDate));
+            if (rawCustom != null) {
+                for (Object[] tuple : rawCustom) {
+                    if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                            && tuple[1] instanceof StockValuationLatest snap) {
+                        customSnapshotRows.add(new IssuerSnapshotRow(rawKey, snap));
+                    }
+                }
+            }
         }
-        List<Object[]> rows = latestValuations.findActiveTrackedPeerSnapshots(industryCode, valuationDate);
-        Map<String, List<BigDecimal>> byIssuer = new LinkedHashMap<>();
-        for (Object[] tuple : rows) {
-            if (tuple == null || tuple.length < 2 || !(tuple[0] instanceof String issuerKey)
-                    || !(tuple[1] instanceof StockValuationLatest snapshot)) {
-                continue;
+
+        List<IssuerSnapshotRow> industrySnapshotRows = new ArrayList<>();
+        if (industryCode != null && !industryCode.isBlank()) {
+            List<Object[]> rawInd = latestValuations.findActiveTrackedPeerSnapshots(industryCode, valuationDate);
+            if (rawInd != null) {
+                for (Object[] tuple : rawInd) {
+                    if (tuple != null && tuple.length >= 2 && tuple[0] instanceof String rawKey
+                            && tuple[1] instanceof StockValuationLatest snap) {
+                        industrySnapshotRows.add(new IssuerSnapshotRow(rawKey, snap));
+                    }
+                }
             }
-            if (!Objects.equals(snapshot.getValuationDate(), valuationDate)) {
-                continue;
-            }
-            BigDecimal val = extractLatestMetric(snapshot, selectedMetric);
+        }
+
+        return computePeerReferenceFromSnapshots(
+                targetStock, selectedMetric, targetMetrics, industryCode, valuationDate, false,
+                period, denoms, quoteCurrency, targetMarketCap, targetRevGrowthYoy, financialInstitution,
+                configuredCustom == null ? List.of() : configuredCustom,
+                customSnapshotRows, industrySnapshotRows);
+    }
+
+    /** 純記憶體同業參考與品質中位數計算核心（供個股分析報告與兩階段批次刷新完全共用，零資料庫 I/O）。 */
+    private ValuationReferenceDto computePeerReferenceFromSnapshots(
+            Stock targetStock,
+            String selectedMetric,
+            ValuationResultDto.Metrics targetMetrics,
+            String industryCode,
+            LocalDate valuationDate,
+            boolean historicalDate,
+            StockFinancialPeriod period,
+            DayDenominators denoms,
+            String quoteCurrency,
+            BigDecimal targetMarketCap,
+            BigDecimal targetRevGrowthYoy,
+            boolean financialInstitution,
+            List<StockCustomPeer> configuredCustom,
+            List<IssuerSnapshotRow> customCandidateRows,
+            List<IssuerSnapshotRow> industryCandidateRows) {
+        if (historicalDate || valuationDate == null) {
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
+                    MetricStatus.NOT_APPLICABLE.name(), "HISTORICAL_DATE_NOT_APPLICABLE");
+        }
+
+        String targetTier = resolveMarketCapTier(quoteCurrency, targetMarketCap);
+
+        // 先整理全產業（排除目標股自身及兄弟股）之發行人聚合，並計算全產業主指標中位數副標（>= 5 家時提供）
+        List<IssuerPeerAggregate> allIndustryIssuers = aggregatePeerIssuers(targetStock, valuationDate, industryCandidateRows);
+        List<BigDecimal> allIndustryMultiples = new ArrayList<>();
+        for (IssuerPeerAggregate issuer : allIndustryIssuers) {
+            BigDecimal val = issuer.metricMedians().get(selectedMetric);
             if (val != null && val.signum() > 0) {
-                byIssuer.computeIfAbsent(issuerKey, k -> new ArrayList<>()).add(val);
+                allIndustryMultiples.add(val);
             }
         }
-        List<BigDecimal> issuerMultiples = new ArrayList<>();
-        for (List<BigDecimal> shareClassMultiples : byIssuer.values()) {
-            shareClassMultiples.sort(BigDecimal::compareTo);
-            issuerMultiples.add(quantile(shareClassMultiples, 0.50));
+        BigDecimal industryAllMedian = null;
+        Integer industryAllCount = industryCode != null && !industryCode.isBlank() ? allIndustryMultiples.size() : null;
+        String industryAllMetricCode = industryCode != null && !industryCode.isBlank() ? selectedMetric : null;
+        if (allIndustryMultiples.size() >= MIN_PEER_ISSUERS) {
+            allIndustryMultiples.sort(BigDecimal::compareTo);
+            industryAllMedian = quantile(allIndustryMultiples, 0.50);
         }
-        if (issuerMultiples.size() < MIN_PEER_ISSUERS) {
-            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
-                    MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_PEER_COMPANIES_INSUFFICIENT");
+
+        String peerFallbackReason = null;
+
+        // 第一優先：CUSTOM_PEERS（有效發行人 >= 3 家，不套用市值分層過濾）
+        if (configuredCustom != null && !configuredCustom.isEmpty()) {
+            String rawPref = configuredCustom.getFirst().getPreferredMetric();
+            String customMetric = resolveCustomMetric(rawPref, selectedMetric, financialInstitution);
+            List<IssuerPeerAggregate> customIssuers = aggregatePeerIssuers(targetStock, valuationDate, customCandidateRows);
+            List<IssuerPeerAggregate> validCustom = new ArrayList<>();
+            for (IssuerPeerAggregate issuer : customIssuers) {
+                BigDecimal m = issuer.metricMedians().get(customMetric);
+                if (m != null && m.signum() > 0) {
+                    validCustom.add(issuer);
+                }
+            }
+            if (validCustom.size() >= MIN_CUSTOM_PEER_ISSUERS) {
+                BigDecimal currentCustomMultiple = positiveMetricValue(targetMetrics, customMetric);
+                return assembleAvailablePeerReference(
+                        customMetric, currentCustomMultiple, validCustom,
+                        ValuationReferenceDto.SCOPE_CUSTOM_PEERS, targetTier, null,
+                        industryAllMetricCode, industryAllMedian, industryAllCount,
+                        valuationDate, period, denoms, quoteCurrency, targetMarketCap, targetRevGrowthYoy, financialInstitution, true);
+            }
+            peerFallbackReason = "CUSTOM_PEERS_INSUFFICIENT";
         }
+
+        // 第二至第四優先：產業規模分層（SAME_TIER -> ADJACENT_TIER -> ALL_INDUSTRY，門檻皆 >= 5 家）
+        if (industryCode == null || industryCode.isBlank()) {
+            return ValuationReferenceDto.unavailablePeer(
+                    selectedMetric, MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_CLASSIFICATION_MISSING",
+                    targetTier, peerFallbackReason, null, null, null);
+        }
+
+        List<IssuerPeerAggregate> validIndustryIssuers = new ArrayList<>();
+        for (IssuerPeerAggregate issuer : allIndustryIssuers) {
+            BigDecimal m = issuer.metricMedians().get(selectedMetric);
+            if (m != null && m.signum() > 0) {
+                validIndustryIssuers.add(issuer);
+            }
+        }
+        if (validIndustryIssuers.size() < MIN_PEER_ISSUERS) {
+            return ValuationReferenceDto.unavailablePeer(
+                    selectedMetric, MetricStatus.INSUFFICIENT_DATA.name(), "INDUSTRY_PEER_COMPANIES_INSUFFICIENT",
+                    targetTier, peerFallbackReason, industryAllMetricCode, industryAllMedian, industryAllCount);
+        }
+
+        List<IssuerPeerAggregate> chosenIssuers = null;
+        String chosenScope = null;
+
+        if (targetTier != null) {
+            List<IssuerPeerAggregate> sameTier = new ArrayList<>();
+            for (IssuerPeerAggregate issuer : validIndustryIssuers) {
+                if (targetTier.equals(issuer.marketCapTier())) {
+                    sameTier.add(issuer);
+                }
+            }
+            if (sameTier.size() >= MIN_PEER_ISSUERS) {
+                chosenIssuers = sameTier;
+                chosenScope = ValuationReferenceDto.SCOPE_SAME_TIER;
+            } else {
+                List<IssuerPeerAggregate> adjacentTier = new ArrayList<>();
+                for (IssuerPeerAggregate issuer : validIndustryIssuers) {
+                    if (isAdjacentOrSameTier(targetTier, issuer.marketCapTier())) {
+                        adjacentTier.add(issuer);
+                    }
+                }
+                if (adjacentTier.size() >= MIN_PEER_ISSUERS) {
+                    chosenIssuers = adjacentTier;
+                    chosenScope = ValuationReferenceDto.SCOPE_ADJACENT_TIER;
+                }
+            }
+        }
+
+        if (chosenIssuers == null) {
+            chosenIssuers = validIndustryIssuers;
+            chosenScope = ValuationReferenceDto.SCOPE_ALL_INDUSTRY;
+        }
+
+        BigDecimal currentSelectedMultiple = positiveMetricValue(targetMetrics, selectedMetric);
+        return assembleAvailablePeerReference(
+                selectedMetric, currentSelectedMultiple, chosenIssuers,
+                chosenScope, targetTier, peerFallbackReason,
+                industryAllMetricCode, industryAllMedian, industryAllCount,
+                valuationDate, period, denoms, quoteCurrency, targetMarketCap, targetRevGrowthYoy, financialInstitution, false);
+    }
+
+    private boolean isAdjacentOrSameTier(String targetTier, String candidateTier) {
+        if (candidateTier == null) return false;
+        if (TIER_MEGA_LARGE.equals(targetTier)) {
+            return TIER_MEGA_LARGE.equals(candidateTier) || TIER_MID.equals(candidateTier);
+        }
+        if (TIER_SMALL.equals(targetTier)) {
+            return TIER_SMALL.equals(candidateTier) || TIER_MID.equals(candidateTier);
+        }
+        if (TIER_MID.equals(targetTier)) {
+            return TIER_MEGA_LARGE.equals(candidateTier) || TIER_MID.equals(candidateTier) || TIER_SMALL.equals(candidateTier);
+        }
+        return false;
+    }
+
+    private String resolveCustomMetric(String preferredMetric, String fallbackMetric, boolean financialInstitution) {
+        if (preferredMetric == null || preferredMetric.isBlank()) {
+            return fallbackMetric;
+        }
+        String upper = preferredMetric.trim().toUpperCase();
+        List<String> allowed = financialInstitution ? FIN_SUPPORTED_METRICS : NON_FIN_SUPPORTED_METRICS;
+        return allowed.contains(upper) ? upper : fallbackMetric;
+    }
+
+    private List<IssuerPeerAggregate> aggregatePeerIssuers(
+            Stock targetStock, LocalDate valuationDate, List<IssuerSnapshotRow> rows) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        Map<String, List<StockValuationLatest>> grouped = new LinkedHashMap<>();
+        for (IssuerSnapshotRow row : rows) {
+            if (row == null || row.snapshot() == null) continue;
+            StockValuationLatest snap = row.snapshot();
+            if (!Objects.equals(snap.getValuationDate(), valuationDate)) continue;
+            if (isSelfOrSiblingIssuer(targetStock, valuationDate, row.rawIssuerKey(), snap.getFigi())) continue;
+            String canonicalKey = canonicalIssuerKey(row.rawIssuerKey(), snap.getFigi());
+            grouped.computeIfAbsent(canonicalKey, k -> new ArrayList<>()).add(snap);
+        }
+
+        List<IssuerPeerAggregate> result = new ArrayList<>(grouped.size());
+        for (Map.Entry<String, List<StockValuationLatest>> entry : grouped.entrySet()) {
+            List<StockValuationLatest> snaps = entry.getValue();
+            List<BigDecimal> usdCaps = new ArrayList<>();
+            List<BigDecimal> revGrowths = new ArrayList<>();
+            List<BigDecimal> roes = new ArrayList<>();
+            List<BigDecimal> fcfMargins = new ArrayList<>();
+            Map<String, List<BigDecimal>> metricSamples = new HashMap<>();
+
+            for (StockValuationLatest s : snaps) {
+                if ("USD".equalsIgnoreCase(s.getCurrency()) && s.getMarketCap() != null && s.getMarketCap().signum() > 0) {
+                    usdCaps.add(s.getMarketCap());
+                }
+                if (s.getRevenueGrowthYoy() != null) revGrowths.add(s.getRevenueGrowthYoy());
+                if (s.getRoe() != null) roes.add(s.getRoe());
+                if (s.getFcfMargin() != null && !IndustryValuationProposalService.isFinancialInstitutionModel(s.getModelCode())) {
+                    fcfMargins.add(s.getFcfMargin());
+                }
+                for (String code : NON_FIN_SUPPORTED_METRICS) {
+                    BigDecimal val = extractLatestMetric(s, code);
+                    if (val != null && val.signum() > 0) {
+                        metricSamples.computeIfAbsent(code, k -> new ArrayList<>()).add(val);
+                    }
+                }
+            }
+
+            BigDecimal usdCapMedian = medianScaled(usdCaps, 4);
+            String explicitTier = null;
+            if (usdCapMedian != null) {
+                explicitTier = resolveMarketCapTier("USD", usdCapMedian);
+            } else {
+                for (StockValuationLatest s : snaps) {
+                    if (s.getMarketCapTier() != null) {
+                        explicitTier = s.getMarketCapTier();
+                        break;
+                    }
+                }
+            }
+
+            Map<String, BigDecimal> metricMedians = new HashMap<>();
+            for (Map.Entry<String, List<BigDecimal>> me : metricSamples.entrySet()) {
+                List<BigDecimal> list = me.getValue();
+                list.sort(BigDecimal::compareTo);
+                metricMedians.put(me.getKey(), quantile(list, 0.50));
+            }
+
+            result.add(new IssuerPeerAggregate(
+                    entry.getKey(),
+                    usdCapMedian,
+                    explicitTier,
+                    metricMedians,
+                    medianScaled(revGrowths, 6),
+                    medianScaled(roes, 6),
+                    medianScaled(fcfMargins, 6)
+            ));
+        }
+        return result;
+    }
+
+    private ValuationReferenceDto assembleAvailablePeerReference(
+            String metricCode,
+            BigDecimal currentMultiple,
+            List<IssuerPeerAggregate> selectedIssuers,
+            String peerScope,
+            String targetTier,
+            String peerFallbackReason,
+            String industryAllMetricCode,
+            BigDecimal industryAllMedian,
+            Integer industryAllCount,
+            LocalDate valuationDate,
+            StockFinancialPeriod period,
+            DayDenominators denoms,
+            String quoteCurrency,
+            BigDecimal targetMarketCap,
+            BigDecimal targetRevGrowthYoy,
+            boolean financialInstitution,
+            boolean evaluateCustomWarnings) {
+        List<BigDecimal> issuerMultiples = new ArrayList<>(selectedIssuers.size());
+        List<BigDecimal> revGrowthList = new ArrayList<>();
+        List<BigDecimal> roeList = new ArrayList<>();
+        List<BigDecimal> fcfMarginList = new ArrayList<>();
+
+        for (IssuerPeerAggregate issuer : selectedIssuers) {
+            BigDecimal m = issuer.metricMedians().get(metricCode);
+            if (m != null && m.signum() > 0) {
+                issuerMultiples.add(m);
+            }
+            if (issuer.revenueGrowthYoyMedian() != null) revGrowthList.add(issuer.revenueGrowthYoyMedian());
+            if (issuer.roeMedian() != null) roeList.add(issuer.roeMedian());
+            if (!financialInstitution && issuer.fcfMarginMedian() != null) {
+                fcfMarginList.add(issuer.fcfMarginMedian());
+            }
+        }
+
         issuerMultiples.sort(BigDecimal::compareTo);
         BigDecimal low = quantile(issuerMultiples, 0.25);
         BigDecimal median = quantile(issuerMultiples, 0.50);
         BigDecimal high = quantile(issuerMultiples, 0.75);
-        BigDecimal rawPriceLow = convertMultipleToPrice(selectedMetric, low, period, denoms, quoteCurrency, financialInstitution);
-        BigDecimal rawPriceMedian = convertMultipleToPrice(selectedMetric, median, period, denoms, quoteCurrency, financialInstitution);
-        BigDecimal rawPriceHigh = convertMultipleToPrice(selectedMetric, high, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceLow = convertMultipleToPrice(metricCode, low, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceMedian = convertMultipleToPrice(metricCode, median, period, denoms, quoteCurrency, financialInstitution);
+        BigDecimal rawPriceHigh = convertMultipleToPrice(metricCode, high, period, denoms, quoteCurrency, financialInstitution);
         BigDecimal priceLow = rawPriceLow != null && rawPriceHigh != null ? rawPriceLow : null;
         BigDecimal priceHigh = rawPriceLow != null && rawPriceHigh != null ? rawPriceHigh : null;
         BigDecimal priceMedian = priceLow != null && priceHigh != null ? rawPriceMedian : null;
         BigDecimal currentPercentile = midRankPercentile(issuerMultiples, currentMultiple);
-        return new ValuationReferenceDto(ValuationReferenceDto.KIND_PEER_MARKET, selectedMetric,
-                MetricStatus.AVAILABLE.name(), null, low, median, high, priceLow, priceHigh,
-                issuerMultiples.size(), null, null, valuationDate, valuationDate,
-                currentMultiple, currentPercentile, priceMedian);
+
+        BigDecimal peerRevGrowthMedian = medianScaled(revGrowthList, 6);
+        BigDecimal peerRoeMedian = medianScaled(roeList, 6);
+        BigDecimal peerFcfMarginMedian = financialInstitution ? null : medianScaled(fcfMarginList, 6);
+        Integer peerFcfCount = financialInstitution ? null : (fcfMarginList.isEmpty() ? 0 : fcfMarginList.size());
+
+        List<String> warnings = new ArrayList<>();
+        if (evaluateCustomWarnings) {
+            if ("USD".equalsIgnoreCase(quoteCurrency) && targetMarketCap != null && targetMarketCap.signum() > 0) {
+                boolean capMismatch = false;
+                for (IssuerPeerAggregate issuer : selectedIssuers) {
+                    BigDecimal pCap = issuer.usdMarketCapMedian();
+                    if (pCap != null && pCap.signum() > 0) {
+                        BigDecimal larger = targetMarketCap.max(pCap);
+                        BigDecimal threshold = targetMarketCap.min(pCap).multiply(CUSTOM_PEER_CAP_RATIO_WARN, MC);
+                        if (larger.compareTo(threshold) > 0) {
+                            capMismatch = true;
+                            break;
+                        }
+                    }
+                }
+                if (capMismatch) {
+                    warnings.add("CUSTOM_PEER_MARKET_CAP_MISMATCH");
+                }
+            }
+            if (targetRevGrowthYoy != null && peerRevGrowthMedian != null) {
+                BigDecimal growthDiff = targetRevGrowthYoy.subtract(peerRevGrowthMedian, MC).abs();
+                if (growthDiff.compareTo(CUSTOM_PEER_GROWTH_DIFF_WARN) >= 0) {
+                    warnings.add("CUSTOM_PEER_GROWTH_DIVERGENCE");
+                }
+            }
+        }
+
+        return new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_PEER_MARKET,
+                metricCode,
+                MetricStatus.AVAILABLE.name(),
+                null,
+                low,
+                median,
+                high,
+                priceLow,
+                priceHigh,
+                issuerMultiples.size(),
+                null,
+                null,
+                valuationDate,
+                valuationDate,
+                currentMultiple,
+                currentPercentile,
+                priceMedian,
+                peerScope,
+                targetTier,
+                peerFallbackReason,
+                industryAllMetricCode,
+                industryAllMedian,
+                industryAllCount,
+                peerRevGrowthMedian,
+                revGrowthList.size(),
+                peerRoeMedian,
+                roeList.size(),
+                peerFcfMarginMedian,
+                peerFcfCount,
+                warnings
+        );
+    }
+
+    private BigDecimal medianScaled(List<BigDecimal> values, int scale) {
+        if (values == null || values.isEmpty()) return null;
+        List<BigDecimal> sorted = new ArrayList<>(values);
+        sorted.sort(BigDecimal::compareTo);
+        int n = sorted.size();
+        if (n == 1) return sorted.getFirst().setScale(scale, RoundingMode.HALF_UP);
+        double pos = 0.50 * (n - 1);
+        int lower = (int) Math.floor(pos);
+        int upper = (int) Math.ceil(pos);
+        if (lower == upper) {
+            return sorted.get(lower).setScale(scale, RoundingMode.HALF_UP);
+        }
+        BigDecimal weight = BigDecimal.valueOf(pos - lower);
+        BigDecimal lowVal = sorted.get(lower);
+        BigDecimal highVal = sorted.get(upper);
+        return lowVal.add(highVal.subtract(lowVal, MC).multiply(weight, MC), MC).setScale(scale, RoundingMode.HALF_UP);
     }
 
     /** 產業估值假設：僅在最新收市日讀取當前生效設定換算假設價格區間；無經驗分佈故 currentPercentile 固定為 null。 */
@@ -2147,7 +3718,16 @@ public class StockValuationService {
         return lowVal.add(highVal.subtract(lowVal, MC).multiply(weight, MC), MC).setScale(4, RoundingMode.HALF_UP);
     }
 
-    private void populateLatestEntity(StockValuationLatest entity, ValuationResultDto dto) {
+    private void populateLatestEntity(
+            StockValuationLatest entity,
+            ValuationResultDto dto,
+            BigDecimal marketCap,
+            String marketCapTier,
+            BigDecimal revenueGrowthYoy,
+            BigDecimal roe,
+            BigDecimal fcfMargin,
+            BigDecimal historicalPercentile,
+            String verdict) {
         entity.setFigi(dto.figi());
         entity.setValuationDate(dto.valuationDate());
         entity.setAnalysisAsOf(dto.analysisAsOf());
@@ -2199,6 +3779,14 @@ public class StockValuationService {
         entity.setEvEbitdaFinancialSource(m.evEbitda().financialSource());
         entity.setEvEbitdaPeriodStart(m.evEbitda().periodStart());
         entity.setEvEbitdaPeriodEnd(m.evEbitda().periodEnd());
+
+        entity.setMarketCap(marketCap);
+        entity.setMarketCapTier(marketCapTier);
+        entity.setRevenueGrowthYoy(revenueGrowthYoy);
+        entity.setRoe(roe);
+        entity.setFcfMargin(fcfMargin);
+        entity.setHistoricalPercentile(historicalPercentile);
+        entity.setVerdict(verdict);
     }
 
     private ValuationResultDto unavailableDayResult(

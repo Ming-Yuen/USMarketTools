@@ -12,8 +12,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReadModelIsolationBoundaryTests {
     @Test
     void stockScreenAndAnalysisEntrypointsAreReadOnly() throws Exception {
-        Transactional screen = StockService.class.getMethod("screen", String.class, String.class, String.class,
-                int.class, int.class).getAnnotation(Transactional.class);
+        Transactional screen = StockService.class.getMethod("screen", StockService.ScreenCriteria.class)
+                .getAnnotation(Transactional.class);
         Transactional analysis = StockAnalysisService.class.getMethod("analyze", AnalysisReportRequest.class)
                 .getAnnotation(Transactional.class);
         assertThat(screen).isNotNull();

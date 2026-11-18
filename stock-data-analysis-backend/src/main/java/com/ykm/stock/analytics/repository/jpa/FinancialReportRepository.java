@@ -29,4 +29,16 @@ public interface FinancialReportRepository extends JpaRepository<FinancialReport
     List<FinancialReport> findByFigiOrderByPeriodEndAsc(String figi);
 
     List<FinancialReport> findByFigiInOrderByFigiAscPeriodEndAsc(Collection<String> figis);
+
+    record KnownReportPeriod(LocalDate periodEnd, int periodType, Integer fiscalYear, String period, Instant observedAt) {}
+
+    /** 僅讀取截至截點已入庫之富途財報報期元資料（不載入 JSONB items），供前瞻預期排除已公布財報與推算年結日。 */
+    @Query("""
+            select new com.ykm.stock.analytics.repository.jpa.FinancialReportRepository$KnownReportPeriod(
+                f.periodEnd, f.periodType, f.fiscalYear, f.period, f.observedAt)
+            from FinancialReport f
+            where f.figi = :figi and f.observedAt <= :cutoff
+            order by f.periodEnd asc, f.periodType asc
+            """)
+    List<KnownReportPeriod> findKnownReportPeriods(@Param("figi") String figi, @Param("cutoff") Instant cutoff);
 }

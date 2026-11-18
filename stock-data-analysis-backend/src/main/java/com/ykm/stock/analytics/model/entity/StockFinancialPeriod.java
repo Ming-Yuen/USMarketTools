@@ -69,6 +69,14 @@ public class StockFinancialPeriod {
     @Comment("本期若採用 SEC 披露事實，其最晚通過披露時間門的美東交易日。")
     private LocalDate secAvailableFromDate;
 
+    @Column(name = "sec_periodic_observed_at")
+    @Comment("本期最早具備定期申報證據之 SEC 財務事實入庫時間（UTC），供判定該財期是否已公開。")
+    private Instant secPeriodicObservedAt;
+
+    @Column(name = "sec_periodic_available_from_date")
+    @Comment("本期最早具備定期申報證據之 SEC 財務事實生效交易日（美東），不受同季後續 10-Q/A 或補披露項目推遲。")
+    private LocalDate secPeriodicAvailableFromDate;
+
     @Column(name = "sec_cik", length = 16)
     @Comment("本期補充或計算所使用的 SEC 十位數 CIK；純富途來源時為 NULL。")
     private String secCik;
@@ -162,6 +170,10 @@ public class StockFinancialPeriod {
     @Column(name = "eps_ttm_available_at")
     @Comment("TTM 每股盈利輸入資料的取得時間（UTC）。")
     private Instant epsTtmAvailableAt;
+
+    @Column(name = "eps_ttm_sec_available_from_date")
+    @Comment("TTM 每股盈利若採用 SEC 披露事實，其構成項目最晚通過披露時間門的美東交易日；純富途來源時為 NULL。")
+    private LocalDate epsTtmSecAvailableFromDate;
 
     @Column(name = "eps_share_basis_date")
     @Comment("eps_ttm 所對應的已核實股份拆股基準日；查詢交易日 D 時依此日轉換拆股因子。")
@@ -338,6 +350,10 @@ public class StockFinancialPeriod {
     @Column(name = "shares_outstanding_available_at")
     @Comment("流通股數基準的取得時間（UTC）。")
     private Instant sharesOutstandingAvailableAt;
+
+    @Column(name = "shares_sec_available_from_date")
+    @Comment("期末股數若取自 SEC 申報，該筆股數事實通過披露時間門的美東生效交易日；觀察股數來源時為 NULL。")
+    private LocalDate sharesSecAvailableFromDate;
 
     @Column(name = "shares_basis_date")
     @Comment("shares_outstanding 對應的股份拆股基準日。")

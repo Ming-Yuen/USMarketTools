@@ -76,6 +76,8 @@ class StockValuationDailyTaskTests {
     private final IndustryValuationConfigRepository industryConfigs = mock(IndustryValuationConfigRepository.class);
     private final StockFinancialPeriodRepository periodRepo = mock(StockFinancialPeriodRepository.class);
     private final StockValuationLatestRepository latestRepo = mock(StockValuationLatestRepository.class);
+    private final com.ykm.stock.analytics.repository.jpa.StockCustomPeerRepository customPeerRepo =
+            mock(com.ykm.stock.analytics.repository.jpa.StockCustomPeerRepository.class);
     private final DateTimeService clock = mock(DateTimeService.class);
     private final MarketStatusService calendar = mock(MarketStatusService.class);
     private final FutuService futu = mock(FutuService.class);
@@ -93,7 +95,7 @@ class StockValuationDailyTaskTests {
         TransactionTemplate tx = new TransactionTemplate(new NoOpTransactionManager());
         valuationService = new StockValuationService(
                 stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
-                industries, industryConfigs, periodRepo, latestRepo, calendar, clock,
+                industries, industryConfigs, periodRepo, latestRepo, customPeerRepo, calendar, clock,
                 new SecIssuerHistory(""), tx, entityManager);
         task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager);
 

@@ -25,7 +25,9 @@ import java.time.LocalDate;
 @AllArgsConstructor
 @Table(name = "stock_valuation_latest", indexes = {
         @Index(name = "idx_stock_valuation_latest_industry", columnList = "industry_code"),
-        @Index(name = "idx_stock_valuation_latest_date", columnList = "valuation_date")
+        @Index(name = "idx_stock_valuation_latest_date", columnList = "valuation_date"),
+        @Index(name = "idx_stock_valuation_latest_tier", columnList = "market_cap_tier"),
+        @Index(name = "idx_stock_valuation_latest_verdict", columnList = "verdict")
 })
 @Comment("最新收市交易日估值快照表，以 FIGI 為主鍵保存五項市場倍數、狀態與原因碼，供全市場選股與同業比較直接查詢。")
 public class StockValuationLatest {
@@ -215,6 +217,34 @@ public class StockValuationLatest {
     @Column(name = "ev_ebitda_period_end")
     @Comment("EV/EBITDA TTM 分母期間期末日。")
     private LocalDate evEbitdaPeriodEnd;
+
+    @Column(name = "market_cap", precision = 24, scale = 4)
+    @Comment("估值交易日總市值（以股票報價幣別計）；缺少已核實流通股數或有效收盤價時為 NULL。")
+    private BigDecimal marketCap;
+
+    @Column(name = "market_cap_tier", length = 16)
+    @Comment("市值量級（MEGA_LARGE >= 100 億美元、MID 20–100 億美元、SMALL < 20 億美元）；僅 currency 為 USD 且 market_cap > 0 時計算，否則為 NULL。")
+    private String marketCapTier;
+
+    @Column(name = "revenue_growth_yoy", precision = 16, scale = 6)
+    @Comment("當期配對財季之 TTM 營業收入年增率（小數比例，如 0.15 代表 +15%）；缺少可比報期或基期非正時為 NULL。")
+    private BigDecimal revenueGrowthYoy;
+
+    @Column(name = "roe", precision = 16, scale = 6)
+    @Comment("當期配對財季之普通股權益報酬率 ROE（小數比例）；普通股權益非正或缺值時為 NULL。")
+    private BigDecimal roe;
+
+    @Column(name = "fcf_margin", precision = 16, scale = 6)
+    @Comment("當期配對財季之 TTM 自由現金流利潤率（小數比例）；銀行與保險業不適用或缺值時固定為 NULL。")
+    private BigDecimal fcfMargin;
+
+    @Column(name = "historical_percentile", precision = 8, scale = 2)
+    @Comment("當日主估值指標於過去五年有效月末樣本中的經驗分位排名（0–100 mid-rank）；樣本未滿 6 個月或當期倍數非正時為 NULL。")
+    private BigDecimal historicalPercentile;
+
+    @Column(name = "verdict", length = 32)
+    @Comment("單軌客觀市場參考帶 [L, M, H] 估值位置結論（DEEP_UNDERVALUED 至 OVERVALUED_RISK，或 INSUFFICIENT_EVIDENCE）。")
+    private String verdict;
 
     public boolean hasAvailableMetric() {
         return pe != null || pb != null || ps != null || pfcf != null || evEbitda != null;

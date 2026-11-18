@@ -25,8 +25,9 @@
 | `stock_concept` | `code` | 概念名稱及來源板塊碼 |
 | `stock_concept_mapping` | `(figi, concept_code)` | 股票目前所屬的多個概念 |
 | `industry_valuation_config` | `(industry_code, effective_at)` | 人工確認的產業估值模型、主要指標及可選倍數假設 |
-| `stock_financial_period` | `(figi, period_end)` | 標準化財季分母表：保存財季起訖、14 項財務原料、TTM 分母、EV 非市值調整項與期末流通股數／EPS 拆股基準 |
-| `stock_valuation_latest` | `figi` | 最新已收市交易日的五項估值倍數、狀態、原因碼與主指標快照，供選股與同業比較直接查詢 |
+| `stock_financial_period` | `(figi, period_end)` | 標準化財季分母表：保存財季起訖、14 項財務原料、TTM 分母、EV 非市值調整項、期末流通股數／EPS 拆股基準與 SEC 定期披露可用日欄位 |
+| `stock_valuation_latest` | `figi` | 最新已收市交易日的五項估值倍數、市值與規模分層（`market_cap_tier`）、三項財務品質指標（`revenue_growth_yoy`、`roe`、`fcf_margin`）、歷史分位數（`historical_percentile`）與估值定性（`verdict`）快照，供選股與同業比較直接查詢 |
+| `stock_custom_peer` | `(target_figi, peer_figi)` | 個股自訂對標同業清單與可選偏好比較指標（`preferred_metric`） |
 | `stock_share_observation` | `(figi, observed_at)` | 富途流通在外股數、已發行股數、對應市值及原生 P/E、P/B 快照觀察（僅在股數變動或當日尚無收市快照時寫入） |
 | `financial_report` | `(figi, statement_type, period_end, period_type)` | 富途原幣三大財報（損益表 `1`、資產負債表 `2`、現金流量表 `3`） |
 | `sec_financial_fact` | `id`（披露唯一鍵 `NULLS NOT DISTINCT`） | SEC 標準 `us-gaap`／`dei` 財務與股數披露事實 |
@@ -73,11 +74,12 @@
 
 | 方法／路徑 | 用途 |
 | --- | --- |
-| `GET /stock/screen` | 全市場追蹤中營運股票篩選（直接關聯 `stock_valuation_latest`）；參數 `symbol/industry/conceptCode/page/size` |
+| `GET /stock/screen` | 全市場追蹤中營運股票篩選與排序（關聯 `stock_valuation_latest`）；支援 `symbol`、`industry`、`conceptCode`、`marketCapTier`、`verdict`、財務品質與歷史分位數門檻及 `sortBy`/`sortDir`/`page`/`size` |
 | `PATCH /stock/{figi}/tracked` | 更新單一股票的人工追蹤開關 `{ "tracked": true \| false }` |
 | `POST /stock/tracked/batch` | 批量更新多檔股票的人工追蹤開關 `{ "figis": [...], "tracked": true \| false }` |
-| `POST /stock/classification` | 產業與概念字典查詢 |
-| `POST /analysis/report` | 個股分析報告（回傳 `valuation`、`financials` 14 項指標、5 年月頻 `history`、三組估值參考、技術支撐阻力與交易計畫） |
+| `POST /stock/classification` | 交易所、產業、概念、市值規模分層（`marketCapTiers`）、估值定性（`verdicts`）與支援排序欄位（`sortFields`）字典查詢 |
+| `POST /analysis/report` | 個股分析報告（回傳 `valuation`、規模分層／自訂對標同業參考、前瞻估值與預期修正觀察、`financials` 14 項指標、5 年月頻 `history`、技術支撐阻力與執行摘要 `summary`） |
+| `GET /valuation/{figi}/custom-peers`、`PUT`、`DELETE` | 查詢、儲存或清除指定 `figi` 的自訂對標同業清單與偏好比較指標，並即時同步最新 `verdict` 快照 |
 | `GET /valuation/{figi}/history` | 個股歷史估值曲線；參數 `from`、`through`、`frequency`（`MONTH_END`\|`DAILY`）、`source`（預設 `LOCAL` 本地五倍數，可選 `FUTU` 原生三倍數） |
 | `POST /valuation/recalculate` | 手動整股重建指定 `figi` 的 `stock_financial_period` 並刷新 `stock_valuation_latest`，回傳區間估值 |
 | `GET /industry-valuation/{code}` | 查詢正式產業估值設定、支援模型及是否可產生 AI 草稿 |

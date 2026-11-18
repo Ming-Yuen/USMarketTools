@@ -24,4 +24,15 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
     List<StockQuote> findByFigiOrderByQuoteDateDesc(String figi, Limit limit);
     List<StockQuote> findByFigiAndQuoteDateLessThanEqualOrderByQuoteDateDesc(String figi, LocalDate date, Limit limit);
     List<StockQuote> findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(String figi, LocalDate from, LocalDate through);
+
+    /** 按實際估值日視窗批次擷取每股每月最後一個交易日未復權行情，避免全市場刷新載入千萬列日線。 */
+    @Query(value = """
+            select distinct on (q.figi, date_trunc('month', q.quote_date)) q.*
+            from stock_quote q
+            where q.figi in (:figis) and q.quote_date between :from and :through
+            order by q.figi, date_trunc('month', q.quote_date), q.quote_date desc
+            """, nativeQuery = true)
+    List<StockQuote> findMonthEndQuotes(@Param("figis") Collection<String> figis,
+                                        @Param("from") LocalDate from,
+                                        @Param("through") LocalDate through);
 }

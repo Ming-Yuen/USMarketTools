@@ -7,6 +7,8 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryMethod;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EventRiskDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto.ForwardMetrics;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
@@ -253,6 +255,103 @@ class ValuationSummaryCalculatorTests {
         assertThat(swingPaired.technicalSupportZoneId()).isEqualTo("D1");
         assertThat(swingPaired.technicalSupportTimeframe()).isEqualTo("DAILY");
         assertThat(swingPaired.stance()).isEqualTo("ACCUMULATE_AT_SUPPORT");
+    }
+
+    @Test
+    void forwardContractionOr90dDowngradeTriggersValueTrapWhilePreservingEventGateAndAllHighFlags() {
+        ValuationReferenceDto hist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("18"), new BigDecimal("22"), new BigDecimal("26"),
+                new BigDecimal("180"), new BigDecimal("260"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("16"), new BigDecimal("10"), new BigDecimal("220"));
+        ValuationResultDto undervalued = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("160"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        FundamentalSnapshotDto trailingStrong = fundamentals(false, "0.15", "0.20", "0.18", "0.90", "0.25", "0.18", "0.50", "0.06", "0.06");
+        MetricResult<BigDecimal> na = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("NA", "TEST", "NA"));
+
+        // 1) TTM 看似低估且 STRONG，但 FY1 共識 EPS 較 TTM 恰好衰退 -20.00% -> 觸發 CAUTION_VALUE_TRAP 與 FORWARD_EARNINGS_CONTRACTION
+        ForwardMetrics contraction20 = new ForwardMetrics(
+                DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("20.0000")), na, na, null,
+                MetricResult.available(new BigDecimal("-0.200000")),
+                "2027", "ANNUAL", DAY, null, null, na, na, na, na);
+        InvestmentSummaryDto trapByContraction = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, trailingStrong,
+                new FutuObservationsDto(null, List.of(), contraction20),
+                structure(TrendState.UPTREND, "160"), null, null,
+                marketContext("4.10", "150", EntryPermission.ALLOW, false)).value();
+        assertThat(trapByContraction.verdict()).isEqualTo("DEEP_UNDERVALUED");
+        assertThat(trapByContraction.stance()).isEqualTo("CAUTION_VALUE_TRAP");
+        assertThat(trapByContraction.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("FORWARD_EARNINGS_CONTRACTION");
+
+        // 2) 近 90 日預期 EPS 恰好下修 -10.00%，且同時存在事件門鎖與破位、以及負 FCF 等多個 HIGH 風險 -> Stance 優先保留 WAIT_FOR_STABILIZATION，且前瞻風險不被截斷
+        ForwardMetrics downgrade10 = new ForwardMetrics(
+                DAY, null, null, null, na, na, na, null, na,
+                "2026Q4", "QUARTERLY", DAY, null, DAY.minusDays(90),
+                na, MetricResult.available(new BigDecimal("-0.100000")), na, na);
+        FundamentalSnapshotDto multipleHighRisks = fundamentals(false, "-0.15", "-0.25", null, null, "0.02", "-0.05", "5.0", "-0.02", "0.04");
+        TradePlanDto breachedPlan = new TradePlanDto("P_STOP", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, EntryMethod.ZONE_LIMIT,
+                null, null, List.of(), MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TP", "NA")),
+                TradePlanStatus.INVALIDATED, List.of(AnalysisReasonDto.of("PROTECTIVE_STOP_BREACHED", "TRADE_PLAN", "破止損")),
+                "Z1", 1, AnalysisTimeframe.WEEKLY, CLOSE, DAY.plusDays(5), List.of());
+        MetricResult<TradePlanResultDto> breachedPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(breachedPlan), new BigDecimal("160"), DAY, null, List.of(), List.of(), true));
+
+        InvestmentSummaryDto gatedWithForward = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, multipleHighRisks,
+                new FutuObservationsDto(null, List.of(), downgrade10),
+                structure(TrendState.DOWNTREND, "160"), null, breachedPlans,
+                marketContext("4.10", "180", EntryPermission.BLOCK, true)).value();
+        assertThat(gatedWithForward.stance()).isEqualTo("WAIT_FOR_STABILIZATION");
+        assertThat(gatedWithForward.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("EARNINGS_IMMINENT_BLOCK", "PROTECTIVE_STOP_OR_RECLAIM_PENDING", "EARNINGS_FORECAST_DOWNGRADE_90D");
+
+        // 3) 保持簽核範圍外 stance 不變：FAIR_UPPER + STRONG + UPTREND 遇前瞻下修維持 HOLD_TRAIL_NO_CHASE（僅於風險旗標提示）；
+        //    且無前瞻訊號時 DEEP_UNDERVALUED + WEAKENING + confirmationPending 維持原有 CAUTION_VALUE_TRAP
+        ValuationResultDto fairUpperVal = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("240"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        InvestmentSummaryDto fairUpperWithTrap = calculator.calculate(
+                AnalysisHorizon.POSITION, fairUpperVal, null, trailingStrong,
+                new FutuObservationsDto(null, List.of(), downgrade10),
+                structure(TrendState.UPTREND, "240"), null, null,
+                marketContext("4.10", "200", EntryPermission.ALLOW, false)).value();
+        assertThat(fairUpperWithTrap.verdict()).isEqualTo("FAIR_UPPER");
+        assertThat(fairUpperWithTrap.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(fairUpperWithTrap.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("EARNINGS_FORECAST_DOWNGRADE_90D");
+
+        TradePlanDto confirmPendingPlan = new TradePlanDto("P_CONF", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, EntryMethod.ZONE_LIMIT,
+                null, null, List.of(), MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TP", "NA")),
+                TradePlanStatus.WAITING_TRIGGER, List.of(AnalysisReasonDto.of("STRUCTURE_CONFIRMATION_REQUIRED", "TRADE_PLAN", "待確認")),
+                "Z1", 1, AnalysisTimeframe.WEEKLY, CLOSE, DAY.plusDays(5), List.of());
+        MetricResult<TradePlanResultDto> confirmPendingPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(confirmPendingPlan), new BigDecimal("160"), DAY, null, List.of(), List.of(), true));
+        InvestmentSummaryDto weakeningWithConfirmPending = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, multipleHighRisks, null,
+                structure(TrendState.UPTREND, "160"), null, confirmPendingPlans,
+                marketContext("4.10", "150", EntryPermission.ALLOW, false)).value();
+        assertThat(weakeningWithConfirmPending.stance()).isEqualTo("CAUTION_VALUE_TRAP");
+
+        // 4) DEEP_UNDERVALUED + WEAKENING + 前瞻陷阱 + 僅有事件門鎖（無破位）-> 優先為 WAIT_FOR_STABILIZATION；
+        //    而僅有一般 confirmationPending + 前瞻陷阱（無破位、無事件封鎖）-> 返回 CAUTION_VALUE_TRAP
+        InvestmentSummaryDto weakeningForwardEventOnly = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, multipleHighRisks,
+                new FutuObservationsDto(null, List.of(), downgrade10),
+                structure(TrendState.UPTREND, "160"), null, null,
+                marketContext("4.10", "150", EntryPermission.BLOCK, true)).value();
+        assertThat(weakeningForwardEventOnly.stance()).isEqualTo("WAIT_FOR_STABILIZATION");
+
+        InvestmentSummaryDto forwardTrapWithConfirmPending = calculator.calculate(
+                AnalysisHorizon.POSITION, undervalued, null, trailingStrong,
+                new FutuObservationsDto(null, List.of(), downgrade10),
+                structure(TrendState.UPTREND, "160"), null, confirmPendingPlans,
+                marketContext("4.10", "150", EntryPermission.ALLOW, false)).value();
+        assertThat(forwardTrapWithConfirmPending.stance()).isEqualTo("CAUTION_VALUE_TRAP");
     }
 
     private FundamentalSnapshotDto fundamentals(

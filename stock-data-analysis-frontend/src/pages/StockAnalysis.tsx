@@ -90,10 +90,10 @@ export function StockAnalysisPage() {
       {/* L3. 估值與基本面證據層（歷史參考、同業參考與人工產業假設三個獨立面板並列，緊接基本面與歷史走勢圖） */}
       <Grid container spacing={2} sx={{ mt: 0.5 }}>
         <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="歷史市場估值參考" description="比較這隻股票過去實際市場給予的估值倍數。" reference={valuation?.historicalReference} currency={valuation?.currency} /></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="同業市場估值參考" description="比較可比公司的實際市場倍數；樣本不足時不產生替代值。" reference={valuation?.peerReference} currency={valuation?.currency} /></Grid>
+        <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="同業市場估值參考" description="比較可比公司的實際市場倍數；優先採用自訂對標或同市值量級對手，樣本不足時依序放寬。" reference={valuation?.peerReference} currency={valuation?.currency} figi={figi} symbol={report?.symbol} fundamentals={report.fundamentals} isHistoricalDate={Boolean(valuationDate)} /></Grid>
         <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="產業估值假設" description="以人工確認的產業模型及倍數建立假設情境，與實際市場參考分開。" reference={valuation?.industryAssumption} currency={valuation?.currency} /></Grid>
       </Grid>
-      <FundamentalsPanel fundamentals={report.fundamentals} summary={summary} />
+      <FundamentalsPanel fundamentals={report.fundamentals} summary={summary} forward={report.futuObservations?.forward} />
       <ValuationHistoryPanel key={figi + ":" + report.valuationDate} figi={figi} initial={report.history ?? []} />
 
       {/* L4. 稽核明細折疊區（14 項財務原料、富途觀察預期、29 項完整技術指標與產業假設設定預設收合） */}

@@ -7,6 +7,8 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EventRiskDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto.ForwardMetrics;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.FairValueBandDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.SummaryFlagDto;
@@ -70,10 +72,70 @@ public class ValuationSummaryCalculator {
     private static final BigDecimal ANCHOR_DIVERGENCE_THRESHOLD = new BigDecimal("0.35");
     private static final BigDecimal SHARE_DILUTION_WARN = new BigDecimal("0.03");
     private static final BigDecimal REV_CONTRACTION_WARN = new BigDecimal("-0.05");
+    private static final BigDecimal FORWARD_EPS_TRAP_CONTRACTION = new BigDecimal("-0.20");
+    private static final BigDecimal FORWARD_REVISION_90D_TRAP = new BigDecimal("-0.10");
 
     private record YieldSpreadSelection(MetricResult<BigDecimal> spread, String basis) {}
 
     private record BandSynthesis(String anchorSource, FairValueBandDto band, List<AnalysisReasonDto> anchorReasons) {}
+
+    private record ForwardTrapSignals(boolean earningsContraction, boolean swungToLoss, BigDecimal impliedGrowth,
+                                      String targetFiscalPeriod, boolean downgrade90d, BigDecimal revision90d,
+                                      String revisionFiscalPeriod, String revisionPeriodType) {
+        boolean anyTrap() {
+            return earningsContraction || downgrade90d;
+        }
+    }
+
+    /** 供最新估值快照批次刷新與個股報告共用之純記憶體客觀市場參考帶結論判定（確保選股器與個股頁 verdict 完全一致）。 */
+    public static String computeObjectiveVerdict(BigDecimal price, ValuationReferenceDto hist, ValuationReferenceDto peer) {
+        if (price == null || price.signum() <= 0) {
+            return "INSUFFICIENT_EVIDENCE";
+        }
+        boolean histValid = isAnchorValidStatic(hist);
+        boolean peerValid = isAnchorValidStatic(peer);
+        BigDecimal low = null;
+        BigDecimal mid = null;
+        BigDecimal high = null;
+        if (histValid && peerValid) {
+            low = hist.priceLow().add(peer.priceLow(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+            mid = hist.priceMedian().add(peer.priceMedian(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+            high = hist.priceHigh().add(peer.priceHigh(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+        } else if (histValid) {
+            low = hist.priceLow();
+            mid = hist.priceMedian();
+            high = hist.priceHigh();
+        } else if (peerValid) {
+            low = peer.priceLow();
+            mid = peer.priceMedian();
+            high = peer.priceHigh();
+        }
+        return classifyPriceAgainstBand(price, low, mid, high);
+    }
+
+    private static String classifyPriceAgainstBand(BigDecimal price, BigDecimal low, BigDecimal mid, BigDecimal high) {
+        if (price == null || price.signum() <= 0 || low == null || mid == null || high == null || mid.signum() <= 0) {
+            return "INSUFFICIENT_EVIDENCE";
+        }
+        BigDecimal deepFloor = low.multiply(DEEP_DISCOUNT_FACTOR, MC);
+        BigDecimal riskCeiling = high.multiply(OVERVALUED_RISK_FACTOR, MC);
+        if (price.compareTo(deepFloor) < 0) {
+            return "DEEP_UNDERVALUED";
+        }
+        if (price.compareTo(low) <= 0) {
+            return "MODERATELY_UNDERVALUED";
+        }
+        if (price.compareTo(mid) <= 0) {
+            return "FAIR_LOWER";
+        }
+        if (price.compareTo(high) <= 0) {
+            return "FAIR_UPPER";
+        }
+        if (price.compareTo(riskCeiling) <= 0) {
+            return "MODERATELY_OVERVALUED";
+        }
+        return "OVERVALUED_RISK";
+    }
 
     public MetricResult<InvestmentSummaryDto> calculate(
             ValuationResultDto valuation,
@@ -83,7 +145,7 @@ public class ValuationSummaryCalculator {
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
             MetricResult<MarketContextDto> marketContext) {
-        return calculate(AnalysisHorizon.POSITION, valuation, financials, fundamentals,
+        return calculate(AnalysisHorizon.POSITION, valuation, financials, fundamentals, null,
                 priceStructure, supportResistance, tradePlans, marketContext);
     }
 
@@ -92,6 +154,20 @@ public class ValuationSummaryCalculator {
             ValuationResultDto valuation,
             FinancialsDto financials,
             FundamentalSnapshotDto fundamentals,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<SupportResistanceDto> supportResistance,
+            MetricResult<TradePlanResultDto> tradePlans,
+            MetricResult<MarketContextDto> marketContext) {
+        return calculate(horizon, valuation, financials, fundamentals, null,
+                priceStructure, supportResistance, tradePlans, marketContext);
+    }
+
+    public MetricResult<InvestmentSummaryDto> calculate(
+            AnalysisHorizon horizon,
+            ValuationResultDto valuation,
+            FinancialsDto financials,
+            FundamentalSnapshotDto fundamentals,
+            FutuObservationsDto futuObservations,
             MetricResult<PriceStructureDto> priceStructure,
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
@@ -122,24 +198,11 @@ public class ValuationSummaryCalculator {
         } else {
             discountToMid = band.mid().subtract(price, MC).divide(band.mid(), 6, RoundingMode.HALF_UP);
             upsideToMid = band.mid().subtract(price, MC).divide(price, 6, RoundingMode.HALF_UP);
-            BigDecimal deepFloor = band.low().multiply(DEEP_DISCOUNT_FACTOR, MC);
-            BigDecimal riskCeiling = band.high().multiply(OVERVALUED_RISK_FACTOR, MC);
-            if (price.compareTo(deepFloor) < 0) {
-                verdict = "DEEP_UNDERVALUED";
-            } else if (price.compareTo(band.low()) <= 0) {
-                verdict = "MODERATELY_UNDERVALUED";
-            } else if (price.compareTo(band.mid()) <= 0) {
-                verdict = "FAIR_LOWER";
-            } else if (price.compareTo(band.high()) <= 0) {
-                verdict = "FAIR_UPPER";
-            } else if (price.compareTo(riskCeiling) <= 0) {
-                verdict = "MODERATELY_OVERVALUED";
-            } else {
-                verdict = "OVERVALUED_RISK";
-            }
+            verdict = classifyPriceAgainstBand(price, band.low(), band.mid(), band.high());
         }
 
         String fundamentalBacking = evaluateFundamentalBacking(fundamentals, financials);
+        ForwardTrapSignals forwardTrap = extractForwardTrapSignals(futuObservations);
         YieldSpreadSelection yieldSpread = computeYieldSpreadVs10y(fundamentals, marketContext);
 
         String weeklyTrend = extractWeeklyMajorTrend(priceStructure);
@@ -163,14 +226,14 @@ public class ValuationSummaryCalculator {
         boolean confirmationPending = hasConfirmationPending(planList, supportZone, permission);
 
         String stance = resolveStance(
-                verdict, fundamentalBacking, weeklyTrend, aboveSma200,
+                verdict, fundamentalBacking, forwardTrap.anyTrap(), weeklyTrend, aboveSma200,
                 permission, eventGateBlocked, stopBreachedOrReclaim, confirmationPending, supportZone != null);
 
         List<SummaryFlagDto> risks = buildRiskFlags(
-                verdict, fundamentals, financials, band, weeklyTrend, aboveSma200,
+                verdict, fundamentals, financials, forwardTrap, band, weeklyTrend, aboveSma200,
                 eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim);
         List<WatchItemDto> watchItems = buildWatchItems(
-                verdict, fundamentalBacking, band, supportZone, nextBlockingEventDate, stopBreachedOrReclaim);
+                verdict, fundamentalBacking, forwardTrap.anyTrap(), band, supportZone, nextBlockingEventDate, stopBreachedOrReclaim);
 
         PriceRangeDto supportRange = supportZone == null ? null : new PriceRangeDto(supportZone.lower(), supportZone.upper(), null);
         String supportTf = supportZone == null || supportZone.timeframe() == null ? null : supportZone.timeframe().name();
@@ -276,6 +339,10 @@ public class ValuationSummaryCalculator {
     }
 
     private boolean isObjectiveAnchorValid(ValuationReferenceDto ref) {
+        return isAnchorValidStatic(ref);
+    }
+
+    private static boolean isAnchorValidStatic(ValuationReferenceDto ref) {
         return ref != null
                 && "AVAILABLE".equals(ref.status())
                 && ref.priceLow() != null
@@ -284,6 +351,31 @@ public class ValuationSummaryCalculator {
                 && ref.priceLow().signum() > 0
                 && ref.priceMedian().compareTo(ref.priceLow()) >= 0
                 && ref.priceHigh().compareTo(ref.priceMedian()) >= 0;
+    }
+
+    private ForwardTrapSignals extractForwardTrapSignals(FutuObservationsDto futuObservations) {
+        if (futuObservations == null || futuObservations.forward() == null) {
+            return new ForwardTrapSignals(false, false, null, null, false, null, null, null);
+        }
+        ForwardMetrics fm = futuObservations.forward();
+        boolean swungToLoss = hasReason(fm.impliedEpsGrowth(), "FORWARD_SWUNG_TO_LOSS");
+        BigDecimal impliedGrowth = val(fm.impliedEpsGrowth());
+        boolean contraction = swungToLoss
+                || (impliedGrowth != null && impliedGrowth.compareTo(FORWARD_EPS_TRAP_CONTRACTION) <= 0);
+
+        BigDecimal rev90 = val(fm.epsRevision90d());
+        boolean downgrade90 = rev90 != null && rev90.compareTo(FORWARD_REVISION_90D_TRAP) <= 0;
+
+        return new ForwardTrapSignals(
+                contraction,
+                swungToLoss,
+                impliedGrowth,
+                fm.targetFiscalPeriod(),
+                downgrade90,
+                rev90,
+                fm.revisionFiscalPeriod(),
+                fm.revisionPeriodType()
+        );
     }
 
     private String evaluateFundamentalBacking(FundamentalSnapshotDto f, FinancialsDto financials) {
@@ -543,6 +635,7 @@ public class ValuationSummaryCalculator {
     private String resolveStance(
             String verdict,
             String fundamentalBacking,
+            boolean forwardValueTrap,
             String weeklyTrend,
             Boolean aboveSma200,
             EntryPermission permission,
@@ -565,6 +658,12 @@ public class ValuationSummaryCalculator {
             if (stopBreachedOrReclaim) {
                 return "WAIT_FOR_STABILIZATION";
             }
+            if (forwardValueTrap) {
+                if (downtrendBelowSma200 || entryBlocked) {
+                    return "WAIT_FOR_STABILIZATION";
+                }
+                return "CAUTION_VALUE_TRAP";
+            }
             if ("WEAKENING".equals(fundamentalBacking)) {
                 return "CAUTION_VALUE_TRAP";
             }
@@ -578,7 +677,7 @@ public class ValuationSummaryCalculator {
             if (stopBreachedOrReclaim || downtrendBelowSma200 || entryBlocked) {
                 return "WAIT_FOR_STABILIZATION";
             }
-            if ("WEAKENING".equals(fundamentalBacking)) {
+            if ("WEAKENING".equals(fundamentalBacking) || forwardValueTrap) {
                 return "CAUTION_VALUE_TRAP";
             }
             return "WATCH_PULLBACK_TO_BAND";
@@ -608,6 +707,7 @@ public class ValuationSummaryCalculator {
             String verdict,
             FundamentalSnapshotDto f,
             FinancialsDto financials,
+            ForwardTrapSignals forwardTrap,
             FairValueBandDto band,
             String weeklyTrend,
             Boolean aboveSma200,
@@ -625,6 +725,20 @@ public class ValuationSummaryCalculator {
         }
         if (stopBreachedOrReclaim) {
             candidates.add(new SummaryFlagDto("PROTECTIVE_STOP_OR_RECLAIM_PENDING", "HIGH", Map.of()));
+        }
+        if (forwardTrap != null && forwardTrap.earningsContraction()) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (forwardTrap.impliedGrowth() != null) params.put("impliedEpsGrowth", forwardTrap.impliedGrowth());
+            if (forwardTrap.targetFiscalPeriod() != null) params.put("fiscalPeriod", forwardTrap.targetFiscalPeriod());
+            params.put("swungToLoss", forwardTrap.swungToLoss());
+            candidates.add(new SummaryFlagDto("FORWARD_EARNINGS_CONTRACTION", "HIGH", params));
+        }
+        if (forwardTrap != null && forwardTrap.downgrade90d()) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (forwardTrap.revision90d() != null) params.put("epsRevision90d", forwardTrap.revision90d());
+            if (forwardTrap.revisionFiscalPeriod() != null) params.put("fiscalPeriod", forwardTrap.revisionFiscalPeriod());
+            if (forwardTrap.revisionPeriodType() != null) params.put("periodType", forwardTrap.revisionPeriodType());
+            candidates.add(new SummaryFlagDto("EARNINGS_FORECAST_DOWNGRADE_90D", "HIGH", params));
         }
         if (f != null && hasReason(f.epsGrowthYoy(), "SWUNG_TO_LOSS")) {
             candidates.add(new SummaryFlagDto("SWUNG_TO_LOSS", "HIGH", Map.of()));
@@ -675,12 +789,18 @@ public class ValuationSummaryCalculator {
         }
 
         candidates.sort(Comparator.comparingInt(flag -> severityRank(flag.severity())));
-        return candidates.size() <= 3 ? List.copyOf(candidates) : List.copyOf(candidates.subList(0, 3));
+        int highCount = 0;
+        for (SummaryFlagDto flag : candidates) {
+            if ("HIGH".equals(flag.severity())) highCount++;
+        }
+        int cap = Math.max(3, highCount);
+        return candidates.size() <= cap ? List.copyOf(candidates) : List.copyOf(candidates.subList(0, cap));
     }
 
     private List<WatchItemDto> buildWatchItems(
             String verdict,
             String fundamentalBacking,
+            boolean forwardValueTrap,
             FairValueBandDto band,
             LevelZoneDto supportZone,
             LocalDate nextBlockingEventDate,
@@ -708,7 +828,7 @@ public class ValuationSummaryCalculator {
         if (nextBlockingEventDate != null) {
             items.add(new WatchItemDto("WATCH_EVENT_WINDOW", Map.of("eventDate", nextBlockingEventDate.toString())));
         }
-        if ("WEAKENING".equals(fundamentalBacking) && !"INSUFFICIENT_EVIDENCE".equals(verdict)) {
+        if (("WEAKENING".equals(fundamentalBacking) || forwardValueTrap) && !"INSUFFICIENT_EVIDENCE".equals(verdict)) {
             items.add(new WatchItemDto("WATCH_FUNDAMENTAL_STABILIZATION", Map.of()));
         }
         return items.size() <= 3 ? List.copyOf(items) : List.copyOf(items.subList(0, 3));

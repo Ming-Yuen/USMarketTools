@@ -12,7 +12,18 @@ import java.util.List;
 
 @RequiredArgsConstructor
 public class StockStatusLockRepositoryImpl implements StockStatusLockRepository {
+    private static final long VALUATION_PUBLISH_ADVISORY_LOCK_KEY = 8801001L;
+
     private final EntityManager entityManager;
+
+    /** 估值快照、自訂對標與追蹤狀態變更共用的交易層級發布鎖，消除空池首次併發幻讀與跨階段取鎖反轉。 */
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void acquireValuationPublishLock() {
+        entityManager.createNativeQuery("select pg_advisory_xact_lock(:lockKey)")
+                .setParameter("lockKey", VALUATION_PUBLISH_ADVISORY_LOCK_KEY)
+                .getSingleResult();
+    }
 
     /** 先按 FIGI 固定順序取鎖，再批次重讀，避免手動請求／OSIV 預讀的舊實體覆蓋回退。 */
     @Override

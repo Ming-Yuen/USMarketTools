@@ -103,7 +103,7 @@ class StockAnalysisReadOnlyTests {
         when(calendar.getLastClosedTradingDay(any())).thenReturn(DAY);
         when(prices.normalize(any(), any(), any())).thenReturn(MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                 AnalysisReasonDto.of("PRICE_MISSING", "PRICE", "No stored price")));
-        when(stockObservations.read(eq("TEST_FIGI"), any())).thenReturn(new FutuObservationsDto(null, List.of()));
+        when(stockObservations.readWithForward(any())).thenReturn(new FutuObservationsDto(null, List.of()));
         when(stockValuations.evaluateForReport(any(), any(), any(), any(), any()))
                 .thenReturn(new ReportValuationBundle(null, null, List.of()));
     }
@@ -124,7 +124,9 @@ class StockAnalysisReadOnlyTests {
         StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("TEST_FIGI", null, null));
         Instant after = Instant.now();
         assertThat(report.valuationDate()).isEqualTo(DAY);
-        verify(stockObservations).read(eq("TEST_FIGI"), argThat(cutoff -> !cutoff.isBefore(before) && !cutoff.isAfter(after)));
+        verify(stockObservations).readWithForward(argThat(ctx -> "TEST_FIGI".equals(ctx.figi())
+                && DAY.equals(ctx.valuationDate())
+                && !ctx.asOf().isBefore(before) && !ctx.asOf().isAfter(after)));
         verify(prices).normalize(argThat(context -> context.analysisAsOf().equals(CLOSE)
                 && !context.observationCutoff().isBefore(before) && !context.observationCutoff().isAfter(after)), eq(DAY.minusYears(5)), eq(DAY));
     }
@@ -153,7 +155,8 @@ class StockAnalysisReadOnlyTests {
     @Test
     void explicitlyDatedReportKeepsSupplementalObservationsAtHistoricalClose() {
         service.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, null));
-        verify(stockObservations).read("TEST_FIGI", CLOSE);
+        verify(stockObservations).readWithForward(argThat(ctx -> "TEST_FIGI".equals(ctx.figi())
+                && DAY.equals(ctx.valuationDate()) && CLOSE.equals(ctx.asOf())));
         verify(stockValuations).evaluateForReport(same(testStock), eq(DAY), eq(CLOSE), eq(CLOSE), eq(null));
         verify(prices).normalize(argThat(context -> context.analysisAsOf().equals(CLOSE)
                 && context.observationCutoff().equals(CLOSE)), eq(DAY.minusYears(5)), eq(DAY));

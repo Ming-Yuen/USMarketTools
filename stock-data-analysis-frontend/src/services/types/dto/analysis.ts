@@ -182,7 +182,32 @@ export interface FutuEarningsExpectation {
   currency: string | null; eps: number | null; revenue: number | null;
   observationDate: string; observedAt: string; source: string;
 }
-export interface FutuObservations { valuation: FutuValuationObservation | null; earnings: FutuEarningsExpectation[]; }
+export interface ForwardMetrics {
+  valuationDate: string;
+  targetFiscalPeriod: string | null;
+  forecastObservationDate: string | null;
+  forecastCurrency: string | null;
+  forwardPe: MetricResult<number>;
+  forwardPs: MetricResult<number>;
+  forwardPeg: MetricResult<number>;
+  forwardPegBasis: string | null;
+  impliedEpsGrowth: MetricResult<number>;
+  revisionFiscalPeriod: string | null;
+  revisionPeriodType: string | null;
+  revisionCurrency?: string | null;
+  revisionObservationDate: string | null;
+  revisionBaseDate30d: string | null;
+  revisionBaseDate90d: string | null;
+  epsRevision30d: MetricResult<number>;
+  epsRevision90d: MetricResult<number>;
+  revenueRevision30d: MetricResult<number>;
+  revenueRevision90d: MetricResult<number>;
+}
+export interface FutuObservations {
+  valuation: FutuValuationObservation | null;
+  earnings: FutuEarningsExpectation[];
+  forward?: ForwardMetrics | null;
+}
 
 export interface StockAnalysisReport {
   figi: string;

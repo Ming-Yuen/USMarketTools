@@ -7,10 +7,14 @@ import { apiClient } from "../services/apiClient";
 import { SeriesChart } from "./ValuationPanels";
 import { formatNumber } from "./AnalysisPanels";
 
-jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
+const mockInvalidateQueries = jest.fn().mockResolvedValue(undefined);
+jest.mock("@tanstack/react-query", () => ({
+  useQuery: jest.fn(),
+  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+}));
 jest.mock("react-router-dom", () => ({ useNavigate: () => jest.fn(), useParams: () => ({ figi: "AAPL-FIGI" }) }), { virtual: true });
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key }) }));
-jest.mock("../services/apiClient", () => ({ apiClient: { get: jest.fn(), post: jest.fn(), put: jest.fn() } }));
+jest.mock("../services/apiClient", () => ({ apiClient: { get: jest.fn(), post: jest.fn(), put: jest.fn(), delete: jest.fn() } }));
 jest.mock("./IndustryValuationProposalPanel", () => ({ IndustryValuationProposalPanel: () => null }));
 
 const unavailable = (code: string) => ({ status: "INSUFFICIENT_DATA", value: null, reasons: [{ code, component: "TEST", message: code }] });
@@ -568,4 +572,151 @@ test("renders containingZones support across K-line band, decision snapshot stri
   const levelsSection = screen.getByRole("region", { name: "關鍵價位與技術觀察方案" });
   expect(within(levelsSection).getByText("165.00–172.00")).toBeInTheDocument();
   expect(within(levelsSection).getByText("處於區間內")).toBeInTheDocument();
+});
+
+test("renders peer tiering scope, full-industry subtitle, peer fundamental medians, custom peer dialog save & cache invalidation, forward multiples, and value-trap alerts", async () => {
+  const refetchMock = jest.fn();
+  (useQuery as jest.Mock).mockImplementation((options: any) => ({
+    data: options.queryKey[0] === "analysis-report" ? report : undefined,
+    isLoading: false, isFetching: false, isError: false, refetch: refetchMock,
+  }));
+
+  report.valuation.peerReference = {
+    kind: "PEER_MARKET", metricCode: "PE", status: "AVAILABLE", reasonCode: null,
+    multipleLow: 18, multipleMedian: 22, multipleHigh: 28, priceLow: 144, priceMedian: 176, priceHigh: 224,
+    sampleCount: 6, sampleStartDate: "2026-11-05", sampleEndDate: "2026-11-05",
+    currentMultiple: 14, currentPercentile: 18,
+    peerScope: "SAME_TIER", targetMarketCapTier: "MEGA_LARGE", peerFallbackReason: null,
+    industryAllMetricCode: "PE", industryAllMedianMultiple: 16.5, industryAllSampleCount: 42,
+    peerRevenueGrowthYoyMedian: 0.142, peerRoeMedian: 0.245, peerFcfMarginMedian: 0.185,
+    peerRevenueGrowthCount: 6, peerRoeCount: 6, peerFcfMarginCount: 6,
+    warningCodes: ["CUSTOM_PEER_GROWTH_DIVERGENCE"],
+  };
+  report.fundamentals = {
+    periodEnd: "2026-09-30", priorYearPeriodEnd: "2025-09-30", threeYearAgoPeriodEnd: "2023-09-30",
+    reportingCurrency: "USD", financialInstitution: false,
+    revenueGrowthYoy: metric(0.05), epsGrowthYoy: metric(0.04), fcfGrowthYoy: metric(0.02),
+    revenueCagr3y: metric(0.08), epsCagr3y: metric(0.09), trailingPeg: metric(1.55), pegGrowthBasis: "TRAILING_EPS_CAGR_3Y",
+    roe: metric(0.19), fcfMargin: metric(0.14), fcfConversion: metric(0.95), netDebtToEbitda: metric(0.8),
+    fcfYield: metric(0.05), earningsYield: metric(0.0714), netShareChangeYoy: metric(-0.01),
+  };
+  report.summary = {
+    status: "AVAILABLE",
+    reasons: [],
+    value: {
+      verdict: "MODERATELY_UNDERVALUED",
+      fundamentalBacking: "WEAKENING",
+      stance: "CAUTION_VALUE_TRAP",
+      primaryMetric: "PE",
+      anchorSource: "HISTORICAL_AND_PEER",
+      fairValue: { low: 122, mid: 163, high: 187, currency: "USD", historicalLow: 100, historicalMid: 150, historicalHigh: 150, peerLow: 144, peerMid: 176, peerHigh: 224 },
+      discountToMid: 0.1411, upsideToMid: 0.1643,
+      yieldSpreadVs10y: metric(0.008), yieldSpreadBasis: "FCF_YIELD_MINUS_10Y",
+      aboveSma200: true, entryPermission: "ALLOW", eventGateBlocked: false,
+      risks: [
+        { code: "FORWARD_EARNINGS_CONTRACTION", severity: "HIGH", params: { impliedEpsGrowth: -0.24, fiscalPeriod: "2026" } },
+        { code: "EARNINGS_FORECAST_DOWNGRADE_90D", severity: "HIGH", params: { epsRevision90d: -0.135, fiscalPeriod: "2026Q4" } },
+      ],
+      watchItems: [],
+      reasons: [],
+    },
+  };
+  report.futuObservations = {
+    valuation: { observationDate: "2026-11-05", observedAt: "2026-11-05T21:05:00Z", pe: 14.1, pb: 5.2, ps: 3.8, forwardPe: null, forwardPs: null },
+    earnings: [],
+    forward: {
+      valuationDate: "2026-11-05",
+      targetFiscalPeriod: null,
+      forecastObservationDate: null,
+      forecastCurrency: null,
+      forwardPe: unavailable("ANNUAL_EARNINGS_FORECAST_MISSING"),
+      forwardPs: unavailable("ANNUAL_EARNINGS_FORECAST_MISSING"),
+      impliedEpsGrowth: unavailable("ANNUAL_EARNINGS_FORECAST_MISSING"),
+      forwardPeg: unavailable("ANNUAL_EARNINGS_FORECAST_MISSING"),
+      forwardPegBasis: null,
+      revisionFiscalPeriod: "2026Q4",
+      revisionPeriodType: "QUARTERLY",
+      revisionCurrency: "USD",
+      revisionObservationDate: "2026-11-05",
+      revisionBaseDate30d: "2026-10-06",
+      revisionBaseDate90d: "2026-08-08",
+      epsRevision30d: { status: "AVAILABLE", value: -0.045, reasons: [] },
+      epsRevision90d: { status: "AVAILABLE", value: -0.135, reasons: [] },
+      revenueRevision30d: { status: "AVAILABLE", value: -0.02, reasons: [] },
+      revenueRevision90d: unavailable("FORECAST_REVISION_BASE_MISSING"),
+    },
+  };
+
+  let failFirstCustomLoad = true;
+  (apiClient.get as jest.Mock).mockImplementation(async (url: string) => {
+    if (url.includes("/custom-peers")) {
+      if (failFirstCustomLoad) {
+        failFirstCustomLoad = false;
+        throw new Error("NETWORK_ERROR");
+      }
+      return {
+        data: {
+          figi: "AAPL-FIGI", preferredMetric: "PE",
+          supportedMetrics: ["PE", "PS", "PFCF", "EV_EBITDA", "PB"],
+          peers: [
+            { figi: "MSFT-F", symbol: "MSFT", name: "Microsoft", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 3100000000000, marketCapTier: "MEGA_LARGE" },
+            { figi: "GOOGL-F", symbol: "GOOGL", name: "Alphabet", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 2200000000000, marketCapTier: "MEGA_LARGE" },
+          ],
+        },
+      };
+    }
+    return {
+      data: {
+        items: [{ figi: "AMZN-F", symbol: "AMZN", name: "Amazon", stockType: "CS", industryCode: "I20", industry: "零售", concepts: [], quoteDate: "2026-11-05", closePrice: 210, currency: "USD", valuationDate: "2026-11-05", marketCap: 2100000000000, marketCapTier: "MEGA_LARGE", pe: 35, pb: 8, ps: 3.5, pfcf: 40, evEbitda: 18, status: "AVAILABLE", reasonCode: null }],
+        total: 1, page: 0, size: 10,
+      },
+    };
+  });
+  (apiClient.put as jest.Mock).mockResolvedValue({ data: {} });
+
+  render(<StockAnalysisPage />);
+
+  // 1) L1 顯示價值陷阱警訊（CAUTION_VALUE_TRAP + 前瞻共識衰退與 90 日預期下修）
+  const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+  expect(within(summarySection).getByText(/提防價值陷阱或盈利下修，暫緩承接/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/市場共識預期年度 EPS（2026）較當期 TTM 低 24\.00%（共識預期口徑對比）/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/近 90 日市場共識預期 EPS（2026Q4）下修 -13\.50%/)).toBeInTheDocument();
+
+  // 2) 同業參考面板顯示「同規模同業（大型股）」標籤、全產業中位數副標、同業基本面中位數對照與成長落差提示
+  const peerPanel = screen.getByRole("region", { name: "同業市場估值參考" });
+  expect(within(peerPanel).getByText("同規模同業（大型股）")).toBeInTheDocument();
+  expect(within(peerPanel).getByText(/全產業 P\/E 中位數副標：16\.50 倍（共 42 家，僅供對照未混入參考帶）/)).toBeInTheDocument();
+  expect(within(peerPanel).getByText(/\+14\.20%/)).toBeInTheDocument();
+  expect(within(peerPanel).getByText(/本股：\+5\.00%/)).toBeInTheDocument();
+
+  // 3) 基本面顯示「缺少可用的未結束年度預期」優雅降級、單季 revisionCurrency (USD) 與單季 30D/90D 修正率
+  const fundSection = screen.getByRole("region", { name: "基本面成長與品質指標" });
+  expect(within(fundSection).getByText("市場預期觀察（與已公布財報分軌）")).toBeInTheDocument();
+  expect(within(fundSection).getAllByText("缺少可用的未結束年度預期").length).toBeGreaterThanOrEqual(2);
+  expect(within(fundSection).getByText(/2026Q4 · 單季 · USD/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/-4\.50%（對比 2026-10-06）/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/-13\.50%（對比 2026-08-08）/)).toBeInTheDocument();
+
+  // 4) 開啟「設定自訂對標」對話框：首次 GET 失敗時必須禁用儲存與清除按鈕，點擊「重試載入」成功後才允許編輯並透過單次 invalidateQueries 刷新
+  fireEvent.click(within(peerPanel).getByRole("button", { name: "設定自訂對標" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(await within(dialog).findByText(/為避免誤覆寫現有名單/)).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "儲存自訂對標" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "清除並還原預設分層" })).toBeDisabled();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "重試載入" }));
+  expect(await within(dialog).findByText("MSFT")).toBeInTheDocument();
+  fireEvent.change(within(dialog).getByLabelText("搜尋對標股票代碼或名稱"), { target: { value: "AMZN" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "搜尋" }));
+  fireEvent.click(await within(dialog).findByRole("button", { name: "加入" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "儲存自訂對標" }));
+
+  await screen.findByRole("region", { name: "同業市場估值參考" });
+  expect(apiClient.put).toHaveBeenCalledWith("valuation/AAPL-FIGI/custom-peers", {
+    peerFigis: ["MSFT-F", "GOOGL-F", "AMZN-F"],
+    preferredMetric: "PE",
+  });
+  expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["analysis-report", "AAPL-FIGI"] });
+  expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["stock-screen"] });
+  expect(refetchMock).not.toHaveBeenCalled();
 });

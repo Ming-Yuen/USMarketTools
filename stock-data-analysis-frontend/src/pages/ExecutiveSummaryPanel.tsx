@@ -42,6 +42,8 @@ const ANCHOR_DEFAULTS: Record<string, string> = {
 const RISK_DEFAULTS: Record<string, string> = {
   EARNINGS_IMMINENT_BLOCK: "財報或重大事件臨近，新入場條件受限",
   PROTECTIVE_STOP_OR_RECLAIM_PENDING: "股價已跌穿保護止損或低於入場區，須先收復止穩",
+  FORWARD_EARNINGS_CONTRACTION: "市場共識預期年度 EPS 較當期 TTM 顯著下滑或轉虧（提防價值陷阱，共識口徑僅供對照）",
+  EARNINGS_FORECAST_DOWNGRADE_90D: "近 90 日市場共識預期 EPS 顯著下修逾 10%",
   SWUNG_TO_LOSS: "TTM 每股盈利較去年同期由盈轉虧",
   NEGATIVE_TRAILING_EARNINGS: "當期 TTM 每股盈利為負（虧損狀態）",
   NEGATIVE_FCF_BURN: "當期 TTM 自由現金流為負（現金消耗）",
@@ -101,9 +103,22 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
   const collapsedIndustryNa = metricEntries.filter(([, m]) => m.status !== "AVAILABLE" && m.reasonCode != null && INDUSTRY_NA_REASON_CODES.has(m.reasonCode));
 
   const renderRiskText = (flag: SummaryFlag) => {
-    const fallback = flag.code === "EARNINGS_IMMINENT_BLOCK" && flag.params?.eventDate
-      ? `財報或重大事件臨近（${String(flag.params.eventDate)}），新入場條件受限`
-      : (RISK_DEFAULTS[flag.code] ?? flag.code);
+    let fallback = RISK_DEFAULTS[flag.code] ?? flag.code;
+    if (flag.code === "EARNINGS_IMMINENT_BLOCK" && flag.params?.eventDate) {
+      fallback = `財報或重大事件臨近（${String(flag.params.eventDate)}），新入場條件受限`;
+    } else if (flag.code === "FORWARD_EARNINGS_CONTRACTION") {
+      const fp = flag.params?.fiscalPeriod ? `（${String(flag.params.fiscalPeriod)}）` : "";
+      if (flag.params?.swungToLoss) {
+        fallback = `市場共識預期年度 EPS${fp}轉為虧損或零盈利（共識預期口徑對比，提防價值陷阱）`;
+      } else if (flag.params?.impliedEpsGrowth != null) {
+        const pct = (Number(flag.params.impliedEpsGrowth) * 100).toFixed(2);
+        fallback = `市場共識預期年度 EPS${fp}較當期 TTM 低 ${Math.abs(Number(pct)).toFixed(2)}%（共識預期口徑對比）`;
+      }
+    } else if (flag.code === "EARNINGS_FORECAST_DOWNGRADE_90D" && flag.params?.epsRevision90d != null) {
+      const fp = flag.params?.fiscalPeriod ? `（${String(flag.params.fiscalPeriod)}）` : "";
+      const pct = (Number(flag.params.epsRevision90d) * 100).toFixed(2);
+      fallback = `近 90 日市場共識預期 EPS${fp}下修 ${pct}%`;
+    }
     return t(`analysisReport.executiveSummary.risks.${flag.code}`, { ...(flag.params ?? {}), defaultValue: fallback });
   };
 

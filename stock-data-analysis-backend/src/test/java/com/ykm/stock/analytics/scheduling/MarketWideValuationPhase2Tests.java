@@ -21,6 +21,7 @@ import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
+import com.ykm.stock.analytics.repository.jpa.StockCustomPeerRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
@@ -79,6 +80,7 @@ class MarketWideValuationPhase2Tests {
     private final IndustryValuationConfigRepository industryConfigs = mock(IndustryValuationConfigRepository.class);
     private final StockFinancialPeriodRepository periodRepo = mock(StockFinancialPeriodRepository.class);
     private final StockValuationLatestRepository latestRepo = mock(StockValuationLatestRepository.class);
+    private final StockCustomPeerRepository customPeerRepo = mock(StockCustomPeerRepository.class);
     private final DateTimeService clock = mock(DateTimeService.class);
     private final MarketStatusService calendar = mock(MarketStatusService.class);
     private final FutuService futu = mock(FutuService.class);
@@ -96,7 +98,7 @@ class MarketWideValuationPhase2Tests {
         TransactionTemplate tx = new TransactionTemplate(new NoOpTransactionManager());
         valuationService = new StockValuationService(
                 stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
-                industries, industryConfigs, periodRepo, latestRepo, calendar, clock,
+                industries, industryConfigs, periodRepo, latestRepo, customPeerRepo, calendar, clock,
                 new SecIssuerHistory(""), tx, entityManager);
         task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager);
 

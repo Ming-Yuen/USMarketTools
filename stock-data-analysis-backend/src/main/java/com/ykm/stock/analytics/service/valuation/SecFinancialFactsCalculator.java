@@ -42,6 +42,7 @@ public class SecFinancialFactsCalculator {
     private static final String OPERATING_CASH_FLOW = "NetCashProvidedByUsedInOperatingActivities";
     private static final String CONTINUING_OPERATING_CASH_FLOW = "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations";
     private static final Set<String> PERIODIC_REPORTS = Set.of("10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A");
+    private static final Set<String> FOREIGN_INTERIM_REPORTS = Set.of("6-K", "6-K/A");
     private static final Set<String> INCOME_PERIOD_TAGS = Set.of("Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax",
             "RevenuesNetOfInterestExpense", "GrossProfit", "OperatingIncomeLoss", "NetIncomeLoss", "ProfitLoss",
             "NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic", "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted");
@@ -123,7 +124,11 @@ public class SecFinancialFactsCalculator {
         Set<LocalDate> secQuarterEnds = secQuarters.confirmedQuarterEnds();
 
         for (SecFinancialFact fact : known) {
-            if (!"us-gaap".equals(fact.getTaxonomy()) || !PERIODIC_REPORTS.contains(Objects.toString(fact.getForm(), ""))
+            String form = Objects.toString(fact.getForm(), "");
+            boolean standardPeriodic = PERIODIC_REPORTS.contains(form);
+            boolean qualifiedInterim6K = FOREIGN_INTERIM_REPORTS.contains(form)
+                    && fact.getReportFiscalYear() != null && fact.getReportFiscalPeriod() != null;
+            if (!"us-gaap".equals(fact.getTaxonomy()) || (!standardPeriodic && !qualifiedInterim6K)
                     || !(INCOME_PERIOD_TAGS.contains(fact.getTag()) || BALANCE_PERIOD_TAGS.contains(fact.getTag())
                     || CASH_FLOW_PERIOD_TAGS.contains(fact.getTag()))) continue;
             Period period = new Period(fact.getPeriodStart(), fact.getPeriodEnd());
@@ -303,9 +308,12 @@ public class SecFinancialFactsCalculator {
     }
 
     private boolean isPeriodicFlowFact(SecFinancialFact fact) {
+        String form = Objects.toString(fact.getForm(), "");
+        boolean qualifiedInterim6K = FOREIGN_INTERIM_REPORTS.contains(form)
+                && fact.getReportFiscalYear() != null && fact.getReportFiscalPeriod() != null;
         return fact.getPeriodStart() != null && fact.getPeriodEnd() != null
                 && "us-gaap".equals(fact.getTaxonomy())
-                && PERIODIC_REPORTS.contains(Objects.toString(fact.getForm(), ""));
+                && (PERIODIC_REPORTS.contains(form) || qualifiedInterim6K);
     }
 
     private boolean isStatementPeriodFlowTag(String tag) {

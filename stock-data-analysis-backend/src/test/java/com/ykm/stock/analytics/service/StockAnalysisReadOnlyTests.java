@@ -130,6 +130,27 @@ class StockAnalysisReadOnlyTests {
     }
 
     @Test
+    void defaultDateFallbackInValuationRebuildsTechnicalAnalysisContextAtEffectiveLatestSession() {
+        LocalDate fallbackDay = LocalDate.parse("2025-05-01");
+        Instant fallbackClose = Instant.parse("2025-05-01T20:00:00Z");
+        when(calendar.getSessionCloseAt(fallbackDay)).thenReturn(fallbackClose);
+        ValuationResultDto fallbackValuation = new ValuationResultDto(
+                "TEST_FIGI", fallbackDay, fallbackClose, "FINANCIAL_REPORT_AS_OBSERVED", "I1", "AVAILABLE", null,
+                null, new BigDecimal("150"), "USD", fallbackClose, null, null, null, null);
+        when(stockValuations.evaluateForReport(same(testStock), eq(DAY), eq(CLOSE), any(), any()))
+                .thenReturn(new ReportValuationBundle(fallbackValuation, null, List.of(), null));
+
+        StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("TEST_FIGI", null, AnalysisHorizon.POSITION));
+
+        assertThat(report.valuationDate()).isEqualTo(fallbackDay);
+        verify(prices).normalize(argThat(context -> context.analysisAsOf().equals(fallbackClose)),
+                eq(fallbackDay.minusYears(5)), eq(fallbackDay));
+        assertThat(report.summary()).isNotNull();
+        assertThat(report.summary().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(report.summary().value().verdict()).isEqualTo("INSUFFICIENT_EVIDENCE");
+    }
+
+    @Test
     void explicitlyDatedReportKeepsSupplementalObservationsAtHistoricalClose() {
         service.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, null));
         verify(stockObservations).read("TEST_FIGI", CLOSE);

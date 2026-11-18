@@ -5,6 +5,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReportRequest;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
@@ -18,6 +19,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDt
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService.ReportValuationBundle;
@@ -45,8 +47,9 @@ public class StockAnalysisService {
     private final MarketContextService market;
     private final StockObservationService stockObservations;
     private final StockValuationService stockValuations;
+    private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
 
-    /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史與技術交易計畫；不觸發外部下載或寫庫。 */
+    /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史、技術交易計畫與綜合估值摘要；不觸發外部下載或寫庫。 */
     @Transactional(readOnly = true)
     public StockAnalysisReportDto analyze(AnalysisReportRequest request) {
         Stock stock = stocks.findById(request.figi())
@@ -56,16 +59,24 @@ public class StockAnalysisService {
         if (!calendar.isTradingDay(day) || calendar.getSessionCloseAt(day).isAfter(readAt)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "valuationDate must be a completed trading session");
         }
+        AnalysisHorizon horizon = request.horizon() == null ? AnalysisHorizon.POSITION : request.horizon();
         Instant cutoff = calendar.getSessionCloseAt(day);
         // 預設報告讀取目前已取得的觀察；歷史報告限定在所選交易日收市時間。
         Instant supplementalCutoff = request.valuationDate() == null ? readAt : cutoff;
-        AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff,
-                request.horizon() == null ? AnalysisHorizon.POSITION : request.horizon());
+        AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
 
         FutuObservationsDto observations = stockObservations.read(stock.getFigi(), supplementalCutoff);
         String industryCode = industries.findAt(stock.getFigi(), cutoff).map(row -> row.getIndustry().getCode()).orElse(null);
         ReportValuationBundle bundle = stockValuations.evaluateForReport(stock, day, cutoff, supplementalCutoff, industryCode);
         ValuationResultDto valuation = bundle.valuation();
+
+        // 當預設最新日查詢因收市後行情尚未同步而由 evaluateForReport 回退至 effectiveLatest 時，同步重建技術與市場分析錨點
+        LocalDate resolvedReportDate = request.valuationDate() == null && valuation != null && valuation.valuationDate() != null
+                ? valuation.valuationDate() : day;
+        if (!resolvedReportDate.equals(day)) {
+            cutoff = calendar.getSessionCloseAt(resolvedReportDate);
+            context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
+        }
 
         List<AnalysisReasonDto> reasons = new ArrayList<>();
         if (valuation == null) {
@@ -74,7 +85,7 @@ public class StockAnalysisService {
             reasons.add(AnalysisReasonDto.of(valuation.reasonCode(), "VALUATION", "部分估值輸入不足，詳見各指標原因。"));
         }
 
-        MetricResult<NormalizedPriceSeriesDto> price = prices.normalize(context, day.minusYears(5), day);
+        MetricResult<NormalizedPriceSeriesDto> price = prices.normalize(context, resolvedReportDate.minusYears(5), resolvedReportDate);
         MetricResult<PriceStructureDto> structure = unavailable("TECHNICAL_PRICE_MISSING");
         MetricResult<SupportResistanceDto> support = unavailable("TECHNICAL_STRUCTURE_MISSING");
         MetricResult<MarketContextDto> marketResult = unavailable("TECHNICAL_PRICE_MISSING");
@@ -91,11 +102,13 @@ public class StockAnalysisService {
             }
         }
         reasons.addAll(price.reasons());
-        LocalDate resolvedReportDate = request.valuationDate() == null && valuation != null && valuation.valuationDate() != null
-                ? valuation.valuationDate() : day;
+        MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculate(
+                valuation, bundle.financials(), bundle.fundamentals(),
+                structure, support, tradePlans, marketResult);
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),
-                structure, support, tradePlans, marketResult, observations, reasons);
+                structure, support, tradePlans, marketResult, observations, reasons,
+                bundle.fundamentals(), summary);
     }
 
     private <T> MetricResult<T> unavailable(String code) {

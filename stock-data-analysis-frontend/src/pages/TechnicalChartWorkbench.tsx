@@ -2,10 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Alert, Box, Button, ButtonGroup, Chip, Divider, Grid, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import {
-  AnalysisHorizon, IndicatorSeriesPoint, LevelZone, MarketContext, MetricResult,
+  AnalysisHorizon, IndicatorSeriesPoint, InvestmentSummary, LevelZone, MarketContext, MetricResult,
   NormalizedBar, PriceStructure, SupportResistance, TradePlanResult,
 } from "../services/types/dto/analysis";
-import { ValuationReference, ValuationResult } from "../services/types/dto/valuation";
+import { ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, readableReason, readableState } from "./AnalysisPanels";
 import { svgXFromClient } from "./ValuationPanels";
 
@@ -60,42 +60,7 @@ function computePresetWindow(bars: NormalizedBar[], range: RangeCode): [number, 
   return [start, total];
 }
 
-function ReferencePositionBar({ label, price, reference, currency }: {
-  label: string; price?: number | null; reference?: ValuationReference | null; currency?: string | null;
-}) {
-  if (!price || !reference || reference.status !== "AVAILABLE" || reference.priceLow == null || reference.priceHigh == null) {
-    return <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>{label}：暫無可換算價格區間</Typography>;
-  }
-  const low = reference.priceLow;
-  const high = reference.priceHigh;
-  const minBound = Math.min(price, low) * 0.92;
-  const maxBound = Math.max(price, high) * 1.08;
-  const span = maxBound - minBound || 1;
-  const bandLeft = ((low - minBound) / span) * 100;
-  const bandWidth = Math.max(2, ((high - low) / span) * 100);
-  const pinPos = Math.min(98, Math.max(2, ((price - minBound) / span) * 100));
-  const diffPct = price < low ? ((price - low) / low) * 100 : price > high ? ((price - high) / high) * 100 : 0;
-  const tagText = price < low ? `低於下緣 ${formatSignedPct(diffPct)}`
-    : price > high ? `高於上緣 ${formatSignedPct(diffPct)}` : "位於參考區間內";
-  const tagColor = price < low ? "success.main" : price > high ? "warning.main" : "info.main";
-
-  const coverageSuffix = reference.kind === "HISTORICAL_MARKET" && reference.sampleCount != null && reference.windowSampleCount != null
-    ? ` · 有效 ${reference.sampleCount}/${reference.windowSampleCount} 月`
-    : "";
-
-  return <Box sx={{ mt: 0.8 }}>
-    <Stack direction="row" justifyContent="space-between" alignItems="baseline">
-      <Typography variant="caption" color="text.secondary">{label}（{formatNumber(low)}–{formatNumber(high)} {currency ?? ""}{coverageSuffix}）</Typography>
-      <Typography variant="caption" fontWeight={700} color={tagColor}>{tagText}</Typography>
-    </Stack>
-    <Box sx={{ position: "relative", height: 10, bgcolor: "action.hover", borderRadius: 5, mt: 0.5, overflow: "hidden" }}>
-      <Box sx={{ position: "absolute", left: `${bandLeft}%`, width: `${bandWidth}%`, top: 0, bottom: 0, bgcolor: "rgba(25, 118, 210, 0.28)", borderRadius: 5 }} />
-      <Box sx={{ position: "absolute", left: `calc(${pinPos}% - 4px)`, top: 1, width: 8, height: 8, borderRadius: "50%", bgcolor: price < low ? "#16a34a" : price > high ? "#ed6c02" : "#1976d2", border: "1.5px solid #fff" }} />
-    </Box>
-  </Box>;
-}
-
-/** 買賣觀察四維速覽卡：整合估值水位、均線趨勢、RSI/MACD 動能與最近支撐阻力。 */
+/** 技術與市場四維速覽卡：整合相對大盤強弱與美債環境、均線趨勢、RSI/MACD 動能與最近支撐阻力。 */
 export function DecisionSnapshotStrip({ valuation, structure, levels, market }: {
   valuation?: ValuationResult | null;
   structure?: PriceStructure | null;
@@ -115,6 +80,13 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
   const atr14 = metricVal(ind.ATR14);
   const ret20 = metricVal(market?.momentum?.return20);
   const dd252 = metricVal(market?.momentum?.drawdownFrom252High);
+  const rsBench = market?.relativeStrength?.benchmark ?? "SPY";
+  const rs20 = metricVal(market?.relativeStrength?.excessReturn20);
+  const rs60 = metricVal(market?.relativeStrength?.excessReturn60);
+  const maxHistDd = metricVal(market?.drawdown?.availableHistoryHighDrawdown);
+  const tenYear = metricVal(market?.treasury?.tenYear);
+  const curveSpread = metricVal(market?.treasury?.curve10yMinus2y);
+  const marketRegime = market?.market?.status === "AVAILABLE" ? market.market.value?.regime : null;
   const nearestSupport = levels?.supports?.[0];
   const nearestResistance = levels?.resistances?.[0];
 
@@ -123,9 +95,32 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
   return <Grid container spacing={2} sx={{ mt: 0.5 }}>
     <Grid size={{ xs: 12, md: 6, lg: 3 }}>
       <Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
-        <Typography variant="subtitle2" fontWeight={700}>估值水位比較</Typography>
-        <ReferencePositionBar label="自身5年歷史 P20–P80" price={price} reference={valuation?.historicalReference} currency={currency} />
-        <ReferencePositionBar label="同業市場 P25–P75" price={price} reference={valuation?.peerReference} currency={currency} />
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Typography variant="subtitle2" fontWeight={700}>相對強弱與宏觀環境</Typography>
+          {marketRegime && <Chip size="small" variant="outlined" label={readableState(t, marketRegime)} />}
+        </Stack>
+        <Stack spacing={0.5} sx={{ mt: 1 }}>
+          <Stack direction="row" justifyContent="space-between">
+            <Typography variant="caption" color="text.secondary">相對 {rsBench}（20日／60日）</Typography>
+            <Typography variant="caption" fontWeight={700} color={rs60 == null ? "text.secondary" : rs60 >= 0 ? "success.main" : "error.main"}>
+              {rs20 != null ? formatSignedPct(rs20 * 100) : "—"} ／ {rs60 != null ? formatSignedPct(rs60 * 100) : "—"}
+            </Typography>
+          </Stack>
+          <Stack direction="row" justifyContent="space-between">
+            <Typography variant="caption" color="text.secondary">52週／歷史高點回撤</Typography>
+            <Typography variant="caption" fontWeight={600}>
+              {dd252 != null ? formatSignedPct(dd252 * 100) : "—"}
+              {maxHistDd != null ? ` ／ ${formatSignedPct(maxHistDd * 100)}` : ""}
+            </Typography>
+          </Stack>
+          <Stack direction="row" justifyContent="space-between">
+            <Typography variant="caption" color="text.secondary">10Y 美債殖利率（10Y-2Y）</Typography>
+            <Typography variant="caption" fontWeight={600}>
+              {tenYear != null ? `${formatNumber(tenYear)}%` : "—"}
+              {curveSpread != null ? `（${formatSignedPct(curveSpread)}）` : ""}
+            </Typography>
+          </Stack>
+        </Stack>
       </Paper>
     </Grid>
     <Grid size={{ xs: 12, md: 6, lg: 3 }}>
@@ -197,11 +192,12 @@ export function DecisionSnapshotStrip({ valuation, structure, levels, market }: 
 }
 
 /** 互動式多窗格股價 K 線／折線 ＋ 日期縮放平移（滾輪／拖曳／時間軸滑桿）＋ 均線／布林／支撐阻力色帶 ＋ Volume / RSI / MACD 副圖。 */
-export function InteractivePriceWorkbench({ structure, levels, market, valuation }: {
+export function InteractivePriceWorkbench({ structure, levels, market, valuation, summary }: {
   structure?: PriceStructure | null;
   levels?: SupportResistance | null;
   market?: MarketContext | null;
   valuation?: ValuationResult | null;
+  summary?: InvestmentSummary | null;
 }) {
   const [range, setRange] = useState<RangeCode>("1Y");
   const [timeframe, setTimeframe] = useState<TimeframeCode>("DAILY");
@@ -341,10 +337,21 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
       }
     }
   });
-  const histRef = valuation?.historicalReference;
-  if (showValBand && histRef?.status === "AVAILABLE" && histRef.priceLow != null && histRef.priceHigh != null) {
-    minP = Math.min(minP, histRef.priceLow);
-    maxP = Math.max(maxP, histRef.priceHigh);
+  const compositeBand = summary?.fairValue != null && summary.fairValue.low != null && summary.fairValue.high != null
+    ? { low: summary.fairValue.low, mid: summary.fairValue.mid, high: summary.fairValue.high, label: "綜合參考帶" }
+    : (valuation?.historicalReference?.status === "AVAILABLE"
+        && valuation.historicalReference.priceLow != null
+        && valuation.historicalReference.priceHigh != null)
+      ? {
+          low: valuation.historicalReference.priceLow,
+          mid: valuation.historicalReference.priceMedian ?? null,
+          high: valuation.historicalReference.priceHigh,
+          label: "歷史參考帶",
+        }
+      : null;
+  if (showValBand && compositeBand) {
+    minP = Math.min(minP, compositeBand.low);
+    maxP = Math.max(maxP, compositeBand.high);
   }
   const padP = (maxP - minP) * 0.06 || 1;
   const pLow = Math.max(0, minP - padP);
@@ -568,8 +575,8 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
         <Chip size="small" label="布林通道 BB20" color={showBollinger ? "info" : "default"} variant={showBollinger ? "filled" : "outlined"} onClick={() => setShowBollinger(v => !v)} />
       </>}
       <Chip size="small" label="支撐／阻力帶" color={showZones ? "success" : "default"} variant={showZones ? "filled" : "outlined"} onClick={() => setShowZones(v => !v)} />
-      {histRef?.status === "AVAILABLE" && histRef.priceLow != null && histRef.priceHigh != null && (
-        <Chip size="small" label="歷史估值參考帶" color={showValBand ? "info" : "default"} variant={showValBand ? "filled" : "outlined"} onClick={() => setShowValBand(v => !v)} />
+      {compositeBand && (
+        <Chip size="small" label={compositeBand.label} color={showValBand ? "info" : "default"} variant={showValBand ? "filled" : "outlined"} onClick={() => setShowValBand(v => !v)} />
       )}
       <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
       <Chip size="small" label="成交量副圖" variant={showVolume ? "filled" : "outlined"} onClick={() => setShowVolume(v => !v)} />
@@ -621,14 +628,20 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
           </g>;
         })}
 
-        {/* 歷史估值參考價色帶 */}
-        {showValBand && histRef?.status === "AVAILABLE" && histRef.priceLow != null && histRef.priceHigh != null && (() => {
-          const yTop = Math.max(priceTop, yPrice(histRef.priceHigh));
-          const yBot = Math.min(priceTop + priceH, yPrice(histRef.priceLow));
+        {/* 綜合／歷史估值參考價色帶 */}
+        {showValBand && compositeBand && (() => {
+          const yTop = Math.max(priceTop, yPrice(compositeBand.high));
+          const yBot = Math.min(priceTop + priceH, yPrice(compositeBand.low));
+          const yMid = compositeBand.mid != null ? yPrice(compositeBand.mid) : null;
           if (yBot <= yTop) return null;
           return <g>
             <rect x={padL} width={plotW} y={yTop} height={yBot - yTop} fill="rgba(79, 70, 229, 0.08)" stroke="#6366f1" strokeDasharray="4,4" />
-            <text x={padL + 6} y={Math.min(yBot - 3, yTop + 12)} fontSize="10" fill="#4f46e5">歷史參考 ({formatNumber(histRef.priceLow, 1)}–{formatNumber(histRef.priceHigh, 1)})</text>
+            {yMid != null && yMid >= priceTop && yMid <= priceTop + priceH && (
+              <line x1={padL} x2={padL + plotW} y1={yMid} y2={yMid} stroke="#4f46e5" strokeWidth="1" strokeDasharray="6,4" opacity={0.75} />
+            )}
+            <text x={padL + 6} y={Math.min(yBot - 3, yTop + 12)} fontSize="10" fill="#4f46e5">
+              {compositeBand.label} ({formatNumber(compositeBand.low, 1)}–{formatNumber(compositeBand.high, 1)})
+            </text>
           </g>;
         })()}
 

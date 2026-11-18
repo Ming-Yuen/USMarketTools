@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Alert, Box, Button, ButtonGroup, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, ButtonGroup, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from "@mui/material";
+import { ExpandMore } from "@mui/icons-material";
 import { apiClient } from "../services/apiClient";
 import { Financials, FinancialValue, ValuationResult } from "../services/types/dto/valuation";
 import { formatHongKongDateTime } from "../utils/hongKongTime";
@@ -215,31 +216,41 @@ const financialLabels: Array<[keyof Financials, string, "money" | "perShare" | "
 
 export function FinancialsPanel({ financials }: { financials: Financials | null }) {
   const { t } = useTranslation();
-  return <Paper component="section" aria-label="估值使用的財務數據" variant="outlined" sx={{ p: 2.5, mt: 2 }}>
-    <Typography variant="h6" fontWeight={700}>估值使用的財務數據</Typography>
-    <Typography color="text.secondary" variant="body2" sx={{ mt: 1 }}>所有數值與期間由後端計算；缺失與不適用的資料保持空缺，不以零補值。</Typography>
-    {!financials ? <Typography sx={{ mt: 2 }}>尚無財務數據</Typography> : <TableContainer sx={{ mt: 1 }}>
-      <Table size="small">
-        <TableHead><TableRow>{([
-          ["指標", "left"], ["數值", "right"], ["單位", "left"], ["財務期間", "left"], ["可用時間（香港）", "left"], ["狀態／計算口徑", "left"],
-        ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
-        <TableBody>{financialLabels.map(([key, label, unit]) => {
-          const value = financials[key] as FinancialValue | undefined;
-          return <TableRow key={key}>
-            <TableCell sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>
-            <TableCell align="right">{value?.status === "AVAILABLE" ? formatNumber(value.value) : "—"}</TableCell>
-            <TableCell>{unit === "shares" ? "股" : financials.reportingCurrency ? financials.reportingCurrency + (unit === "perShare" ? "／股" : "") : "—"}</TableCell>
-            <TableCell sx={{ whiteSpace: "nowrap" }}>{value?.periodStart && value.periodEnd && value.periodStart !== value.periodEnd
-              ? value.periodStart + " 至 " + value.periodEnd : value?.periodEnd ?? "—"}</TableCell>
-            <TableCell>{value?.availableAt ? formatHongKongDateTime(value.availableAt, "zh-HK") : "—"}</TableCell>
-            <TableCell>{statusLabel(value?.status)}
-              {value?.status !== "AVAILABLE" && <Typography variant="caption" display="block">{reasonLabel(t, value?.reasonCode)}</Typography>}
-              {value?.calculation && <Typography variant="caption" display="block" color="text.secondary">{value.calculation}</Typography>}
-            </TableCell>
-          </TableRow>;
-        })}</TableBody>
-      </Table>
-    </TableContainer>}
+  return <Paper component="section" aria-label="估值使用的財務數據" variant="outlined" sx={{ mt: 2, borderRadius: 1, overflow: "hidden" }}>
+    <Accordion disableGutters elevation={0} defaultExpanded={false} sx={{ "&:before": { display: "none" } }}>
+      <AccordionSummary expandIcon={<ExpandMore />} sx={{ px: 2.5, py: 0.5 }}>
+        <Box>
+          <Typography fontWeight={700}>估值使用的財務數據（14 項當期財務原料 · 點擊展開）</Typography>
+          <Typography color="text.secondary" variant="caption">
+            {financials ? `期末日：${financials.periodEnd ?? "—"} · 幣別：${financials.reportingCurrency ?? "—"}` : "尚無財務數據"} · 缺失與不適用維持空缺，不以零補值
+          </Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails sx={{ px: 2.5, pt: 0, pb: 2.5 }}>
+        {!financials ? <Typography sx={{ mt: 1 }}>尚無財務數據</Typography> : <TableContainer>
+          <Table size="small">
+            <TableHead><TableRow>{([
+              ["指標", "left"], ["數值", "right"], ["單位", "left"], ["財務期間", "left"], ["可用時間（香港）", "left"], ["狀態／計算口徑", "left"],
+            ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
+            <TableBody>{financialLabels.map(([key, label, unit]) => {
+              const value = financials[key] as FinancialValue | undefined;
+              return <TableRow key={key}>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>
+                <TableCell align="right">{value?.status === "AVAILABLE" ? formatNumber(value.value) : "—"}</TableCell>
+                <TableCell>{unit === "shares" ? "股" : financials.reportingCurrency ? financials.reportingCurrency + (unit === "perShare" ? "／股" : "") : "—"}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{value?.periodStart && value.periodEnd && value.periodStart !== value.periodEnd
+                  ? value.periodStart + " 至 " + value.periodEnd : value?.periodEnd ?? "—"}</TableCell>
+                <TableCell>{value?.availableAt ? formatHongKongDateTime(value.availableAt, "zh-HK") : "—"}</TableCell>
+                <TableCell>{statusLabel(value?.status)}
+                  {value?.status !== "AVAILABLE" && <Typography variant="caption" display="block">{reasonLabel(t, value?.reasonCode)}</Typography>}
+                  {value?.calculation && <Typography variant="caption" display="block" color="text.secondary">{value.calculation}</Typography>}
+                </TableCell>
+              </TableRow>;
+            })}</TableBody>
+          </Table>
+        </TableContainer>}
+      </AccordionDetails>
+    </Accordion>
   </Paper>;
 }
 
@@ -289,16 +300,23 @@ export function ValuationHistoryPanel({ figi, initial }: { figi: string; initial
     {history.isError && <Alert severity="error">歷史估值載入失敗：{(history.error as Error).message}</Alert>}
     {history.isFetching ? <Typography>正在載入歷史估值…</Typography> : <>
       <SeriesChart title={metricLabel(metric) + " 歷史走勢"} points={chartPoints} />
-      <TableContainer sx={{ maxHeight: 320 }}><Table size="small" stickyHeader aria-label="歷史估值數據">
-        <TableHead><TableRow>{([
-          ["估值日", "left"], ["股價", "right"], ["P/E", "right"], ["P/B", "right"], ["P/S", "right"], ["P/FCF", "right"], ["EV/EBITDA", "right"], ["狀態", "left"],
-        ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
-        <TableBody>{[...rows].reverse().map(row => <TableRow key={row.valuationDate}>
-          <TableCell>{row.valuationDate}</TableCell><TableCell align="right">{formatNumber(row.price)} {row.currency ?? ""}</TableCell>
-          {(["pe", "pb", "ps", "pfcf", "evEbitda"] as const).map(code => <TableCell key={code} align="right" title={row.metrics[code]?.reasonCode ?? undefined}>{row.metrics[code]?.status === "AVAILABLE" ? formatNumber(row.metrics[code].value) : "—"}</TableCell>)}
-          <TableCell title={row.reasonCode ?? undefined}>{statusLabel(row.status)}</TableCell>
-        </TableRow>)}</TableBody>
-      </Table></TableContainer>
+      <Accordion disableGutters elevation={0} defaultExpanded={false} sx={{ mt: 1, border: "1px solid", borderColor: "divider", borderRadius: 1, "&:before": { display: "none" } }}>
+        <AccordionSummary expandIcon={<ExpandMore />}>
+          <Typography variant="body2" fontWeight={700}>歷史月末數據明細表（共 {rows.length} 筆 · 點擊展開）</Typography>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0 }}>
+          <TableContainer sx={{ maxHeight: 320 }}><Table size="small" stickyHeader aria-label="歷史估值數據">
+            <TableHead><TableRow>{([
+              ["估值日", "left"], ["股價", "right"], ["P/E", "right"], ["P/B", "right"], ["P/S", "right"], ["P/FCF", "right"], ["EV/EBITDA", "right"], ["狀態", "left"],
+            ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}</TableRow></TableHead>
+            <TableBody>{[...rows].reverse().map(row => <TableRow key={row.valuationDate}>
+              <TableCell>{row.valuationDate}</TableCell><TableCell align="right">{formatNumber(row.price)} {row.currency ?? ""}</TableCell>
+              {(["pe", "pb", "ps", "pfcf", "evEbitda"] as const).map(code => <TableCell key={code} align="right" title={row.metrics[code]?.reasonCode ?? undefined}>{row.metrics[code]?.status === "AVAILABLE" ? formatNumber(row.metrics[code].value) : "—"}</TableCell>)}
+              <TableCell title={row.reasonCode ?? undefined}>{statusLabel(row.status)}</TableCell>
+            </TableRow>)}</TableBody>
+          </Table></TableContainer>
+        </AccordionDetails>
+      </Accordion>
     </>}
   </Paper>;
 }

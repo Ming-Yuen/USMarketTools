@@ -155,9 +155,12 @@ class ValuationReferencePhase4Tests {
         assertThat(hist.multipleLow()).isEqualByComparingTo("13.6000");
         assertThat(hist.multipleMedian()).isEqualByComparingTo("19.0000");
         assertThat(hist.multipleHigh()).isEqualByComparingTo("24.4000");
-        // 當日 EPS = 10.00 -> priceLow = 136.0000, priceHigh = 244.0000
+        // 當日 EPS = 10.00 -> priceLow = 136.0000, priceMedian = 190.0000, priceHigh = 244.0000; 當期 PE = 28 -> mid-rank 95.00
         assertThat(hist.priceLow()).isEqualByComparingTo("136.0000");
+        assertThat(hist.priceMedian()).isEqualByComparingTo("190.0000");
         assertThat(hist.priceHigh()).isEqualByComparingTo("244.0000");
+        assertThat(hist.currentMultiple()).isEqualByComparingTo("28.0000");
+        assertThat(hist.currentPercentile()).isEqualByComparingTo("95.00");
     }
 
     @Test
@@ -344,7 +347,7 @@ class ValuationReferencePhase4Tests {
         when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(histDay)))
                 .thenReturn(quotesList.stream().filter(q -> !q.getQuoteDate().isAfter(histDay)).toList());
 
-        // 1) 最新收市日查詢：industryAssumption 生效並換算假設價格 176.0000–224.0000
+        // 1) 最新收市日查詢：industryAssumption 生效並換算假設價格 176.0000–224.0000（中點 200.0000，currentPercentile 嚴格為 null）
         ReportValuationBundle latestBundle = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
         ValuationReferenceDto latestAssumption = latestBundle.valuation().industryAssumption();
         assertThat(latestAssumption.status()).isEqualTo("AVAILABLE");
@@ -352,7 +355,10 @@ class ValuationReferencePhase4Tests {
         assertThat(latestAssumption.multipleLow()).isEqualByComparingTo("22.0000");
         assertThat(latestAssumption.multipleHigh()).isEqualByComparingTo("28.0000");
         assertThat(latestAssumption.priceLow()).isEqualByComparingTo("176.0000");
+        assertThat(latestAssumption.priceMedian()).isEqualByComparingTo("200.0000");
         assertThat(latestAssumption.priceHigh()).isEqualByComparingTo("224.0000");
+        assertThat(latestAssumption.currentMultiple()).isEqualByComparingTo("27.0000");
+        assertThat(latestAssumption.currentPercentile()).isNull();
 
         // 2) 指定歷史日期查詢（2025-06-30 < 2026-11-13）：peerReference 與 industryAssumption 一律標 NOT_APPLICABLE，不讀同業快照
         ReportValuationBundle histBundle = service.evaluateForReport(apple, histDay, histClose, histClose, "I10");
@@ -479,6 +485,52 @@ class ValuationReferencePhase4Tests {
         assertThat(shortHist.sampleCount()).isEqualTo(4);
         assertThat(shortHist.windowSampleCount()).isEqualTo(12);
         assertThat(shortHist.excludedSampleCount()).isEqualTo(8);
+    }
+
+    @Test
+    void reportSharesEvaluationIsSharedAcrossValuationAndFinancialsDtoIncludingClosingSnapshotAndSplitError() {
+        StockFinancialPeriod p = buildPeriod(LocalDate.of(2025, 1, 1), LocalDate.of(2026, 9, 30),
+                new BigDecimal("5.00"), new BigDecimal("500"), new BigDecimal("1000"), new BigDecimal("200"), new BigDecimal("80"));
+        when(financialPeriods.findByFigiOrderByPeriodEndAsc(FIGI)).thenReturn(List.of(p));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(eq(FIGI), any(), eq(LATEST_DAY)))
+                .thenReturn(List.of(quote(LATEST_DAY, "10")));
+
+        // 同日收盤快照提供流通市值 900（收盤價 10 -> 90 股），而 cutoffObs 為舊股數 80 股 -> 兩者必須統一採用 90 股（P/B = 900/500 = 1.80，BVPS = 500/90）
+        com.ykm.stock.analytics.model.entity.StockShareObservation cutoffObs = new com.ykm.stock.analytics.model.entity.StockShareObservation();
+        cutoffObs.setFigi(FIGI);
+        cutoffObs.setSource("FUTU");
+        cutoffObs.setObservedAt(LATEST_CLOSE.minusSeconds(86400));
+        cutoffObs.setOutstandingShares(80L);
+
+        com.ykm.stock.analytics.model.entity.StockShareObservation closingSnap = new com.ykm.stock.analytics.model.entity.StockShareObservation();
+        closingSnap.setFigi(FIGI);
+        closingSnap.setSource("FUTU");
+        closingSnap.setSnapshotPrice(new BigDecimal("10"));
+        closingSnap.setSnapshotQuoteTime(LATEST_CLOSE.minusSeconds(60));
+        closingSnap.setObservedAt(LATEST_CLOSE.plusSeconds(300));
+        closingSnap.setOutstandingMarketCap(new BigDecimal("900"));
+        closingSnap.setOutstandingShares(90L);
+
+        when(shareObservations.findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(FIGI, "FUTU", NOW))
+                .thenReturn(Optional.of(cutoffObs));
+        when(shareObservations.findLatestClosingSnapshotAt(eq(List.of(FIGI)), any(), eq(LATEST_CLOSE), eq(NOW)))
+                .thenReturn(List.of(closingSnap));
+
+        ReportValuationBundle snapBundle = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
+        assertThat(snapBundle.valuation().marketCapSource()).isEqualTo("FUTU_CLOSE_SNAPSHOT");
+        assertThat(snapBundle.valuation().metrics().pb().value()).isEqualByComparingTo("1.8000");
+        assertThat(snapBundle.financials().sharesOutstanding().value()).isEqualByComparingTo("90");
+        BigDecimal impliedPbFromDto = snapBundle.valuation().price().divide(snapBundle.financials().bookValuePerShare().value(), 4, java.math.RoundingMode.HALF_UP);
+        assertThat(impliedPbFromDto).isEqualByComparingTo("1.8000");
+
+        // 當發生 SPLIT_SYNC_ERROR 且跨基準日時，FinancialsDto 亦須同步攔截，不漏放舊快照股數
+        when(shareObservations.findLatestClosingSnapshotAt(eq(List.of(FIGI)), any(), eq(LATEST_CLOSE), eq(NOW)))
+                .thenReturn(List.of());
+        status.setSplitMessage("ERROR:SPLIT_FETCH_FAILED");
+        ReportValuationBundle splitErrBundle = service.evaluateForReport(apple, LATEST_DAY, LATEST_CLOSE, NOW, "I10");
+        assertThat(splitErrBundle.valuation().metrics().pb().reasonCode()).isEqualTo("SPLIT_SYNC_ERROR");
+        assertThat(splitErrBundle.financials().sharesOutstanding().status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(splitErrBundle.financials().sharesOutstanding().reasonCode()).isEqualTo("SPLIT_SYNC_ERROR");
     }
 
     private Object[] peerTuple(String issuerKey, String figi, String pe) {

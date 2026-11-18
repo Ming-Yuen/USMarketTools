@@ -389,7 +389,68 @@
     "otherObservationPlans": "Other observation plans and unmet conditions",
     "observationPlansLimit": "These plans were not selected as preferred. The price levels are observation references, not active buy instructions.",
     "observationPlanNumber": "Observation plan {{number}}",
-    "notSelectedAsPreferred": "This plan has not been selected as the preferred plan."
+    "notSelectedAsPreferred": "This plan has not been selected as the preferred plan.",
+    "executiveSummary": {
+      "title": "Valuation Position & Observation Summary",
+      "disclaimer": "Synthesizes objective own-history and peer market multiple quantiles into a reference band. Reflects relative market valuation position only — not intrinsic value, price forecasts, or buy/sell instructions.",
+      "verdicts": {
+        "DEEP_UNDERVALUED": "Significantly Below Market Band (Deep Discount)",
+        "MODERATELY_UNDERVALUED": "Below Reference Lower Bound (Moderately Undervalued)",
+        "FAIR_LOWER": "Lower Half of Reference Band (Fair · Lower Half)",
+        "FAIR_UPPER": "Upper Half of Reference Band (Fair · Upper Half)",
+        "MODERATELY_OVERVALUED": "Above Reference Upper Bound (Moderately Rich)",
+        "OVERVALUED_RISK": "Significantly Above Market Band (Valuation Stretch)",
+        "INSUFFICIENT_EVIDENCE": "Insufficient Reference Anchors"
+      },
+      "backing": {
+        "STRONG": "Strong Fundamental Backing",
+        "MIXED": "Mixed Fundamentals",
+        "WEAKENING": "Weakening Fundamentals",
+        "INSUFFICIENT_DATA": "Fundamental Comparison Incomplete"
+      },
+      "stances": {
+        "ACCUMULATE_AT_SUPPORT": "Below reference band with active support · Observe staged entries near support",
+        "WATCH_PULLBACK_TO_BAND": "Compare against reference lower bound and support zones; avoid chasing",
+        "HOLD_TRAIL_NO_CHASE": "Strong fundamentals and uptrend with rich multiple · Trail trend without chasing",
+        "CAUTION_VALUE_TRAP": "Weakening fundamentals · Guard against value trap or earnings downgrade",
+        "CAUTION_OVEREXTENSION": "Above market reference band · Monitor multiple compression risk",
+        "WAIT_FOR_STABILIZATION": "Stop/zone breach, below SMA200 downtrend, or event gate · Wait for stabilization",
+        "INSUFFICIENT_EVIDENCE": "Insufficient market anchors · Displaying individual metrics only"
+      },
+      "anchorSources": {
+        "HISTORICAL_AND_PEER": "5Y Own History + Same-Day Peers (50/50 Objective Blend)",
+        "HISTORICAL_ONLY": "Single Anchor: 5Y Own History (Peers insufficient or N/A)",
+        "PEER_ONLY": "Single Anchor: Same-Day Peers (History insufficient)",
+        "NONE": "No convertible objective market price anchor"
+      },
+      "risks": {
+        "EARNINGS_IMMINENT_BLOCK": "Upcoming earnings or event ({{eventDate}}) restricts new entries",
+        "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "Protective stop breached or price below zone; reclaim required first",
+        "SWUNG_TO_LOSS": "Trailing TTM EPS swung from profit to loss YoY",
+        "NEGATIVE_TRAILING_EARNINGS": "Trailing TTM EPS is non-positive",
+        "NEGATIVE_FCF_BURN": "Trailing TTM free cash flow is non-positive",
+        "HIGH_LEVERAGE_DEBT_EBITDA": "Elevated Net Debt / EBITDA leverage",
+        "REVENUE_CONTRACTION": "Trailing TTM revenue contracted YoY",
+        "SHARE_DILUTION_YOY": "Net share count diluted by over 3% YoY",
+        "VALUATION_ABOVE_UPPER_BAND": "Current price exceeds objective market upper bound",
+        "BELOW_SMA200_DOWNTREND": "Weekly downtrend with daily close below SMA200",
+        "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices"
+      },
+      "watchItems": {
+        "WATCH_REFERENCE_LOW_BAND": "Lower reference threshold: {{priceLow}} {{currency}} (Mid {{priceMid}})",
+        "WATCH_TECHNICAL_SUPPORT": "Paired {{timeframe}} support zone: {{lower}}–{{upper}} {{currency}}",
+        "WATCH_RECLAIM_STABILIZATION": "Watch for price to reclaim support zone and stabilize",
+        "WATCH_EVENT_WINDOW": "Monitor post-event reaction after {{eventDate}}",
+        "WATCH_FUNDAMENTAL_STABILIZATION": "Monitor next-quarter revenue, FCF, and leverage stabilization"
+      }
+    },
+    "fundamentals": {
+      "title": "Split-Aligned Growth, Quality & Capital Return",
+      "pegBasis": {
+        "TRAILING_EPS_CAGR_3Y": "3Y EPS CAGR basis",
+        "TRAILING_EPS_YOY": "1Y EPS YoY basis"
+      }
+    }
   },
   "upload": {
     "title": "Data Upload",

@@ -2,12 +2,14 @@ import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, Grid, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, Grid, Stack, TextField, Typography } from "@mui/material";
 import { ArrowBack, ExpandMore } from "@mui/icons-material";
 import { apiClient } from "../services/apiClient";
 import { apiConfig } from "../apiConfig";
 import { AnalysisHorizon, AnalysisReportRequest, MetricResult, StockAnalysisReport } from "../services/types/dto/analysis";
-import { formatNumber, metricLabel, readableReason, reasonLabel, statusLabel, TechnicalIndicatorsPanel, ValuationReferencePanel } from "./AnalysisPanels";
+import { readableReason, reasonLabel, statusLabel, TechnicalIndicatorsPanel, ValuationReferencePanel } from "./AnalysisPanels";
+import { ExecutiveSummaryPanel } from "./ExecutiveSummaryPanel";
+import { FundamentalsPanel } from "./FundamentalsPanel";
 import { FinancialsPanel, ValuationHistoryPanel } from "./ValuationPanels";
 import { FutuObservationPanels } from "./FutuObservationPanels";
 import { IndustryValuationProposalPanel } from "./IndustryValuationProposalPanel";
@@ -41,6 +43,7 @@ export function StockAnalysisPage() {
   const market = valueOf(report?.marketContext);
   const levels = valueOf(report?.supportResistance);
   const tradePlans = valueOf(report?.tradePlans);
+  const summary = valueOf(report?.summary);
   const error = reportQuery.error as { response?: { data?: { message?: string } }; message?: string } | null;
 
   return <Box sx={{ width: "100%", minWidth: 0 }}>
@@ -70,31 +73,12 @@ export function StockAnalysisPage() {
         估值狀態：{statusLabel(valuation?.status)} · {reasonLabel(t, valuation?.reasonCode)}。個別可用指標仍會顯示。
       </Alert>}
 
-      {/* 1. 頂部當日股價與五大核心估值倍數列 */}
-      <Grid container spacing={2}>
-        <Grid size={{ xs: 6, md: 2 }}><Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
-          <Typography variant="caption" color="text.secondary">估值使用股價</Typography>
-          <Typography variant="h6">{formatNumber(valuation?.price)} {valuation?.currency ?? ""}</Typography>
-        </Paper></Grid>
-        {Object.entries(valuation?.metrics ?? {}).map(([code, result]) => <Grid key={code} size={{ xs: 6, md: 2 }}>
-          <Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
-            <Typography variant="caption" color="text.secondary">{metricLabel(code)}</Typography>
-            <Typography variant="h6">{result.status === "AVAILABLE" ? formatNumber(result.value) : "—"}</Typography>
-            {result.financialSource === "SEC" && <Typography variant="caption" color="text.secondary">
-              SEC 財務{result.periodEnd && ` · ${result.periodStart ? `${result.periodStart}～` : ""}${result.periodEnd}`}
-            </Typography>}
-            {result.status !== "AVAILABLE" && <Typography variant="caption" color="text.secondary">{statusLabel(result.status)} · {reasonLabel(t, result.reasonCode)}</Typography>}
-          </Paper>
-        </Grid>)}
-      </Grid>
+      {/* L1. 置頂首屏：綜合估值位置、參考價帶標尺、觀察傾向與當期核心估值倍數 */}
+      <ExecutiveSummaryPanel valuation={valuation} summaryResult={report.summary} />
 
-      {/* 2. 置頂第一視覺：股價走勢與技術指標互動圖表（支援滾輪縮放、拖曳平移、5年時間軸滑桿） */}
-      <InteractivePriceWorkbench structure={structure} levels={levels} market={market} valuation={valuation} />
-
-      {/* 3. 買賣決策四維速覽（估值水位、均線結構、RSI/MACD、最近支撐阻力） */}
+      {/* L2. 看圖與時機工作台（嚴格保持位於估值參考三面板之前） */}
+      <InteractivePriceWorkbench structure={structure} levels={levels} market={market} valuation={valuation} summary={summary} />
       <DecisionSnapshotStrip valuation={valuation} structure={structure} levels={levels} market={market} />
-
-      {/* 4. 關鍵支撐阻力階梯 ＆ 技術觀察方案（支援切換週線中長線／日線波段） */}
       <ActionableLevelsAndPlansPanel
         levels={levels}
         tradePlans={tradePlans}
@@ -103,19 +87,19 @@ export function StockAnalysisPage() {
         onHorizonChange={setHorizon}
       />
 
-      {/* 5. 估值參考區間與歷史倍數走勢 */}
+      {/* L3. 估值與基本面證據層（歷史參考、同業參考與人工產業假設三個獨立面板並列，緊接基本面與歷史走勢圖） */}
       <Grid container spacing={2} sx={{ mt: 0.5 }}>
         <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="歷史市場估值參考" description="比較這隻股票過去實際市場給予的估值倍數。" reference={valuation?.historicalReference} currency={valuation?.currency} /></Grid>
         <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="同業市場估值參考" description="比較可比公司的實際市場倍數；樣本不足時不產生替代值。" reference={valuation?.peerReference} currency={valuation?.currency} /></Grid>
         <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="產業估值假設" description="以人工確認的產業模型及倍數建立假設情境，與實際市場參考分開。" reference={valuation?.industryAssumption} currency={valuation?.currency} /></Grid>
       </Grid>
+      <FundamentalsPanel fundamentals={report.fundamentals} summary={summary} />
       <ValuationHistoryPanel key={figi + ":" + report.valuationDate} figi={figi} initial={report.history ?? []} />
 
-      {/* 6. 財報輸入明細與富途市場觀察 */}
+      {/* L4. 稽核明細折疊區（14 項財務原料、富途觀察預期、29 項完整技術指標與產業假設設定預設收合） */}
       <FinancialsPanel financials={report.financials} />
       {report.futuObservations && <FutuObservationPanels observations={report.futuObservations} />}
 
-      {/* 7. 進階折疊明細：29 項原始技術指標定義與產業估值假設設定 */}
       <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
         <AccordionSummary expandIcon={<ExpandMore />}>
           <Typography fontWeight={700}>完整技術指標明細與原始解說（點擊展開）</Typography>
@@ -125,8 +109,15 @@ export function StockAnalysisPage() {
         </AccordionDetails>
       </Accordion>
 
-      <IndustryValuationProposalPanel key={figi + ":" + (valuation?.industryCode ?? "")} industryCode={valuation?.industryCode} figi={figi} valuationDate={report.valuationDate}
-        reloadReport={async () => (await reportQuery.refetch()).data ?? null} />
+      <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
+        <AccordionSummary expandIcon={<ExpandMore />}>
+          <Typography fontWeight={700}>產業估值假設設定與 AI 建議（點擊展開）</Typography>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0 }}>
+          <IndustryValuationProposalPanel key={figi + ":" + (valuation?.industryCode ?? "")} industryCode={valuation?.industryCode} figi={figi} valuationDate={report.valuationDate}
+            reloadReport={async () => (await reportQuery.refetch()).data ?? null} />
+        </AccordionDetails>
+      </Accordion>
 
       {!!report.reasons?.length && <Alert severity="info" sx={{ mt: 2 }}>{report.reasons.map(reason => readableReason(t, reason)).join("；")}</Alert>}
     </>}

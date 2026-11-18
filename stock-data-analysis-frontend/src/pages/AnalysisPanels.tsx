@@ -69,6 +69,12 @@ export function ValuationReferencePanel({ title, description, reference, currenc
           市場中位數：{formatNumber(reference.multipleMedian)} 倍 · 同日有效公司數：{reference.sampleCount ?? "—"}
           {reference.sampleEndDate ? `（${reference.sampleEndDate}）` : ""}
         </Typography>}
+        {!assumption && reference.currentMultiple != null && (
+          <Typography variant="body2">
+            當期倍數：{formatNumber(reference.currentMultiple)} 倍
+            {reference.currentPercentile != null ? ` · 經驗分位排名：P${Math.round(reference.currentPercentile)}` : ""}
+          </Typography>
+        )}
         {historical && reference.sampleStartDate && reference.sampleEndDate && (
           <Typography variant="body2" color="text.secondary">
             實際樣本起迄：{reference.sampleStartDate} ～ {reference.sampleEndDate}
@@ -80,6 +86,11 @@ export function ValuationReferencePanel({ title, description, reference, currenc
           </Typography>
         )}
         <Typography>{assumption ? "假設價格區間" : "價格參考區間"}：<b>{formatNumber(reference.priceLow)}–{formatNumber(reference.priceHigh)}</b> {currency ?? ""}</Typography>
+        {reference.priceMedian != null && (
+          <Typography variant="body2" color="text.secondary">
+            {assumption ? "假設區間中點" : "中位倍數參考價"}：{formatNumber(reference.priceMedian)} {currency ?? ""}
+          </Typography>
+        )}
         {reference.priceLow == null || reference.priceHigh == null ? <Typography variant="body2" color="text.secondary">倍數可用，但價格換算條件不足；不以零補值。</Typography> : null}
       </> : <>
         <Typography color="text.secondary">{reasonLabel(t, reference?.reasonCode)}</Typography>

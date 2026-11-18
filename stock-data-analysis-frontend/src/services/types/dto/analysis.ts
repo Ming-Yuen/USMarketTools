@@ -52,10 +52,125 @@ export interface MomentumAnalysis {
   series?: IndicatorSeriesPoint[];
   reasons: AnalysisReason[];
 }
+export interface RelativeStrength {
+  benchmark: string;
+  excessReturn20: MetricResult<number>;
+  excessReturn60: MetricResult<number>;
+  excessReturn120?: MetricResult<number>;
+  primarySignal?: MetricResult<number>;
+  reasons: AnalysisReason[];
+}
+export interface DrawdownAnalysis {
+  availableHistoryHighDrawdown?: MetricResult<number>;
+  drawdown252?: MetricResult<number>;
+  majorHighDrawdown?: MetricResult<number>;
+  maximumCloseDrawdown?: MetricResult<number>;
+  completedCorrectionMedian?: MetricResult<number>;
+  reasons: AnalysisReason[];
+}
+export interface TreasuryContext {
+  tenYear: MetricResult<number>;
+  twoYear?: MetricResult<number>;
+  tenYearChange20?: MetricResult<number>;
+  curve10yMinus2y?: MetricResult<number>;
+  reasons: AnalysisReason[];
+}
+export interface EventRisk {
+  eventId: string;
+  type: string;
+  subtype?: string | null;
+  title?: string | null;
+  eventDate?: string | null;
+  occurrenceTime?: string | null;
+  timePrecision?: string | null;
+  observedAt?: string | null;
+  source?: string | null;
+  blocksNewEntry: boolean;
+}
 export interface MarketContext {
-  momentum: MomentumVolume; market: MetricResult<{ regime: string; fearGreedScore: MetricResult<number>; breadthScore: MetricResult<number> }>;
-  tradeConstraint: { entryPermission: string; reasonCodes: string[] }; reasons: AnalysisReason[];
+  momentum: MomentumVolume;
+  relativeStrength?: RelativeStrength | null;
+  market: MetricResult<{ regime: string; fearGreedScore: MetricResult<number>; breadthScore: MetricResult<number> }>;
+  events?: EventRisk[];
+  tradeConstraint: { entryPermission: string; reasonCodes: string[] };
+  reasons: AnalysisReason[];
   momentumDetail?: MomentumAnalysis | null;
+  drawdown?: DrawdownAnalysis | null;
+  treasury?: TreasuryContext | null;
+}
+
+export interface FundamentalSnapshot {
+  periodEnd: string | null;
+  priorYearPeriodEnd: string | null;
+  threeYearAgoPeriodEnd: string | null;
+  reportingCurrency: string | null;
+  financialInstitution: boolean;
+  revenueGrowthYoy: MetricResult<number>;
+  epsGrowthYoy: MetricResult<number>;
+  fcfGrowthYoy: MetricResult<number>;
+  revenueCagr3y: MetricResult<number>;
+  epsCagr3y: MetricResult<number>;
+  trailingPeg: MetricResult<number>;
+  pegGrowthBasis: string | null;
+  roe: MetricResult<number>;
+  fcfMargin: MetricResult<number>;
+  fcfConversion: MetricResult<number>;
+  netDebtToEbitda: MetricResult<number>;
+  fcfYield: MetricResult<number>;
+  earningsYield: MetricResult<number>;
+  netShareChangeYoy: MetricResult<number>;
+}
+
+export interface FairValueBand {
+  low: number | null;
+  mid: number | null;
+  high: number | null;
+  currency: string | null;
+  historicalLow?: number | null;
+  historicalMid?: number | null;
+  historicalHigh?: number | null;
+  peerLow?: number | null;
+  peerMid?: number | null;
+  peerHigh?: number | null;
+  assumptionLow?: number | null;
+  assumptionMid?: number | null;
+  assumptionHigh?: number | null;
+}
+
+export interface SummaryFlag {
+  code: string;
+  severity: "HIGH" | "MEDIUM" | "LOW" | string;
+  params?: Record<string, unknown>;
+}
+
+export interface WatchItem {
+  code: string;
+  params?: Record<string, unknown>;
+}
+
+export interface InvestmentSummary {
+  verdict: string;
+  fundamentalBacking: string;
+  stance: string;
+  primaryMetric: string | null;
+  anchorSource: string;
+  fairValue: FairValueBand | null;
+  discountToMid: number | null;
+  upsideToMid: number | null;
+  yieldSpreadVs10y: MetricResult<number> | null;
+  yieldSpreadBasis: string | null;
+  technicalSupportZoneId: string | null;
+  technicalSupportRange: PriceRange | null;
+  technicalSupportTimeframe: string | null;
+  technicalSupportStrength: number | null;
+  weeklyTrend: string | null;
+  aboveSma200: boolean | null;
+  entryPermission: string | null;
+  eventGateBlocked: boolean;
+  nextBlockingEventDate: string | null;
+  risks: SummaryFlag[];
+  watchItems: WatchItem[];
+  reasons: AnalysisReason[];
 }
 
 export interface FutuValuationObservation {
@@ -83,4 +198,6 @@ export interface StockAnalysisReport {
   futuObservations: FutuObservations | null;
   tradePlans: MetricResult<TradePlanResult>;
   reasons: AnalysisReason[];
+  fundamentals?: FundamentalSnapshot | null;
+  summary?: MetricResult<InvestmentSummary> | null;
 }

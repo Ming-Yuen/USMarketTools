@@ -379,3 +379,161 @@ test("does not clamp 1Y preset backward across multi-year gaps and preserves 1Y 
   fireEvent.change(within(historySection).getByLabelText("開始日期"), { target: { value: "2024-02-01" } });
   expect(within(historySection).getByText(/所選區間內可用資料不足/)).toBeInTheDocument();
 });
+
+test("renders L1 executive summary before chart and reference panels, collapses bank N/A cards only, and supports L4 accordion expansion", () => {
+  const bars = Array.from({ length: 15 }, (_, i) => ({
+    sessionDate: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 170 + i, high: 175 + i, low: 168 + i, close: 172 + i,
+    volume: { status: "AVAILABLE", value: 8000000, reasons: [] },
+  }));
+  report.valuation = {
+    ...report.valuation,
+    price: 170,
+    modelCode: "BANK",
+    primaryMetric: "PB",
+    status: "AVAILABLE",
+    reasonCode: null,
+    metrics: {
+      pe: { value: 12.5, status: "AVAILABLE", reasonCode: null },
+      pb: { value: 1.65, status: "AVAILABLE", reasonCode: null },
+      ps: { value: 3.1, status: "AVAILABLE", reasonCode: null },
+      pfcf: { value: null, status: "NOT_APPLICABLE", reasonCode: "PFCF_NOT_APPLICABLE_TO_INDUSTRY" },
+      evEbitda: { value: null, status: "NOT_APPLICABLE", reasonCode: "EV_EBITDA_NOT_APPLICABLE_TO_INDUSTRY" },
+    },
+    historicalReference: {
+      kind: "HISTORICAL_MARKET", metricCode: "PB", status: "AVAILABLE", reasonCode: null,
+      multipleLow: 1.4, multipleMedian: 1.8, multipleHigh: 2.2, priceLow: 150, priceMedian: 190, priceHigh: 230,
+      sampleCount: 48, windowSampleCount: 48, excludedSampleCount: 0, currentMultiple: 1.65, currentPercentile: 35,
+    },
+    peerReference: {
+      kind: "PEER_MARKET", metricCode: "PB", status: "AVAILABLE", reasonCode: null,
+      multipleLow: 1.3, multipleMedian: 1.7, multipleHigh: 2.1, priceLow: 140, priceMedian: 180, priceHigh: 220,
+      sampleCount: 8, sampleStartDate: "2026-11-05", sampleEndDate: "2026-11-05", currentMultiple: 1.65, currentPercentile: 44,
+    },
+    industryAssumption: {
+      kind: "INDUSTRY_ASSUMPTION", metricCode: "PB", status: "AVAILABLE", reasonCode: null,
+      multipleLow: 1.5, multipleMedian: null, multipleHigh: 2.0, priceLow: 160, priceMedian: 185, priceHigh: 210,
+      sampleCount: null, currentMultiple: 1.65, currentPercentile: null,
+    },
+  };
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: { priceDataThrough: "2026-10-15", timeframes: [{ timeframe: "DAILY", bars, majorTrend: { status: "AVAILABLE", value: { state: "UPTREND" }, reasons: [] } }] },
+  };
+  report.marketContext = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      momentum: { volumeVs20Day: metric(1.1), return20: metric(0.04), return60: metric(0.09), drawdownFrom252High: metric(-0.08) },
+      relativeStrength: { benchmark: "SPY", excessReturn20: metric(0.025), excessReturn60: metric(0.05), reasons: [] },
+      treasury: { tenYear: metric(4.35), curve10yMinus2y: metric(0.22), reasons: [] },
+      tradeConstraint: { entryPermission: "ALLOW", reasonCodes: [] },
+      reasons: [],
+      momentumDetail: { indicators: { SMA20: metric(168), SMA50: metric(162), SMA200: metric(155), RSI14: metric(54), MACD: metric(1.2), MACD_HISTOGRAM: metric(0.4), ATR14: metric(3.2) }, interpretations: {}, series: [] },
+    },
+  };
+  report.fundamentals = {
+    periodEnd: "2026-09-30", priorYearPeriodEnd: "2025-09-30", threeYearAgoPeriodEnd: "2023-09-30",
+    reportingCurrency: "USD", financialInstitution: true,
+    revenueGrowthYoy: metric(0.085), epsGrowthYoy: metric(0.124),
+    fcfGrowthYoy: { status: "NOT_APPLICABLE", value: null, reasons: [{ code: "PFCF_NOT_APPLICABLE_TO_INDUSTRY", component: "FUNDAMENTALS", message: "N/A" }] },
+    revenueCagr3y: metric(0.072), epsCagr3y: metric(0.11),
+    trailingPeg: metric(1.14), pegGrowthBasis: "TRAILING_EPS_CAGR_3Y",
+    roe: metric(0.148),
+    fcfMargin: { status: "NOT_APPLICABLE", value: null, reasons: [] },
+    fcfConversion: { status: "NOT_APPLICABLE", value: null, reasons: [] },
+    netDebtToEbitda: { status: "NOT_APPLICABLE", value: null, reasons: [] },
+    fcfYield: { status: "NOT_APPLICABLE", value: null, reasons: [] },
+    earningsYield: metric(0.08),
+    netShareChangeYoy: metric(-0.024),
+  };
+  report.summary = {
+    status: "AVAILABLE",
+    reasons: [],
+    value: {
+      verdict: "FAIR_LOWER",
+      fundamentalBacking: "STRONG",
+      stance: "WATCH_PULLBACK_TO_BAND",
+      primaryMetric: "PB",
+      anchorSource: "HISTORICAL_AND_PEER",
+      fairValue: {
+        low: 145, mid: 185, high: 225, currency: "USD",
+        historicalLow: 150, historicalMid: 190, historicalHigh: 230,
+        peerLow: 140, peerMid: 180, peerHigh: 220,
+        assumptionLow: 160, assumptionMid: 185, assumptionHigh: 210,
+      },
+      discountToMid: 0.081081,
+      upsideToMid: 0.088235,
+      yieldSpreadVs10y: metric(0.0365),
+      yieldSpreadBasis: "EARNINGS_YIELD_MINUS_10Y",
+      technicalSupportZoneId: "Z1",
+      technicalSupportRange: { lower: 162, upper: 166 },
+      technicalSupportTimeframe: "WEEKLY",
+      technicalSupportStrength: 62,
+      weeklyTrend: "UPTREND",
+      aboveSma200: true,
+      entryPermission: "ALLOW",
+      eventGateBlocked: true,
+      nextBlockingEventDate: "2026-11-07",
+      risks: [{ code: "EARNINGS_IMMINENT_BLOCK", severity: "HIGH", params: { eventDate: "2026-11-07" } }],
+      watchItems: [{ code: "WATCH_REFERENCE_LOW_BAND", params: { priceLow: 145, priceMid: 185, priceHigh: 225, currency: "USD" } }],
+      reasons: [],
+    },
+  };
+  report.financials = {
+    periodEnd: "2026-09-30", availableAt: "2026-11-01T00:00:00Z", reportingCurrency: "USD",
+    sharesOutstanding: { value: 2850000000, status: "AVAILABLE", reasonCode: null, calculation: "SEC 申報流通股數", periodStart: null, periodEnd: "2026-09-30", availableAt: "2026-11-05T21:00:00Z" },
+  };
+  report.futuObservations = {
+    valuation: { observationDate: "2026-11-05", observedAt: "2026-11-05T21:05:00Z", pe: 12.6, pb: 1.66, ps: 3.12, forwardPe: 11.8, forwardPs: 2.95 },
+    earnings: [],
+  };
+
+  render(<StockAnalysisPage />);
+
+  const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  const histRefSection = screen.getByRole("region", { name: "歷史市場估值參考" });
+  const fundSection = screen.getByRole("region", { name: "基本面成長與品質指標" });
+  const finSection = screen.getByRole("region", { name: "估值使用的財務數據" });
+  const futuSection = screen.getByRole("region", { name: "富途市場觀察" });
+
+  // 1) 驗證嚴格四層 DOM 順序：L1 置頂結論 -> L2 互動圖表 -> L3 參考與基本面 -> L4 折疊明細
+  expect(summarySection.compareDocumentPosition(chartSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(chartSection.compareDocumentPosition(histRefSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(histRefSection.compareDocumentPosition(fundSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(fundSection.compareDocumentPosition(finSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  // 2) L1 顯示綜合參考帶 [145, 185, 225]、獨立對照假設區間、10Y 利差 +3.65%、事件門鎖，且收起銀行不適用的 P/FCF 與 EV/EBITDA 大卡
+  expect(within(summarySection).getByText(/位於參考帶下半部（合理偏下緣）/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/基本面支撐強勁/)).toBeInTheDocument();
+  expect(within(summarySection).getByText("145.00 USD")).toBeInTheDocument();
+  expect(within(summarySection).getByText(/較中樞折價 \+8\.11%/)).toBeInTheDocument();
+  expect(within(summarySection).getByText("225.00 USD")).toBeInTheDocument();
+  expect(within(summarySection).getByText(/低接觀察門檻（參考下緣）：145\.00 USD（中樞 185\.00）/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/人工產業假設（獨立對照，未混入參考帶）：160\.00–210\.00 USD/)).toBeInTheDocument();
+  expect(within(summarySection).getByText("+3.65%")).toBeInTheDocument();
+  expect(within(summarySection).getByText(/已自動收起金融機構模型不適用倍數：P\/FCF、EV\/EBITDA/)).toBeInTheDocument();
+  expect(screen.queryByText("勝率")).toBeNull();
+
+  // 3) L2 速覽顯示相對 SPY 超額報酬與 10Y 美債殖利率；L3 顯示經驗分位排名 P35、中位倍數參考價與基本面淨回購
+  expect(screen.getByText(/4\.35%/)).toBeInTheDocument();
+  expect(within(histRefSection).getByText(/經驗分位排名：P35/)).toBeInTheDocument();
+  expect(within(histRefSection).getByText(/中位倍數參考價：190\.00 USD/)).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "產業估值假設" })).getByText(/假設區間中點：185\.00 USD/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/\+12\.40%/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/14\.80%/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/-2\.40%（淨回購）/)).toBeInTheDocument();
+
+  // 4) L4 折疊抽屜預設為收合（aria-expanded="false"），點擊標題後正常展開（aria-expanded="true"）
+  const finExpandBtn = within(finSection).getByRole("button", { name: /估值使用的財務數據/ });
+  expect(finExpandBtn).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(finExpandBtn);
+  expect(finExpandBtn).toHaveAttribute("aria-expanded", "true");
+  expect(within(finSection).getByText("SEC 申報流通股數")).toBeVisible();
+
+  const futuExpandBtn = within(futuSection).getByRole("button", { name: /富途市場觀察與分析師預期/ });
+  expect(futuExpandBtn).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(futuExpandBtn);
+  expect(futuExpandBtn).toHaveAttribute("aria-expanded", "true");
+  expect(within(futuSection).getByText("P/E：12.60")).toBeVisible();
+});

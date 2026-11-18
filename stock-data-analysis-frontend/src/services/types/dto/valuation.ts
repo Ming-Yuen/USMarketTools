@@ -22,6 +22,9 @@ export interface ValuationReference {
   excludedSampleCount?: number | null;
   sampleStartDate?: string | null;
   sampleEndDate?: string | null;
+  currentMultiple?: number | null;
+  currentPercentile?: number | null;
+  priceMedian?: number | null;
 }
 
 export interface ValuationResult {

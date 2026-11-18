@@ -579,7 +579,7 @@
     "entryValidThrough": "新入场有效期截至",
     "technicalPlanLimit": "入场区、止盈目标与止损用途各异。估值观察区本身不会启动交易，仍須符合市场、事件及執行条件。",
     "costAssumptions": "目前模型假设：买卖每邊手续费 0.10%、滑价 0.05%。这是计算假设，並非你的券商实际收费。",
-    "scoreLimit": "证据分数与信心等级反映资料及讯号的一致程度，不是胜率或股价上涨机率。",
+    "scoreLimit": "证据分数与信心等级反映资料及讯号的一致程度，并非股价上涨机率预测。",
     "observationPrice": "本次使用股价",
     "buyBelow": "买入观察：低于",
     "sellAbove": "减持观察：高于",
@@ -855,7 +855,68 @@
     "otherObservationPlans": "其他观察计划及未成立原因",
     "observationPlansLimit": "以下计划未被选为首选，价位只作条件观察，不代表目前可买入。",
     "observationPlanNumber": "观察计划 {{number}}",
-    "notSelectedAsPreferred": "此计划尚未被选为首选计划。"
+    "notSelectedAsPreferred": "此计划尚未被选为首选计划。",
+    "executiveSummary": {
+      "title": "综合估值与观察结论",
+      "disclaimer": "以自身历史与同行市场实际成交分位合成参考价带；仅反映市场相对估值位置，不等同内在价值、价格预测或买卖指令。",
+      "verdicts": {
+        "DEEP_UNDERVALUED": "显著低于市场参考带（严重偏低）",
+        "MODERATELY_UNDERVALUED": "低于市场参考下缘（合理偏低）",
+        "FAIR_LOWER": "位于参考带下半部（合理偏下缘）",
+        "FAIR_UPPER": "位于参考带上半部（合理偏上缘）",
+        "MODERATELY_OVERVALUED": "高于市场参考上缘（估值偏贵）",
+        "OVERVALUED_RISK": "显著高于市场参考带（高估风险）",
+        "INSUFFICIENT_EVIDENCE": "估值参考带证据不足"
+      },
+      "backing": {
+        "STRONG": "基本面支撑强劲",
+        "MIXED": "基本面表现分化",
+        "WEAKENING": "基本面转弱警戒",
+        "INSUFFICIENT_DATA": "基本面比较待补"
+      },
+      "stances": {
+        "ACCUMULATE_AT_SUPPORT": "估值偏低且具备结构支撑 · 可留意支撑区分批观察",
+        "WATCH_PULLBACK_TO_BAND": "对照市场参考下缘与支撑区分批观察，不追高",
+        "HOLD_TRAIL_NO_CHASE": "基本面与趋势强劲但估值偏高 · 宜沿趋势观察、不追高",
+        "CAUTION_VALUE_TRAP": "基本面转弱警戒 · 提防价值陷阱或盈利下修，暂缓承接",
+        "CAUTION_OVEREXTENSION": "估值高于市场参考上缘 · 留意溢价收敛风险",
+        "WAIT_FOR_STABILIZATION": "技术破位待收复、低于年线或事件受限 · 等待企稳与条件明朗",
+        "INSUFFICIENT_EVIDENCE": "核心锚点不足 · 仅展示单项可用指标"
+      },
+      "anchorSources": {
+        "HISTORICAL_AND_PEER": "自身 5 年历史 ＋ 同行市场（50/50 客观合成）",
+        "HISTORICAL_ONLY": "单源：自身 5 年历史分位（同行不足或不适用）",
+        "PEER_ONLY": "单源：同日同行市场分位（历史有效样本不足）",
+        "NONE": "尚无可换算之客观市场价格锚点"
+      },
+      "risks": {
+        "EARNINGS_IMMINENT_BLOCK": "财报或重大事件临近（{{eventDate}}），新入场条件受限",
+        "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "股价已跌穿保护止损或低于入场区，须先收复企稳",
+        "SWUNG_TO_LOSS": "TTM 每股盈利较去年同期由盈转亏",
+        "NEGATIVE_TRAILING_EARNINGS": "当期 TTM 每股盈利为负（亏损状态）",
+        "NEGATIVE_FCF_BURN": "当期 TTM 自由现金流为负（现金消耗）",
+        "HIGH_LEVERAGE_DEBT_EBITDA": "净负债／EBITDA 偏高，财务杠杆压力较大",
+        "REVENUE_CONTRACTION": "TTM 营业收入较去年同期衰退",
+        "SHARE_DILUTION_YOY": "流通股数较去年同期净增稀释逾 3%",
+        "VALUATION_ABOVE_UPPER_BAND": "现价高于客观市场参考带上缘",
+        "BELOW_SMA200_DOWNTREND": "周线处于下降趋势且日线收盘低于 SMA200 年线",
+        "ANCHOR_DIVERGENCE": "自身历史中位价与同行中位价差距较大，请一并对照下方分项"
+      },
+      "watchItems": {
+        "WATCH_REFERENCE_LOW_BAND": "低接观察门槛（参考下缘）：{{priceLow}} {{currency}}（中枢 {{priceMid}}）",
+        "WATCH_TECHNICAL_SUPPORT": "配对{{timeframe}}支撑区：{{lower}}–{{upper}} {{currency}}",
+        "WATCH_RECLAIM_STABILIZATION": "观察股价重新站回支撑区并确认止跌结构",
+        "WATCH_EVENT_WINDOW": "留意 {{eventDate}} 事件落地后的波动与财报变化",
+        "WATCH_FUNDAMENTAL_STABILIZATION": "追踪下季营收、现金流或杠杆指标是否止跌回稳"
+      }
+    },
+    "fundamentals": {
+      "title": "基本面成长、盈利质量与资本回报（拆股对齐）",
+      "pegBasis": {
+        "TRAILING_EPS_CAGR_3Y": "按 3 年 EPS 复合增长率",
+        "TRAILING_EPS_YOY": "按 1 年 EPS 同比增长率"
+      }
+    }
   },
   "upload": {
     "title": "資料上傳",

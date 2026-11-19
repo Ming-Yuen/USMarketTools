@@ -685,7 +685,13 @@
       "EXIT": "退出條件成立",
       "STRONG": "強支阻區",
       "MODERATE": "中等支阻區",
-      "WEAK": "弱支阻區"
+      "WEAK": "弱支阻區",
+      "RISK_ON": "風險偏好",
+      "NEUTRAL": "中性",
+      "RECOVERY": "修復止穩",
+      "CORRECTION": "修正",
+      "BEAR": "空頭",
+      "PANIC": "恐慌"
     },
     "units": {
       "PRICE": "美元",
@@ -795,6 +801,7 @@
       "SMA150": "150 個日線收盤價的簡單平均，單位為股價。",
       "SMA200": "200 個日線收盤價的簡單平均，單位為股價。",
       "EMA20": "20 期日線收盤價的指數移動平均。",
+      "EMA21": "21 期日線收盤價的指數移動平均。",
       "EMA50": "50 期日線收盤價的指數移動平均。"
     },
     "indicatorNames": {
@@ -826,6 +833,7 @@
       "SMA150": "SMA150",
       "SMA200": "SMA200",
       "EMA20": "EMA20",
+      "EMA21": "EMA21",
       "EMA50": "EMA50"
     },
     "priceBars": "已有／所需日線數",
@@ -891,8 +899,18 @@
         "PEER_ONLY": "單源：同日同業市場分位（歷史有效樣本不足）",
         "NONE": "尚無可換算之客觀市場價格錨點"
       },
+      "rightSideBasis": {
+        "SPRING_RECLAIMED": "彈簧效應收回",
+        "CONFIRMED_RETEST": "已確認突破回測"
+      },
+      "starterAnchors": {
+        "EMA21": "EMA21",
+        "SMA50": "SMA50",
+        "EARNINGS_AVWAP": "財報日 AVWAP"
+      },
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "財報或重大事件臨近（{{eventDate}}），新入場條件受限",
+        "EARNINGS_IMMINENT_BLOCK_NO_DATE": "財報或重大事件臨近，新入場條件受限",
         "MARKET_REGIME_HEADWIND": "大盤市況處於逆風狀態（{{regime}}），左側接刀風險偏高",
         "MACRO_VOLATILITY_OR_RATE_STRESS": "市場波動率（VIX）或 10Y 美債近 20 期變動處於警戒水位，宜預留額外安全邊際並縮減倉位",
         "SUPPORT_HIGH_RISK_BREAKDOWN": "關鍵支撐已觸發高機率真破位診斷，須嚴格執行止損紀律",
@@ -910,7 +928,7 @@
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "強勢回踩試單（{{anchor}} {{anchorPrice}} {{currency}}）：建議 {{positionFraction}} 底倉試單，緊貼止損 {{suggestedStop}} {{currency}}",
         "WATCH_CORRECTION_RIGHT_SIDE": "大盤修正期已完成右側確認（{{basis}}），建議採半倉小額分批觀察",
-        "WATCH_MARKET_STABILIZATION": "等待大盤脫離 {{regime}} 逆風進入止穩（RECOVERY）或右側確認",
+        "WATCH_MARKET_STABILIZATION": "等待大盤脫離{{regime}}逆風，進入{{recovery}}或右側確認",
         "WATCH_REFERENCE_LOW_BAND": "低接觀察門檻（參考下緣）：{{priceLow}} {{currency}}（中樞 {{priceMid}}）",
         "WATCH_TECHNICAL_SUPPORT": "配對{{timeframe}}支撐區：{{lower}}–{{upper}} {{currency}}",
         "WATCH_RECLAIM_STABILIZATION": "觀察股價重新站回支撐區並確認止跌結構",

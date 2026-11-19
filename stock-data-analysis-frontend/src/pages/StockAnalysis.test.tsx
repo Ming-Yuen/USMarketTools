@@ -2,18 +2,24 @@ import React from "react";
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useQuery } from "@tanstack/react-query";
+import i18next from "i18next";
 import { StockAnalysisPage } from "./StockAnalysis";
 import { apiClient } from "../services/apiClient";
 import { SeriesChart } from "./ValuationPanels";
 import { formatNumber } from "./AnalysisPanels";
+import enLocale from "../locales/en.json";
+import zhHkLocale from "../locales/zh-HK.json";
+import zhCnLocale from "../locales/zh-CN.json";
 
 const mockInvalidateQueries = jest.fn().mockResolvedValue(undefined);
+const defaultT = (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key;
+const mockUseTranslation = jest.fn(() => ({ t: defaultT }));
 jest.mock("@tanstack/react-query", () => ({
   useQuery: jest.fn(),
   useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
 }));
 jest.mock("react-router-dom", () => ({ useNavigate: () => jest.fn(), useParams: () => ({ figi: "AAPL-FIGI" }) }), { virtual: true });
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key }) }));
+jest.mock("react-i18next", () => ({ useTranslation: () => mockUseTranslation() }));
 jest.mock("../services/apiClient", () => ({ apiClient: { get: jest.fn(), post: jest.fn(), put: jest.fn(), delete: jest.fn() } }));
 jest.mock("./IndustryValuationProposalPanel", () => ({ IndustryValuationProposalPanel: () => null }));
 
@@ -27,6 +33,7 @@ let report: any;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUseTranslation.mockImplementation(() => ({ t: defaultT }));
   report = {
     figi: "AAPL-FIGI", symbol: "AAPL", name: "Apple", valuationDate: "2026-11-05",
     valuation: { figi: "AAPL-FIGI", valuationDate: "2026-11-05", analysisAsOf: "2026-11-05T21:00:00Z", calculatedAt: "2026-11-06T00:00:00Z",
@@ -1042,4 +1049,160 @@ test("does not fabricate macro caution buffer/scale or zero-volume POC when back
   const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
   expect(chartSection.querySelector('g[data-vp-poc="true"]')).toBeNull();
   expect(within(chartSection).queryByText(/POC 價位約/)).not.toBeInTheDocument();
+});
+
+test("interpolates real zh-HK, zh-CN, and en locale templates without leaking raw enums or empty eventDate parens, and renders EMA21 & starter reason fallback", async () => {
+  const realI18n = i18next.createInstance();
+  await realI18n.init({
+    resources: {
+      en: { common: enLocale },
+      "zh-HK": { common: zhHkLocale },
+      "zh-CN": { common: zhCnLocale },
+    },
+    lng: "zh-HK",
+    fallbackLng: "en",
+    ns: ["common"],
+    defaultNS: "common",
+    interpolation: { escapeValue: false },
+  });
+
+  const cases = [
+    {
+      lng: "zh-HK",
+      regimeChip: "修正",
+      headwindText: "大盤市況處於逆風狀態（空頭），左側接刀風險偏高",
+      earningsNoDate: "財報或重大事件臨近，新入場條件受限",
+      rightSideWatch: "大盤修正期已完成右側確認（彈簧效應收回），建議採半倉小額分批觀察",
+      stabilizationWatch: "等待大盤脫離空頭逆風，進入修復止穩或右側確認",
+      starterWatch: "強勢回踩試單（財報日 AVWAP 185.00 USD）：建議 1/3 底倉試單，緊貼止損 180.00 USD",
+      ema21Def: "21 期日線收盤價的指數移動平均。",
+      priceStaleReason: "行情已過期，不能提供目前可執行的交易計劃。",
+    },
+    {
+      lng: "zh-CN",
+      regimeChip: "修正",
+      headwindText: "大盘市况处于逆风状态（空头），左侧接刀风险偏高",
+      earningsNoDate: "财报或重大事件临近，新入场条件受限",
+      rightSideWatch: "大盘修正期已完成右侧确认（弹簧效应收回），建议采半仓小额分批观察",
+      stabilizationWatch: "等待大盘脱离空头逆风，进入修复企稳或右侧确认",
+      starterWatch: "强势回踩试单（财报日 AVWAP 185.00 USD）：建议 1/3 底仓试单，紧贴止损 180.00 USD",
+      ema21Def: "21 期日线收盘价的指数移动平均。",
+      priceStaleReason: zhCnLocale.analysisReport.reasons.PRICE_STALE,
+    },
+    {
+      lng: "en",
+      regimeChip: "Correction",
+      headwindText: "Market regime headwind (Bear); avoid catching falling knives",
+      earningsNoDate: "Upcoming earnings or event restricts new entries",
+      rightSideWatch: "Correction right-side confirmation (Spring Reclaimed) · Observe with half sizing",
+      stabilizationWatch: "Wait for market to exit Bear headwind into Recovery or right-side confirmation",
+      starterWatch: "Trend pullback starter (Earnings AVWAP 185.00 USD): 1/3 tranche, tight stop 180.00 USD",
+      ema21Def: "21-period exponential moving average of daily closes.",
+      priceStaleReason: "Prices are out of date; an executable plan cannot be issued.",
+    },
+  ] as const;
+
+  for (const c of cases) {
+    await realI18n.changeLanguage(c.lng);
+    mockUseTranslation.mockImplementation(() => ({ t: realI18n.t.bind(realI18n) as any }));
+
+    report.marketContext = {
+      status: "AVAILABLE",
+      reasons: [],
+      value: {
+        momentum: {},
+        market: { status: "AVAILABLE", value: { regime: "CORRECTION" }, reasons: [] },
+        momentumDetail: {
+          indicators: {
+            EMA21: { status: "AVAILABLE", value: 192.5, reasons: [] },
+          },
+          interpretations: {
+            EMA21: { status: "AVAILABLE", code: "MA_PRICE_ABOVE", params: { period: 21, unit: "PRICE" } },
+          },
+        },
+      },
+    };
+    report.summary = {
+      status: "AVAILABLE",
+      reasons: [],
+      value: {
+        verdict: "MODERATELY_OVERVALUED",
+        fundamentalBacking: "STRONG",
+        stance: "HOLD_TRAIL_NO_CHASE",
+        primaryMetric: "PE",
+        anchorSource: "HISTORICAL_ONLY",
+        fairValue: { low: 150, mid: 175, high: 200, currency: "USD" },
+        discountToMid: -0.14,
+        upsideToMid: -0.125,
+        yieldSpreadVs10y: null,
+        yieldSpreadBasis: null,
+        technicalSupportZoneId: null,
+        technicalSupportRange: null,
+        technicalSupportTimeframe: null,
+        technicalSupportStrength: null,
+        weeklyTrend: "UPTREND",
+        aboveSma200: true,
+        entryPermission: "BLOCK",
+        eventGateBlocked: true,
+        nextBlockingEventDate: null,
+        risks: [
+          { code: "MARKET_REGIME_HEADWIND", severity: "HIGH", params: { regime: "BEAR" } },
+          { code: "EARNINGS_IMMINENT_BLOCK", severity: "HIGH", params: {} },
+        ],
+        watchItems: [
+          { code: "WATCH_CORRECTION_RIGHT_SIDE", params: { basis: "SPRING_RECLAIMED" } },
+          { code: "WATCH_MARKET_STABILIZATION", params: { regime: "BEAR" } },
+          {
+            code: "WATCH_TREND_PULLBACK_STARTER",
+            params: { anchor: "EARNINGS_AVWAP", anchorPrice: 185, suggestedStop: 180, positionFraction: "1/3", currency: "USD" },
+          },
+        ],
+        reasons: [],
+        trendPullbackStarter: {
+          eligible: false,
+          ineligibleReasonCode: "PRICE_STALE",
+          ineligibleMessage: "後端預設訊息不應覆蓋字典",
+        },
+      },
+    };
+
+    const { unmount, rerender } = render(<StockAnalysisPage />);
+    const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+
+    expect(within(summarySection).getByText(`• ${c.headwindText}`)).toBeInTheDocument();
+    expect(within(summarySection).getByText(`• ${c.earningsNoDate}`)).toBeInTheDocument();
+    expect(within(summarySection).getByText(`• ${c.rightSideWatch}`)).toBeInTheDocument();
+    expect(within(summarySection).getByText(`• ${c.stabilizationWatch}`)).toBeInTheDocument();
+    expect(within(summarySection).getByText(`• ${c.starterWatch}`)).toBeInTheDocument();
+    expect(within(summarySection).getByText(`未啟動回踩試單：${c.priceStaleReason}`)).toBeInTheDocument();
+
+    // 確認無原始枚舉或空括號外洩
+    expect(summarySection.textContent).not.toContain("SPRING_RECLAIMED");
+    expect(summarySection.textContent).not.toContain("RECOVERY");
+    expect(summarySection.textContent).not.toContain("（）");
+    expect(summarySection.textContent).not.toContain("()");
+    if (c.lng === "en") {
+      expect(within(summarySection).getByText(`• ${c.starterWatch}`).textContent).not.toContain("財報日");
+    }
+
+    // 四維速覽卡大盤市況 Chip 應同步吃滿 states 本地化
+    expect(screen.getByText(c.regimeChip)).toBeInTheDocument();
+
+    // 展開 L4 技術指標與「更多指標」後，EMA21 顯示專屬三語定義（非通用 fallback）
+    fireEvent.click(screen.getByText("完整技術指標明細與原始解說（點擊展開）"));
+    fireEvent.click(screen.getByText(String(realI18n.t("analysisReport.moreIndicators"))));
+    expect(screen.getByText(c.ema21Def)).toBeInTheDocument();
+
+    // 當 ineligibleReasonCode 為空時直接顯示 ineligibleMessage，不查出 reasons.null
+    report.summary.value.trendPullbackStarter = {
+      eligible: false,
+      ineligibleReasonCode: null,
+      ineligibleMessage: "自訂後端說明文字",
+    };
+    rerender(<StockAnalysisPage />);
+    expect(within(summarySection).getByText("未啟動回踩試單：自訂後端說明文字")).toBeInTheDocument();
+    expect(summarySection.textContent).not.toContain("reasons.null");
+
+    unmount();
+  }
 });

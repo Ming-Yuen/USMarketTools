@@ -89,6 +89,11 @@ const STARTER_ANCHOR_LABELS: Record<string, string> = {
   EARNINGS_AVWAP: "財報日 AVWAP",
 };
 
+const RIGHT_SIDE_BASIS_DEFAULTS: Record<string, string> = {
+  SPRING_RECLAIMED: "彈簧效應收回",
+  CONFIRMED_RETEST: "已確認突破回測",
+};
+
 const FORWARD_PEG_BASIS_LABELS: Record<string, string> = {
   FORWARD_FY1_VS_TTM: "FY1 較 TTM",
   FORWARD_FY2_VS_FY1: "FY2 較 FY1",
@@ -163,44 +168,72 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
   const visibleMetrics = metricEntries.filter(([, m]) => !(m.status !== "AVAILABLE" && m.reasonCode != null && INDUSTRY_NA_REASON_CODES.has(m.reasonCode)));
   const collapsedIndustryNa = metricEntries.filter(([, m]) => m.status !== "AVAILABLE" && m.reasonCode != null && INDUSTRY_NA_REASON_CODES.has(m.reasonCode));
 
+  const formatRightSideBasis = (code?: string | null) => {
+    if (!code) return "";
+    return t(`analysisReport.executiveSummary.rightSideBasis.${code}`, {
+      defaultValue: RIGHT_SIDE_BASIS_DEFAULTS[code] ?? code,
+    });
+  };
+
+  const formatStarterAnchor = (code?: string | null) => {
+    if (!code) return "";
+    return t(`analysisReport.executiveSummary.starterAnchors.${code}`, {
+      defaultValue: STARTER_ANCHOR_LABELS[code] ?? code,
+    });
+  };
+
   const renderRiskText = (flag: SummaryFlag) => {
+    const p = flag.params ?? {};
+    const localizedRegime = p.regime ? readableState(t, String(p.regime)) : undefined;
+    let key = `analysisReport.executiveSummary.risks.${flag.code}`;
     let fallback = RISK_DEFAULTS[flag.code] ?? flag.code;
-    if (flag.code === "EARNINGS_IMMINENT_BLOCK" && flag.params?.eventDate) {
-      fallback = `財報或重大事件臨近（${String(flag.params.eventDate)}），新入場條件受限`;
-    } else if (flag.code === "MARKET_REGIME_HEADWIND" && flag.params?.regime) {
-      fallback = `大盤市況處於逆風狀態（${readableState(t, String(flag.params.regime))}），左側接刀風險偏高`;
+    if (flag.code === "EARNINGS_IMMINENT_BLOCK") {
+      if (p.eventDate) {
+        fallback = `財報或重大事件臨近（${String(p.eventDate)}），新入場條件受限`;
+      } else {
+        key = "analysisReport.executiveSummary.risks.EARNINGS_IMMINENT_BLOCK_NO_DATE";
+      }
+    } else if (flag.code === "MARKET_REGIME_HEADWIND" && localizedRegime) {
+      fallback = `大盤市況處於逆風狀態（${localizedRegime}），左側接刀風險偏高`;
     } else if (flag.code === "FORWARD_EARNINGS_CONTRACTION") {
-      const fp = flag.params?.fiscalPeriod ? `（${String(flag.params.fiscalPeriod)}）` : "";
-      if (flag.params?.swungToLoss) {
+      const fp = p.fiscalPeriod ? `（${String(p.fiscalPeriod)}）` : "";
+      if (p.swungToLoss) {
         fallback = `市場共識預期年度 EPS${fp}轉為虧損或零盈利（共識預期口徑對比，提防價值陷阱）`;
-      } else if (flag.params?.impliedEpsGrowth != null) {
-        const pct = (Number(flag.params.impliedEpsGrowth) * 100).toFixed(2);
+      } else if (p.impliedEpsGrowth != null) {
+        const pct = (Number(p.impliedEpsGrowth) * 100).toFixed(2);
         fallback = `市場共識預期年度 EPS${fp}較當期 TTM 低 ${Math.abs(Number(pct)).toFixed(2)}%（共識預期口徑對比）`;
       }
-    } else if (flag.code === "EARNINGS_FORECAST_DOWNGRADE_90D" && flag.params?.epsRevision90d != null) {
-      const fp = flag.params?.fiscalPeriod ? `（${String(flag.params.fiscalPeriod)}）` : "";
-      const pct = (Number(flag.params.epsRevision90d) * 100).toFixed(2);
+    } else if (flag.code === "EARNINGS_FORECAST_DOWNGRADE_90D" && p.epsRevision90d != null) {
+      const fp = p.fiscalPeriod ? `（${String(p.fiscalPeriod)}）` : "";
+      const pct = (Number(p.epsRevision90d) * 100).toFixed(2);
       fallback = `近 90 日市場共識預期 EPS${fp}下修 ${pct}%`;
     }
-    return t(`analysisReport.executiveSummary.risks.${flag.code}`, { ...(flag.params ?? {}), defaultValue: fallback });
+    return t(key, {
+      ...p,
+      ...(localizedRegime ? { regime: localizedRegime } : {}),
+      defaultValue: fallback,
+    });
   };
 
   const renderWatchText = (item: WatchItem) => {
     const p = item.params ?? {};
+    const anchorLabel = p.anchor ? formatStarterAnchor(String(p.anchor)) : undefined;
+    const basisLabel = p.basis ? formatRightSideBasis(String(p.basis)) : undefined;
+    const localizedRegime = p.regime ? readableState(t, String(p.regime)) : undefined;
+    const recoveryLabel = readableState(t, "RECOVERY");
+    const effectiveCurrency = p.currency != null ? String(p.currency) : currency;
     let fallback = item.code;
     if (item.code === "WATCH_TREND_PULLBACK_STARTER") {
-      const anchorName = STARTER_ANCHOR_LABELS[String(p.anchor ?? "")] ?? String(p.anchor ?? "");
-      fallback = `強勢回踩試單（${anchorName} ${formatNumber(Number(p.anchorPrice))} ${String(p.currency ?? currency)}）：建議 ${String(p.positionFraction ?? "1/3")} 底倉試單，緊貼止損 ${formatNumber(Number(p.suggestedStop))} ${String(p.currency ?? currency)}`;
+      fallback = `強勢回踩試單（${anchorLabel ?? ""} ${formatNumber(Number(p.anchorPrice))} ${effectiveCurrency}）：建議 ${String(p.positionFraction ?? "1/3")} 底倉試單，緊貼止損 ${formatNumber(Number(p.suggestedStop))} ${effectiveCurrency}`;
     } else if (item.code === "WATCH_CORRECTION_RIGHT_SIDE") {
-      const basisLabel = p.basis === "SPRING_RECLAIMED" ? "彈簧效應收回" : "已確認突破回測";
-      fallback = `大盤修正期已完成右側確認（${basisLabel}），建議採半倉小額分批觀察`;
+      fallback = `大盤修正期已完成右側確認（${basisLabel ?? ""}），建議採半倉小額分批觀察`;
     } else if (item.code === "WATCH_MARKET_STABILIZATION") {
-      fallback = `等待大盤脫離 ${readableState(t, String(p.regime ?? ""))} 逆風進入止穩（RECOVERY）或右側確認`;
+      fallback = `等待大盤脫離${localizedRegime ?? ""}逆風，進入${recoveryLabel}或右側確認`;
     } else if (item.code === "WATCH_REFERENCE_LOW_BAND") {
-      fallback = `低接觀察門檻（參考下緣）：${formatNumber(Number(p.priceLow))} ${String(p.currency ?? currency)}（中樞 ${formatNumber(Number(p.priceMid))}）`;
+      fallback = `低接觀察門檻（參考下緣）：${formatNumber(Number(p.priceLow))} ${effectiveCurrency}（中樞 ${formatNumber(Number(p.priceMid))}）`;
     } else if (item.code === "WATCH_TECHNICAL_SUPPORT") {
       const tfLabel = readableState(t, String(p.timeframe ?? "DAILY"));
-      fallback = `配對${tfLabel}支撐區：${formatNumber(Number(p.lower))}–${formatNumber(Number(p.upper))} ${String(p.currency ?? currency)}`;
+      fallback = `配對${tfLabel}支撐區：${formatNumber(Number(p.lower))}–${formatNumber(Number(p.upper))} ${effectiveCurrency}`;
     } else if (item.code === "WATCH_RECLAIM_STABILIZATION") {
       fallback = "觀察股價重新站回支撐區並確認止跌結構";
     } else if (item.code === "WATCH_EVENT_WINDOW") {
@@ -210,7 +243,11 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
     }
     return t(`analysisReport.executiveSummary.watchItems.${item.code}`, {
       ...p,
-      anchor: p.anchor ? (STARTER_ANCHOR_LABELS[String(p.anchor)] ?? String(p.anchor)) : undefined,
+      currency: effectiveCurrency,
+      anchor: anchorLabel,
+      basis: basisLabel,
+      regime: localizedRegime,
+      recovery: recoveryLabel,
       anchorPrice: p.anchorPrice != null ? formatNumber(Number(p.anchorPrice)) : undefined,
       suggestedStop: p.suggestedStop != null ? formatNumber(Number(p.suggestedStop)) : undefined,
       priceLow: p.priceLow != null ? formatNumber(Number(p.priceLow)) : undefined,
@@ -394,9 +431,13 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
           </Alert>
         )}
 
-        {summary.stance === "HOLD_TRAIL_NO_CHASE" && starter && !starter.eligible && starter.ineligibleMessage && (
+        {summary.stance === "HOLD_TRAIL_NO_CHASE" && starter && !starter.eligible && (starter.ineligibleReasonCode || starter.ineligibleMessage) && (
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.6 }}>
-            未啟動回踩試單：{starter.ineligibleMessage}
+            未啟動回踩試單：{starter.ineligibleReasonCode
+              ? t(`analysisReport.reasons.${starter.ineligibleReasonCode}`, {
+                defaultValue: starter.ineligibleMessage || starter.ineligibleReasonCode,
+              })
+              : starter.ineligibleMessage}
           </Typography>
         )}
 

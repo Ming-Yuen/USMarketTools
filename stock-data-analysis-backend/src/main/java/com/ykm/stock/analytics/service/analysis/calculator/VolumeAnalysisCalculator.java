@@ -16,6 +16,12 @@ public class VolumeAnalysisCalculator {
 
     // 用途：根據輸入資料計算相關資料，產生可供分析或交易決策使用的標準結果。
     public VolumeAnalysisDto calculate(List<NormalizedBarDto> bars, PriceStructureDto structure) {
+        return calculate(bars, structure, null, null);
+    }
+
+    /** 計算量能證據、252 日近似成交量分布、主要轉折點 AVWAP 與最近已發生財報日 Anchored VWAP。 */
+    public VolumeAnalysisDto calculate(List<NormalizedBarDto> bars, PriceStructureDto structure,
+                                       LocalDate earningsEventDate, LocalDate earningsAnchorDate) {
         if (bars == null || bars.isEmpty()) return unavailableResult("VOLUME_PRICE_REQUIRED");
         MetricResult<BigDecimal> rvol = rvolAt(bars, bars.size()-1, 20);
         List<BigDecimal> obvSeries = obvSeries(bars);
@@ -26,11 +32,13 @@ public class VolumeAnalysisCalculator {
         MetricResult<BigDecimal> primary = primarySignal(breakout, divergence, netDays);
         MetricResult<VolumeProfileDto> profile = volumeProfile(bars);
         MetricResult<BigDecimal> avwap = anchoredVwap(bars, structure);
-        return new VolumeAnalysisDto(rvol, obv, netDays, primary, profile, avwap, List.of(), evidence(structure));
+        EarningsAvwapOutcome earningsAvwap = earningsAnchoredVwap(bars, earningsAnchorDate);
+        return new VolumeAnalysisDto(rvol, obv, netDays, primary, profile, avwap, List.of(), evidence(structure),
+                earningsEventDate, earningsAnchorDate, earningsAvwap.latest(), earningsAvwap.series());
     }
 
-    // 用途：處理rvol at的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。
-    private MetricResult<BigDecimal> rvolAt(List<NormalizedBarDto> bars, int index, int period) {
+    // 用途：計算指定 bar 相對於前 period 根（不含當根）的量比 RVOL，供量能與破位診斷共用。
+    public MetricResult<BigDecimal> rvolAt(List<NormalizedBarDto> bars, int index, int period) {
         if (index < period) return insufficient("RVOL20_WARMUP_REQUIRED");
         BigDecimal current = volume(bars.get(index));
         if (current == null) return unverified("VOLUME_BASIS_OR_VALUE_UNVERIFIED");
@@ -170,6 +178,55 @@ public class VolumeAnalysisCalculator {
 
     // 用途：處理anchored VWAP的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。
     private MetricResult<BigDecimal> anchoredVwap(List<NormalizedBarDto> bars,PriceStructureDto structure){if(structure==null)return insufficient("AVWAP_MAJOR_PIVOT_REQUIRED");TimeframeStructureDto daily=structure.timeframes().stream().filter(t->t.timeframe()==AnalysisTimeframe.DAILY).findFirst().orElse(null);if(daily==null||daily.majorPivots().isEmpty())return insufficient("AVWAP_MAJOR_PIVOT_REQUIRED");ConfirmedPivotDto pivot=daily.majorPivots().stream().filter(p->p.confirmationTime()!=null).max(Comparator.comparing(ConfirmedPivotDto::confirmationTime)).orElse(null);if(pivot==null)return insufficient("AVWAP_MAJOR_PIVOT_REQUIRED");int start=indexOf(bars,pivot.occurrenceSession());if(start<0)return insufficient("AVWAP_ANCHOR_OUTSIDE_WINDOW");BigDecimal pv=BigDecimal.ZERO,vsum=BigDecimal.ZERO;for(int i=start;i<bars.size();i++){BigDecimal v=volume(bars.get(i));if(v==null)return unverified("VOLUME_BASIS_OR_VALUE_UNVERIFIED");BigDecimal typical=bars.get(i).high().add(bars.get(i).low(),MC).add(bars.get(i).close(),MC).divide(BigDecimal.valueOf(3),MC);pv=pv.add(typical.multiply(v,MC),MC);vsum=vsum.add(v,MC);}return vsum.signum()==0?unverified("AVWAP_VOLUME_ZERO"):MetricResult.available(pv.divide(vsum,MC));}
+
+    /** 由已解析之最近財報反應交易日起算至最新日線的累計成交量加權平均價（含圖表曲線點）。 */
+    private EarningsAvwapOutcome earningsAnchoredVwap(List<NormalizedBarDto> bars, LocalDate anchorDate) {
+        if (anchorDate == null) {
+            return new EarningsAvwapOutcome(
+                    MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                            AnalysisReasonDto.of("EARNINGS_EVENT_NOT_FOUND", "VOLUME", "缺少最近已發生的財報事件，暫無財報日 Anchored VWAP。")),
+                    List.of());
+        }
+        if (bars == null || bars.isEmpty()) {
+            return new EarningsAvwapOutcome(insufficient("VOLUME_PRICE_REQUIRED"), List.of());
+        }
+        LocalDate firstDate = bars.getFirst().sessionDate();
+        if (firstDate != null && anchorDate.isBefore(firstDate)) {
+            return new EarningsAvwapOutcome(
+                    MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                            AnalysisReasonDto.of("EARNINGS_AVWAP_ANCHOR_OUTSIDE_WINDOW", "VOLUME", "財報錨點早於可用行情視窗，不截短重算 Anchored VWAP。")),
+                    List.of());
+        }
+        int start = indexOf(bars, anchorDate);
+        if (start < 0) {
+            return new EarningsAvwapOutcome(
+                    MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                            AnalysisReasonDto.of("EARNINGS_AVWAP_ANCHOR_MISSING", "VOLUME", "行情序列中缺少財報錨點交易日，暫不計算財報 Anchored VWAP。")),
+                    List.of());
+        }
+        BigDecimal pv = BigDecimal.ZERO;
+        BigDecimal vsum = BigDecimal.ZERO;
+        List<AnchoredVwapPointDto> points = new ArrayList<>();
+        for (int i = start; i < bars.size(); i++) {
+            NormalizedBarDto bar = bars.get(i);
+            BigDecimal v = volume(bar);
+            if (v == null) {
+                return new EarningsAvwapOutcome(unverified("VOLUME_BASIS_OR_VALUE_UNVERIFIED"), List.of());
+            }
+            BigDecimal typical = bar.high().add(bar.low(), MC).add(bar.close(), MC).divide(BigDecimal.valueOf(3), MC);
+            pv = pv.add(typical.multiply(v, MC), MC);
+            vsum = vsum.add(v, MC);
+            if (vsum.signum() > 0) {
+                points.add(new AnchoredVwapPointDto(bar.sessionDate(), pv.divide(vsum, 4, RoundingMode.HALF_UP)));
+            }
+        }
+        if (vsum.signum() == 0) {
+            return new EarningsAvwapOutcome(unverified("AVWAP_VOLUME_ZERO"), List.of());
+        }
+        return new EarningsAvwapOutcome(MetricResult.available(pv.divide(vsum, MC)), List.copyOf(points));
+    }
+
+    private record EarningsAvwapOutcome(MetricResult<BigDecimal> latest, List<AnchoredVwapPointDto> series) {}
     // 用途：處理of的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。
     private int indexOf(List<NormalizedBarDto>b,LocalDate d){for(int i=0;i<b.size();i++)if(d.equals(b.get(i).sessionDate()))return i;return -1;}
     // 用途：處理成交量的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。

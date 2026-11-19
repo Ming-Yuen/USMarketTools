@@ -27,6 +27,29 @@ public class TradePlanCalculator {
                               LevelZoneDto support, List<LevelZoneDto> resistances,
                               MetricResult<StructureTrendDto> trend, BigDecimal atr,
                               LocalDate earliestExecutableSession, LocalDate validThrough, PlanConstraintDto constraint) {
+        return build(context, basisId, normalizedInputHash, currentPrice, currentSession, support, resistances,
+                trend, atr, earliestExecutableSession, validThrough, constraint, null);
+    }
+
+    /** 整合單區破位真假診斷與大盤限制的交易計畫建立器；嚴格按同區 id + boundsVersion + roleVersion 套用診斷。 */
+    public TradePlanDto build(AnalysisContext context, String basisId, String normalizedInputHash,
+                              BigDecimal currentPrice, LocalDate currentSession,
+                              LevelZoneDto support, List<LevelZoneDto> resistances,
+                              MetricResult<StructureTrendDto> trend, BigDecimal atr,
+                              LocalDate earliestExecutableSession, LocalDate validThrough,
+                              PlanConstraintDto constraint, BreakoutDiagnosisDto zoneDiagnosis) {
+        return build(context, basisId, normalizedInputHash, currentPrice, currentSession, support, resistances,
+                trend, atr, earliestExecutableSession, validThrough, constraint, zoneDiagnosis, true, null);
+    }
+
+    /** 支援明確指定是否啟用 confirmedRetest 與實際訊號建立時間（例如過期 retest 後的新 Spring）。 */
+    public TradePlanDto build(AnalysisContext context, String basisId, String normalizedInputHash,
+                              BigDecimal currentPrice, LocalDate currentSession,
+                              LevelZoneDto support, List<LevelZoneDto> resistances,
+                              MetricResult<StructureTrendDto> trend, BigDecimal atr,
+                              LocalDate earliestExecutableSession, LocalDate validThrough,
+                              PlanConstraintDto constraint, BreakoutDiagnosisDto zoneDiagnosis,
+                              boolean allowConfirmedRetest, java.time.Instant overrideSignalAt) {
         List<AnalysisReasonDto> reasons = new ArrayList<>();
         if (support == null) {
             reasons.add(AnalysisReasonDto.of("PLAN_SUPPORT_MISSING", "TRADE_PLAN", "缺少支撐區，無法建立技術計劃。"));
@@ -65,8 +88,15 @@ public class TradePlanCalculator {
             return unavailable(context, support, basisId, normalizedInputHash, reasons);
         }
 
-        boolean confirmedRetest = support.retestState() == RetestState.SUCCEEDED && support.roleVersion() > 1
+        boolean confirmedRetest = allowConfirmedRetest && support.retestState() == RetestState.SUCCEEDED && support.roleVersion() > 1
                 && support.roleConfirmationPrice() != null && support.roleConfirmationPrice().signum() > 0;
+        boolean matchedSpringReclaimed = zoneDiagnosis != null && zoneDiagnosis.matchesZone(support)
+                && zoneDiagnosis.diagnosis() == BreakoutDiagnosis.SPRING_RECLAIMED
+                && zoneDiagnosis.reclaimDate() != null
+                && (zoneDiagnosis.validThroughSession() == null || currentSession == null
+                || !currentSession.isAfter(zoneDiagnosis.validThroughSession()));
+        boolean matchedHighRiskBreakdown = zoneDiagnosis != null && zoneDiagnosis.matchesZone(support)
+                && zoneDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN;
         SetupType setupType = confirmedRetest ? SetupType.CONFIRMED_RETEST : SetupType.PULLBACK;
         EntryMethod entryMethod = confirmedRetest ? EntryMethod.CONFIRMATION_MARKET : EntryMethod.ZONE_LIMIT;
         PriceRangeDto entry = confirmedRetest
@@ -75,7 +105,9 @@ public class TradePlanCalculator {
                 : new PriceRangeDto(support.lower(), support.upper(), basisId);
 
         BigDecimal stop = support.lower().subtract(atr.multiply(new BigDecimal("0.50"), MC), MC);
-        BigDecimal invalidation = support.lower().subtract(atr.multiply(new BigDecimal("0.25"), MC), MC);
+        // 技術收盤失效閾值凍結於區域確認時的 anchorAtr，並自支撐角色生效時間（roleConfirmedAt）起算，避免報告日 ATR 變動或翻轉前低收誤判。
+        BigDecimal frozenAtr = support.anchorAtr() != null && support.anchorAtr().signum() > 0 ? support.anchorAtr() : atr;
+        BigDecimal invalidation = support.lower().subtract(frozenAtr.multiply(new BigDecimal("0.25"), MC), MC);
         if (stop.signum() <= 0 || stop.compareTo(entry.lower()) >= 0) {
             reasons.add(AnalysisReasonDto.of("INVALID_STOP", "TRADE_PLAN", "保護止損無效。"));
             return unavailable(context, support, basisId, normalizedInputHash, reasons);
@@ -86,13 +118,18 @@ public class TradePlanCalculator {
             reasons.add(AnalysisReasonDto.of("NO_FIXED_TARGET", "TRADE_PLAN",
                     "尚無已核驗的上方固定止盈阻力；只保留支撐與止損參考，不產生可執行入場信號。"));
         }
+        java.time.Instant stopConfirmedAt = support.roleConfirmedAt() != null ? support.roleConfirmedAt() : support.confirmedAt();
         StopRuleDto stopRule = new StopRuleDto(stop, invalidation, 2, AnalysisTimeframe.DAILY,
-                new BigDecimal("0.50"), atr, timeframe, support.confirmedAt(), support.evidenceRefs());
+                new BigDecimal("0.50"), atr, timeframe, stopConfirmedAt, support.evidenceRefs(), frozenAtr);
         MetricResult<RiskRewardDto> rr = targets.isEmpty()
                 ? MetricResult.unavailable(MetricStatus.NOT_APPLICABLE,
                     AnalysisReasonDto.of("FIXED_RR_UNAVAILABLE", "TRADE_PLAN", "沒有固定止盈目標，不能計算固定 R/R。"))
                 : costCalculator.calculate(entry.upper(), stop, targets);
         TradePlanStatus status = TradePlanStatus.WAITING_TRIGGER;
+
+        boolean macroConfirmRequired = constraint != null && constraint.reasonCodes().contains("EVENT_REQUIRES_CLOSE_CONFIRMATION");
+        boolean bearOrPanicConstraint = constraint != null
+                && (constraint.reasonCodes().contains("MARKET_BEAR") || constraint.reasonCodes().contains("MARKET_PANIC"));
 
         if (currentSession != null && validThrough != null && currentSession.isAfter(validThrough)) {
             status = TradePlanStatus.INVALIDATED;
@@ -100,12 +137,18 @@ public class TradePlanCalculator {
         } else if (currentPrice != null && currentPrice.compareTo(stop) <= 0) {
             status = TradePlanStatus.INVALIDATED;
             reasons.add(AnalysisReasonDto.of("PROTECTIVE_STOP_BREACHED", "TRADE_PLAN", "最近收市價已低於保護止損。"));
+        } else if (matchedHighRiskBreakdown) {
+            reasons.add(AnalysisReasonDto.of("HIGH_RISK_BREAKDOWN_DETECTED", "TRADE_PLAN", "本支撐區已判定為高機率真破位，暫不允許新入場。"));
         } else if (currentSession != null && earliestExecutableSession != null && currentSession.isBefore(earliestExecutableSession)) {
             reasons.add(AnalysisReasonDto.of("SIGNAL_NOT_EXECUTABLE_YET", "TRADE_PLAN", "信號確認後最早由下一個 regular session 才可執行。"));
-        } else if (constraint != null && (constraint.entryPermission() == EntryPermission.BLOCK || constraint.entryPermission() == EntryPermission.UNKNOWN)) {
+        } else if (constraint != null && (constraint.entryPermission() == EntryPermission.BLOCK
+                || constraint.entryPermission() == EntryPermission.UNKNOWN || bearOrPanicConstraint)) {
             reasons.add(AnalysisReasonDto.of("ENTRY_CONSTRAINT", "TRADE_PLAN", "外部市場／事件條件尚不允許新入場。"));
-        } else if (constraint != null && constraint.entryPermission() == EntryPermission.REQUIRE_CLOSE_CONFIRMATION && !confirmedRetest) {
-            reasons.add(AnalysisReasonDto.of("CLOSE_CONFIRMATION_REQUIRED", "TRADE_PLAN", "外部限制要求已確認 retest；一般 pullback 暫不可入場。"));
+        } else if (constraint != null && constraint.entryPermission() == EntryPermission.REQUIRE_CLOSE_CONFIRMATION
+                && (macroConfirmRequired ? !confirmedRetest : (!confirmedRetest && !matchedSpringReclaimed))) {
+            reasons.add(AnalysisReasonDto.of("CLOSE_CONFIRMATION_REQUIRED", "TRADE_PLAN",
+                    macroConfirmRequired ? "宏觀事件限制要求已確認 retest；一般回踩或單純彈簧收回暫不可入場。"
+                            : "外部限制要求已確認 retest 或有效彈簧收回；一般 pullback 暫不可入場。"));
         } else if (trend.value().state() == TrendState.DOWNTREND || trend.value().state() == TrendState.TRANSITION) {
             reasons.add(AnalysisReasonDto.of("STRUCTURE_CONFIRMATION_REQUIRED", "TRADE_PLAN", "結構尚未符合入場資格。"));
         } else if (currentPrice != null && currentPrice.compareTo(entry.lower()) >= 0 && currentPrice.compareTo(entry.upper()) <= 0) {
@@ -122,18 +165,20 @@ public class TradePlanCalculator {
                     "成本後 RR 未達 2 或不可計算。"));
         }
 
+        java.time.Instant createdSignalAt = overrideSignalAt != null ? overrideSignalAt
+                : (confirmedRetest ? support.roleConfirmedAt() : support.confirmedAt());
         String targetRefs = targets.stream().map(t -> Objects.toString(t.sourceZoneId(), "")).reduce((a,b)->a+","+b).orElse("");
         String id = hash(String.join("|",
                 context.figi(), context.horizon().name(), context.analysisAsOf().toString(),
                 Objects.toString(normalizedInputHash,""), Objects.toString(basisId,""), support.id(),
-                String.valueOf(support.boundsVersion()), setupType.name(), Objects.toString(support.roleConfirmedAt(), Objects.toString(support.confirmedAt(),"")),
+                String.valueOf(support.boundsVersion()), setupType.name(), Objects.toString(createdSignalAt, ""),
                 entry.lower().toPlainString(), entry.upper().toPlainString(), stop.toPlainString(), targetRefs,
                 constraint == null ? "NONE" : constraint.entryPermission().name(), Objects.toString(validThrough,"")));
         return new TradePlanDto(id, context.horizon(), setupType, entry, entryMethod,
                 confirmedRetest ? "已確認 resistance-to-support retest；只在價格不超過確認上限時執行。"
                         : "價格回到已確認支撐區，並符合結構與外部限制。",
                 stopRule, targets, rr, status, reasons, support.id(), support.boundsVersion(), timeframe,
-                confirmedRetest ? support.roleConfirmedAt() : support.confirmedAt(), validThrough, support.evidenceRefs());
+                createdSignalAt, validThrough, support.evidenceRefs());
     }
 
     // 用途：處理targets，作為「交易計劃計算」流程中的處理步驟。

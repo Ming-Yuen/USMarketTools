@@ -3,6 +3,8 @@ package com.ykm.stock.analytics.service.analysis.calculator;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisTimeframe;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosis;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EventRiskDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
@@ -11,16 +13,20 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsD
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto.ForwardMetrics;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.FairValueBandDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.MacroCautionDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.SummaryFlagDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.TrendPullbackStarterDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.WatchItemDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketRegime;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedBarDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceRangeDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceStructureDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.RetestState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistanceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TimeframeStructureDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
@@ -30,11 +36,14 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationReferenc
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
+import com.ykm.stock.analytics.service.market.MarketStatusService;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -58,6 +67,7 @@ public class ValuationSummaryCalculator {
     private static final BigDecimal OVERVALUED_RISK_FACTOR = new BigDecimal("1.15");
     private static final BigDecimal MIN_SUPPORT_STRENGTH = BigDecimal.valueOf(30);
     private static final BigDecimal HALF_ATR = new BigDecimal("0.50");
+    private static final BigDecimal QUARTER_ATR = new BigDecimal("0.25");
 
     private static final BigDecimal WEAK_REV_YOY = new BigDecimal("-0.10");
     private static final BigDecimal WEAK_EPS_YOY = new BigDecimal("-0.20");
@@ -74,8 +84,27 @@ public class ValuationSummaryCalculator {
     private static final BigDecimal REV_CONTRACTION_WARN = new BigDecimal("-0.05");
     private static final BigDecimal FORWARD_EPS_TRAP_CONTRACTION = new BigDecimal("-0.20");
     private static final BigDecimal FORWARD_REVISION_90D_TRAP = new BigDecimal("-0.10");
+    private static final BigDecimal VIX_CAUTION_THRESHOLD = new BigDecimal("25");
+    private static final BigDecimal TEN_YEAR_SURGE_20_THRESHOLD = new BigDecimal("0.30");
+    private static final BigDecimal MACRO_MARGIN_BUFFER_MIN = new BigDecimal("0.05");
+    private static final BigDecimal MACRO_MARGIN_BUFFER_MAX = new BigDecimal("0.10");
+    private static final BigDecimal MACRO_POSITION_SCALE = new BigDecimal("0.50");
+    private static final BigDecimal STARTER_FORWARD_PEG_MAX = new BigDecimal("1.50");
+    private static final BigDecimal STARTER_HYPER_GROWTH_PE_MAX = new BigDecimal("35.0");
+    private static final BigDecimal STARTER_HYPER_GROWTH_MIN_REV_YOY = new BigDecimal("0.15");
+    private static final BigDecimal STARTER_PULLBACK_DIST_MIN = new BigDecimal("-0.01");
+    private static final BigDecimal STARTER_PULLBACK_DIST_MAX = new BigDecimal("0.03");
+    private static final BigDecimal STARTER_RVOL_MAX = BigDecimal.ONE;
+    private static final BigDecimal STARTER_DAY_RET_MIN = new BigDecimal("-0.015");
+    private static final BigDecimal STARTER_CLOSE_POS_MIN = new BigDecimal("0.40");
+    private static final int STARTER_PULLBACK_HIGH_LOOKBACK = 10;
+    private static final int RETEST_VALID_SESSIONS = 5;
+    private static final ZoneId NY = ZoneId.of("America/New_York");
+    private final MarketStatusService marketCalendar = new MarketStatusService(null);
 
     private record YieldSpreadSelection(MetricResult<BigDecimal> spread, String basis) {}
+
+    private record SupportSelection(LevelZoneDto zone, boolean excludedByBreachOrInvalidation) {}
 
     private record BandSynthesis(String anchorSource, FairValueBandDto band, List<AnalysisReasonDto> anchorReasons) {}
 
@@ -218,22 +247,61 @@ public class ValuationSummaryCalculator {
                 || (constraint != null && constraint.entryPermission() == EntryPermission.BLOCK
                 && constraint.reasonCodes().contains("EARNINGS_EVENT_WINDOW"));
 
+        List<NormalizedBarDto> dailyBars = extractDailyBars(priceStructure);
         List<TradePlanDto> planList = tradePlans != null && tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
                 ? tradePlans.value().plans() : List.of();
         AnalysisHorizon effectiveHorizon = horizon == null ? AnalysisHorizon.POSITION : horizon;
-        LevelZoneDto supportZone = selectTechnicalSupportZone(effectiveHorizon, supportResistance, planList, dailyLatestClose, price, band.low());
-        boolean stopBreachedOrReclaim = hasStopBreachedOrReclaim(planList, supportZone);
+        SupportSelection supportSelection = selectTechnicalSupportZone(effectiveHorizon, supportResistance, planList, dailyLatestClose, dailyBars, price, band.low());
+        LevelZoneDto supportZone = supportSelection.zone();
+        boolean stopBreachedOrReclaim = supportSelection.excludedByBreachOrInvalidation()
+                || hasStopBreachedOrReclaim(planList, supportZone, dailyLatestClose, dailyBars);
         boolean confirmationPending = hasConfirmationPending(planList, supportZone, permission);
+        boolean structureConfirmationPending = hasStructureConfirmationPending(planList, supportZone);
+
+        MarketRegime marketRegime = extractMarketRegime(marketContext);
+        BigDecimal vixClose = extractVixClose(marketContext);
+        BigDecimal tenYearChange20 = extractTenYearChange20(marketContext);
+        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20);
+
+        BreakoutDiagnosisDto primaryDiagnosis = extractPrimaryDiagnosis(supportResistance);
+        BreakoutDiagnosisDto matchedZoneDiagnosis = findDiagnosisForZone(supportResistance, supportZone);
+        boolean matchedHighRiskBreakdown = matchedZoneDiagnosis != null
+                && matchedZoneDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN;
+        boolean anyHighRiskBreakdown = matchedHighRiskBreakdown
+                || (supportZone == null && primaryDiagnosis != null
+                && primaryDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN);
+
+        LocalDate currentSession = extractLatestDailySession(priceStructure);
+        boolean validConfirmedRetest = isValidConfirmedRetest(supportZone, planList, currentSession);
+        boolean validSpringReclaimed = matchedZoneDiagnosis != null
+                && matchedZoneDiagnosis.diagnosis() == BreakoutDiagnosis.SPRING_RECLAIMED
+                && matchedZoneDiagnosis.reclaimDate() != null
+                && (matchedZoneDiagnosis.validThroughSession() == null || currentSession == null
+                || !currentSession.isAfter(matchedZoneDiagnosis.validThroughSession()))
+                && !isPlanInvalidated(planList, supportZone)
+                && !hasTwoConsecutiveClosesBelowFrozenThreshold(supportZone, dailyBars);
+        boolean macroConfirmRequired = constraint != null
+                && constraint.reasonCodes().contains("EVENT_REQUIRES_CLOSE_CONFIRMATION");
+        String rightSideConfirmationBasis = validConfirmedRetest ? "CONFIRMED_RETEST"
+                : (validSpringReclaimed && !macroConfirmRequired ? "SPRING_RECLAIMED" : null);
+        boolean rightSideConfirmedForCorrection = rightSideConfirmationBasis != null && !structureConfirmationPending;
+
+        TrendPullbackStarterDto trendPullbackStarter = evaluateTrendPullbackStarter(
+                effectiveHorizon, verdict, fundamentalBacking, fundamentals, futuObservations, forwardTrap,
+                weeklyTrend, aboveSma200, marketRegime, permission, eventGateBlocked,
+                stopBreachedOrReclaim || anyHighRiskBreakdown, priceStructure, marketContext, macroCaution);
 
         String stance = resolveStance(
                 verdict, fundamentalBacking, forwardTrap.anyTrap(), weeklyTrend, aboveSma200,
-                permission, eventGateBlocked, stopBreachedOrReclaim, confirmationPending, supportZone != null);
+                marketRegime, permission, eventGateBlocked, stopBreachedOrReclaim || anyHighRiskBreakdown,
+                confirmationPending, supportZone != null, rightSideConfirmedForCorrection, trendPullbackStarter);
 
         List<SummaryFlagDto> risks = buildRiskFlags(
                 verdict, fundamentals, financials, forwardTrap, band, weeklyTrend, aboveSma200,
-                eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim);
+                eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim, macroCaution, primaryDiagnosis);
         List<WatchItemDto> watchItems = buildWatchItems(
-                verdict, fundamentalBacking, forwardTrap.anyTrap(), band, supportZone, nextBlockingEventDate, stopBreachedOrReclaim);
+                verdict, stance, fundamentalBacking, forwardTrap.anyTrap(), band, supportZone,
+                nextBlockingEventDate, stopBreachedOrReclaim, marketRegime, rightSideConfirmationBasis, trendPullbackStarter);
 
         PriceRangeDto supportRange = supportZone == null ? null : new PriceRangeDto(supportZone.lower(), supportZone.upper(), null);
         String supportTf = supportZone == null || supportZone.timeframe() == null ? null : supportZone.timeframe().name();
@@ -260,7 +328,11 @@ public class ValuationSummaryCalculator {
                 nextBlockingEventDate,
                 risks,
                 watchItems,
-                summaryReasons
+                summaryReasons,
+                macroCaution,
+                trendPullbackStarter,
+                primaryDiagnosis,
+                marketRegime == MarketRegime.CORRECTION && "WATCH_PULLBACK_TO_BAND".equals(stance) ? rightSideConfirmationBasis : null
         );
         return MetricResult.available(dto);
     }
@@ -494,15 +566,16 @@ public class ValuationSummaryCalculator {
                 AnalysisReasonDto.of("YIELD_INPUT_UNAVAILABLE", "SUMMARY", "缺少可比殖利率分母。")), null);
     }
 
-    private LevelZoneDto selectTechnicalSupportZone(
+    private SupportSelection selectTechnicalSupportZone(
             AnalysisHorizon horizon,
             MetricResult<SupportResistanceDto> supportResistance,
             List<TradePlanDto> plans,
             BigDecimal dailyLatestClose,
+            List<NormalizedBarDto> dailyBars,
             BigDecimal currentPrice,
             BigDecimal bandLow) {
         if (supportResistance == null || supportResistance.status() != MetricStatus.AVAILABLE || supportResistance.value() == null) {
-            return null;
+            return new SupportSelection(null, false);
         }
         AnalysisTimeframe wantedTimeframe = horizon == AnalysisHorizon.SWING ? AnalysisTimeframe.DAILY : AnalysisTimeframe.WEEKLY;
         BigDecimal ceiling = null;
@@ -522,6 +595,7 @@ public class ValuationSummaryCalculator {
         }
         Set<String> seenIds = new LinkedHashSet<>();
         List<LevelZoneDto> eligible = new ArrayList<>();
+        boolean anyExcludedByBreach = false;
         for (LevelZoneDto z : candidates) {
             if (z == null || z.id() == null || !seenIds.add(z.id())) {
                 continue;
@@ -532,13 +606,14 @@ public class ValuationSummaryCalculator {
             if (z.effectiveStrength() == null || z.effectiveStrength().compareTo(MIN_SUPPORT_STRENGTH) < 0) {
                 continue;
             }
-            if (isZoneStopBreached(z, plans, dailyLatestClose)) {
+            if (isZoneStopBreached(z, plans, dailyLatestClose, dailyBars)) {
+                anyExcludedByBreach = true;
                 continue;
             }
             eligible.add(z);
         }
         if (eligible.isEmpty()) {
-            return null;
+            return new SupportSelection(null, anyExcludedByBreach);
         }
         BigDecimal finalCeiling = ceiling;
         eligible.sort((a, b) -> {
@@ -555,12 +630,13 @@ public class ValuationSummaryCalculator {
             int bTfRank = b.timeframe() == AnalysisTimeframe.WEEKLY ? 2 : b.timeframe() == AnalysisTimeframe.DAILY ? 1 : 0;
             return Integer.compare(bTfRank, aTfRank);
         });
-        return eligible.getFirst();
+        return new SupportSelection(eligible.getFirst(), false);
     }
 
-    private boolean isZoneStopBreached(LevelZoneDto zone, List<TradePlanDto> plans, BigDecimal dailyLatestClose) {
+    private boolean isZoneStopBreached(LevelZoneDto zone, List<TradePlanDto> plans,
+                                       BigDecimal dailyLatestClose, List<NormalizedBarDto> dailyBars) {
         for (TradePlanDto plan : plans) {
-            if (plan != null && zone.id().equals(plan.sourceZoneId())
+            if (matchesPlanZone(plan, zone)
                     && (hasPlanReason(plan, "PROTECTIVE_STOP_BREACHED") || hasPlanReason(plan, "TECHNICAL_INVALIDATION_CONFIRMED"))) {
                 return true;
             }
@@ -571,22 +647,73 @@ public class ValuationSummaryCalculator {
                 return true;
             }
         }
+        return hasTwoConsecutiveClosesBelowFrozenThreshold(zone, dailyBars);
+    }
+
+    /** 對未納入前 3 名交易計畫之支撐區（例如距離第 4 之強支撐），仍依凍結 anchorAtr 與角色生效日判定是否已兩收盤技術失效。 */
+    private boolean hasTwoConsecutiveClosesBelowFrozenThreshold(LevelZoneDto zone, List<NormalizedBarDto> dailyBars) {
+        if (zone == null || zone.lower() == null || zone.anchorAtr() == null || zone.anchorAtr().signum() <= 0
+                || dailyBars == null || dailyBars.size() < 2) {
+            return false;
+        }
+        BigDecimal threshold = zone.lower().subtract(zone.anchorAtr().multiply(QUARTER_ATR, MC), MC);
+        Instant effectiveConfirmedAt = zone.roleConfirmedAt() != null ? zone.roleConfirmedAt() : zone.confirmedAt();
+        int consecutive = 0;
+        LocalDate previous = null;
+        for (NormalizedBarDto bar : dailyBars) {
+            if (bar == null || bar.availableAt() == null || bar.sessionDate() == null) {
+                continue;
+            }
+            if (effectiveConfirmedAt != null && !bar.availableAt().isAfter(effectiveConfirmedAt)) {
+                continue;
+            }
+            if (previous != null) {
+                LocalDate expected = marketCalendar.getNextTradingDay(previous);
+                if (!expected.equals(bar.sessionDate())) {
+                    consecutive = 0;
+                }
+            }
+            if (bar.close() != null && bar.close().compareTo(threshold) < 0) {
+                consecutive++;
+                if (consecutive >= 2) {
+                    return true;
+                }
+            } else {
+                consecutive = 0;
+            }
+            previous = bar.sessionDate();
+        }
         return false;
     }
 
-    private boolean hasStopBreachedOrReclaim(List<TradePlanDto> plans, LevelZoneDto selectedZone) {
-        if (plans == null || plans.isEmpty()) {
-            return false;
-        }
+    private boolean hasStopBreachedOrReclaim(List<TradePlanDto> plans, LevelZoneDto selectedZone,
+                                             BigDecimal dailyLatestClose, List<NormalizedBarDto> dailyBars) {
         if (selectedZone != null) {
-            for (TradePlanDto plan : plans) {
-                if (plan != null && selectedZone.id().equals(plan.sourceZoneId())
-                        && (hasPlanReason(plan, "PROTECTIVE_STOP_BREACHED")
+            if (plans != null) {
+                boolean foundForSelected = false;
+                for (TradePlanDto plan : plans) {
+                    if (matchesPlanZone(plan, selectedZone)) {
+                        foundForSelected = true;
+                        if (hasPlanReason(plan, "PROTECTIVE_STOP_BREACHED")
                                 || hasPlanReason(plan, "RECLAIM_REQUIRED")
-                                || hasPlanReason(plan, "TECHNICAL_INVALIDATION_CONFIRMED"))) {
-                    return true;
+                                || hasPlanReason(plan, "TECHNICAL_INVALIDATION_CONFIRMED")) {
+                            return true;
+                        }
+                    }
+                }
+                if (foundForSelected) {
+                    return false;
                 }
             }
+            // 若選定支撐（例如距離第 4）未出現在前 3 名交易計畫中，直接檢核該支撐自身之兩收盤失效與收復門檻，不繼承他區破位。
+            if (hasTwoConsecutiveClosesBelowFrozenThreshold(selectedZone, dailyBars)) {
+                return true;
+            }
+            return dailyLatestClose != null && selectedZone.lower() != null
+                    && dailyLatestClose.compareTo(selectedZone.lower()) < 0;
+        }
+        if (plans == null || plans.isEmpty()) {
+            return false;
         }
         boolean anyActive = false;
         boolean anyBreachOrReclaim = false;
@@ -602,6 +729,12 @@ public class ValuationSummaryCalculator {
             }
         }
         return !anyActive && anyBreachOrReclaim;
+    }
+
+    private boolean matchesPlanZone(TradePlanDto plan, LevelZoneDto zone) {
+        return plan != null && zone != null && zone.id() != null
+                && zone.id().equals(plan.sourceZoneId())
+                && (plan.sourceBoundsVersion() <= 0 || plan.sourceBoundsVersion() == zone.boundsVersion());
     }
 
     private boolean hasConfirmationPending(List<TradePlanDto> plans, LevelZoneDto selectedZone, EntryPermission permission) {
@@ -632,34 +765,109 @@ public class ValuationSummaryCalculator {
         return permission == EntryPermission.REQUIRE_CLOSE_CONFIRMATION;
     }
 
+    private boolean hasStructureConfirmationPending(List<TradePlanDto> plans, LevelZoneDto selectedZone) {
+        if (plans == null || plans.isEmpty()) {
+            return false;
+        }
+        for (TradePlanDto plan : plans) {
+            if (plan == null) continue;
+            if (selectedZone != null && selectedZone.id().equals(plan.sourceZoneId())
+                    && hasPlanReason(plan, "STRUCTURE_CONFIRMATION_REQUIRED")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isPlanInvalidated(List<TradePlanDto> plans, LevelZoneDto selectedZone) {
+        if (plans == null || plans.isEmpty() || selectedZone == null) {
+            return false;
+        }
+        for (TradePlanDto plan : plans) {
+            if (matchesPlanZone(plan, selectedZone) && plan.status() == TradePlanStatus.INVALIDATED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 與 TradePlanService 共用同一 NYSE 交易日曆 5 交易日視窗及同區版本計畫檢核，徹底消除 5 交易日與日曆日近似偏差。 */
+    private boolean isValidConfirmedRetest(LevelZoneDto supportZone, List<TradePlanDto> plans, LocalDate currentSession) {
+        if (supportZone == null || supportZone.retestState() != RetestState.SUCCEEDED
+                || supportZone.roleVersion() <= 1
+                || supportZone.roleConfirmationPrice() == null
+                || supportZone.roleConfirmationPrice().signum() <= 0
+                || supportZone.roleConfirmedAt() == null) {
+            return false;
+        }
+        LocalDate retestDate = supportZone.roleConfirmedAt().atZone(NY).toLocalDate();
+        LocalDate validThrough = advanceTradingDays(retestDate, RETEST_VALID_SESSIONS);
+        if (currentSession != null && currentSession.isAfter(validThrough)) {
+            return false;
+        }
+        if (plans != null) {
+            for (TradePlanDto plan : plans) {
+                if (matchesPlanZone(plan, supportZone)) {
+                    if (plan.status() == TradePlanStatus.INVALIDATED || hasPlanReason(plan, "ENTRY_EXPIRED")) {
+                        return false;
+                    }
+                    if (currentSession != null && plan.validThroughSession() != null
+                            && currentSession.isAfter(plan.validThroughSession())) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private LocalDate advanceTradingDays(LocalDate start, int sessions) {
+        LocalDate cursor = start;
+        for (int i = 0; i < sessions; i++) {
+            cursor = marketCalendar.getNextTradingDay(cursor);
+        }
+        return cursor;
+    }
+
     private String resolveStance(
             String verdict,
             String fundamentalBacking,
             boolean forwardValueTrap,
             String weeklyTrend,
             Boolean aboveSma200,
+            MarketRegime marketRegime,
             EntryPermission permission,
             boolean eventGateBlocked,
             boolean stopBreachedOrReclaim,
             boolean confirmationPending,
-            boolean hasTechnicalSupport) {
+            boolean hasTechnicalSupport,
+            boolean rightSideConfirmedForCorrection,
+            TrendPullbackStarterDto starter) {
         if ("INSUFFICIENT_EVIDENCE".equals(verdict)) {
             return "INSUFFICIENT_EVIDENCE";
         }
 
         boolean undervalued = "DEEP_UNDERVALUED".equals(verdict) || "MODERATELY_UNDERVALUED".equals(verdict);
         boolean downtrendBelowSma200 = "DOWNTREND".equals(weeklyTrend) && Boolean.FALSE.equals(aboveSma200);
+        boolean marketBearOrPanic = marketRegime == MarketRegime.BEAR || marketRegime == MarketRegime.PANIC;
+        boolean marketCorrection = marketRegime == MarketRegime.CORRECTION;
         boolean entryBlocked = eventGateBlocked
                 || permission == EntryPermission.BLOCK
                 || permission == EntryPermission.UNKNOWN;
 
         if (undervalued) {
-            // 若下方交易方案已判定跌破保護止損、技術失效或低於入場區待收復，強制退回等待止穩，避免上下矛盾
+            // 若下方交易方案已判定跌破保護止損、技術失效或高機率真破位，強制退回等待止穩，避免上下矛盾
             if (stopBreachedOrReclaim) {
                 return "WAIT_FOR_STABILIZATION";
             }
             if (forwardValueTrap) {
-                if (downtrendBelowSma200 || entryBlocked) {
+                if (downtrendBelowSma200 || eventGateBlocked) {
+                    return "WAIT_FOR_STABILIZATION";
+                }
+                if (marketBearOrPanic) {
+                    return "CAUTION_VALUE_TRAP";
+                }
+                if (entryBlocked) {
                     return "WAIT_FOR_STABILIZATION";
                 }
                 return "CAUTION_VALUE_TRAP";
@@ -667,34 +875,70 @@ public class ValuationSummaryCalculator {
             if ("WEAKENING".equals(fundamentalBacking)) {
                 return "CAUTION_VALUE_TRAP";
             }
-            if (downtrendBelowSma200 || entryBlocked || confirmationPending) {
+            if (eventGateBlocked) {
+                return "WAIT_FOR_STABILIZATION";
+            }
+            if (marketBearOrPanic) {
+                return "WAIT_FOR_MARKET_STABILIZATION";
+            }
+            if (downtrendBelowSma200 || entryBlocked) {
+                return "WAIT_FOR_STABILIZATION";
+            }
+            if (marketCorrection) {
+                if (hasTechnicalSupport && rightSideConfirmedForCorrection) {
+                    return "WATCH_PULLBACK_TO_BAND";
+                }
+                return "WAIT_FOR_MARKET_STABILIZATION";
+            }
+            if (confirmationPending) {
                 return "WAIT_FOR_STABILIZATION";
             }
             return hasTechnicalSupport ? "ACCUMULATE_AT_SUPPORT" : "WATCH_PULLBACK_TO_BAND";
         }
 
         if ("FAIR_LOWER".equals(verdict)) {
-            if (stopBreachedOrReclaim || downtrendBelowSma200 || entryBlocked) {
+            if (stopBreachedOrReclaim || downtrendBelowSma200 || eventGateBlocked) {
                 return "WAIT_FOR_STABILIZATION";
             }
             if ("WEAKENING".equals(fundamentalBacking) || forwardValueTrap) {
                 return "CAUTION_VALUE_TRAP";
+            }
+            if (marketBearOrPanic || marketCorrection) {
+                return "WAIT_FOR_MARKET_STABILIZATION";
+            }
+            if (entryBlocked) {
+                return "WAIT_FOR_STABILIZATION";
             }
             return "WATCH_PULLBACK_TO_BAND";
         }
 
         if ("FAIR_UPPER".equals(verdict)) {
             if ("STRONG".equals(fundamentalBacking) && "UPTREND".equals(weeklyTrend)) {
+                if (starter != null && starter.eligible()) {
+                    return "TREND_PULLBACK_STARTER";
+                }
                 return "HOLD_TRAIL_NO_CHASE";
             }
             if ("WEAKENING".equals(fundamentalBacking)) {
                 return "CAUTION_VALUE_TRAP";
+            }
+            if (stopBreachedOrReclaim || downtrendBelowSma200 || eventGateBlocked) {
+                return "WAIT_FOR_STABILIZATION";
+            }
+            if (marketBearOrPanic || marketCorrection) {
+                return "WAIT_FOR_MARKET_STABILIZATION";
+            }
+            if (entryBlocked) {
+                return "WAIT_FOR_STABILIZATION";
             }
             return "WATCH_PULLBACK_TO_BAND";
         }
 
         if ("MODERATELY_OVERVALUED".equals(verdict)) {
             if ("STRONG".equals(fundamentalBacking) && "UPTREND".equals(weeklyTrend)) {
+                if (starter != null && starter.eligible()) {
+                    return "TREND_PULLBACK_STARTER";
+                }
                 return "HOLD_TRAIL_NO_CHASE";
             }
             return "CAUTION_OVEREXTENSION";
@@ -702,6 +946,258 @@ public class ValuationSummaryCalculator {
 
         return "CAUTION_OVEREXTENSION";
     }
+
+    private MacroCautionDto buildMacroCaution(MarketRegime regime, BigDecimal vixClose, BigDecimal tenYearChange20) {
+        boolean evaluated = regime != null || vixClose != null || tenYearChange20 != null;
+        List<String> triggers = new ArrayList<>();
+        if (regime == MarketRegime.PANIC) {
+            triggers.add("MARKET_REGIME_PANIC");
+        } else if (regime == MarketRegime.BEAR) {
+            triggers.add("MARKET_REGIME_BEAR");
+        } else if (regime == MarketRegime.CORRECTION) {
+            triggers.add("MARKET_REGIME_CORRECTION");
+        }
+        if (vixClose != null && vixClose.compareTo(VIX_CAUTION_THRESHOLD) >= 0) {
+            triggers.add("VIX_ELEVATED");
+        }
+        if (tenYearChange20 != null && tenYearChange20.compareTo(TEN_YEAR_SURGE_20_THRESHOLD) >= 0) {
+            triggers.add("TREASURY_10Y_SURGE_20P");
+        }
+        boolean active = !triggers.isEmpty();
+        return new MacroCautionDto(
+                active,
+                evaluated,
+                regime,
+                vixClose,
+                tenYearChange20,
+                triggers,
+                active ? MACRO_MARGIN_BUFFER_MIN : null,
+                active ? MACRO_MARGIN_BUFFER_MAX : null,
+                active ? MACRO_POSITION_SCALE : null
+        );
+    }
+
+    /**
+     * 強勢成長股「趨勢回踩試單」判定：
+     * 僅適用 FAIR_UPPER / MODERATELY_OVERVALUED，要求 STRONG + UPTREND + 站上年線 + 友善大盤 + 合理前瞻成長支撐 + 回踩均線／財報 AVWAP 縮量止穩。
+     */
+    private TrendPullbackStarterDto evaluateTrendPullbackStarter(
+            AnalysisHorizon horizon,
+            String verdict,
+            String fundamentalBacking,
+            FundamentalSnapshotDto fundamentals,
+            FutuObservationsDto futuObservations,
+            ForwardTrapSignals forwardTrap,
+            String weeklyTrend,
+            Boolean aboveSma200,
+            MarketRegime marketRegime,
+            EntryPermission permission,
+            boolean eventGateBlocked,
+            boolean blockedByBreachOrStop,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<MarketContextDto> marketContext,
+            MacroCautionDto macroCaution) {
+        if ((!"FAIR_UPPER".equals(verdict) && !"MODERATELY_OVERVALUED".equals(verdict))
+                || !"STRONG".equals(fundamentalBacking)
+                || !"UPTREND".equals(weeklyTrend)) {
+            return null;
+        }
+        if (forwardTrap != null && forwardTrap.anyTrap()) {
+            return ineligibleStarter(null, null, null, "TREND_PULLBACK_FORWARD_TRAP", "前瞻盈餘預期下滑或近 90 日顯著下修，維持不追高。");
+        }
+        if (!Boolean.TRUE.equals(aboveSma200)) {
+            return ineligibleStarter(null, null, null, "TREND_PULLBACK_BELOW_SMA200", "日線收盤尚未站上 SMA200 年線，維持不追高。");
+        }
+        if (marketRegime != MarketRegime.RISK_ON && marketRegime != MarketRegime.NEUTRAL && marketRegime != MarketRegime.RECOVERY) {
+            return ineligibleStarter(null, null, null, "TREND_PULLBACK_MARKET_HEADWIND", "大盤市況非風險偏好／中性／修復期或尚未評估，暫不啟動強勢股回踩試單。");
+        }
+        if (eventGateBlocked || permission != EntryPermission.ALLOW || blockedByBreachOrStop) {
+            return ineligibleStarter(null, null, null, "TREND_PULLBACK_EVENT_OR_BREACH_BLOCKED", "受財報事件門鎖、外部限制或破位止損約束，維持不追高。");
+        }
+
+        // 1) 前瞻成長合理性檢查（零外部 API 呼叫，嚴格相容 ForwardValuationCalculator 規則）
+        if (futuObservations == null || futuObservations.forward() == null) {
+            return ineligibleStarter(null, null, null, "ANNUAL_EARNINGS_FORECAST_MISSING", "缺少年度市場共識預期，無法驗證前瞻成長支撐，維持不追高。");
+        }
+        ForwardMetrics fm = futuObservations.forward();
+        BigDecimal forwardPeg = val(fm.forwardPeg());
+        BigDecimal forwardPe = val(fm.forwardPe());
+        String forwardGrowthBasis;
+
+        if (forwardPeg != null) {
+            if (forwardPeg.signum() <= 0 || forwardPeg.compareTo(STARTER_FORWARD_PEG_MAX) > 0) {
+                return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                        "FORWARD_PEG_ABOVE_THRESHOLD", "Forward PEG 高於 1.50 合理區間，維持不追高。");
+            }
+            forwardGrowthBasis = "FORWARD_PEG";
+        } else if (fm.forwardPeg() != null
+                && fm.forwardPeg().status() == MetricStatus.NOT_APPLICABLE
+                && hasReason(fm.forwardPeg(), "FORWARD_EPS_GROWTH_ABOVE_PEG_CAP")) {
+            if (forwardPe == null || forwardPe.signum() <= 0 || forwardPe.compareTo(STARTER_HYPER_GROWTH_PE_MAX) > 0) {
+                return ineligibleStarter(null, fm.forwardPegBasis(), forwardPe,
+                        "FORWARD_PE_ABOVE_HYPER_GROWTH_CAP", "預期 EPS 成長率逾 100% 觸發 PEG 上限，但 Forward P/E 不可用或超過 35 倍合理上限，維持不追高。");
+            }
+            if (!passesNonLowBaseHighGrowthCheck(fundamentals)) {
+                return ineligibleStarter(null, fm.forwardPegBasis(), forwardPe,
+                        "HYPER_GROWTH_LOW_BASE_UNVERIFIED", "預期 EPS 成長率逾 100%，但營收年增率未達 15% 或獲利品質未達真高成長門檻（疑似低基期復甦），維持不追高。");
+            }
+            forwardGrowthBasis = "HYPER_GROWTH_FORWARD_PE";
+        } else {
+            String upstreamCode = fm.forwardPeg() != null && !fm.forwardPeg().reasons().isEmpty()
+                    ? fm.forwardPeg().reasons().getFirst().code()
+                    : "ANNUAL_EARNINGS_FORECAST_MISSING";
+            String upstreamMsg = fm.forwardPeg() != null && !fm.forwardPeg().reasons().isEmpty()
+                    ? fm.forwardPeg().reasons().getFirst().message()
+                    : "缺少可用年度市場共識預期，維持不追高。";
+            return ineligibleStarter(null, fm.forwardPegBasis(), forwardPe, upstreamCode, upstreamMsg);
+        }
+
+        // 2) 回踩 EMA21 / SMA50 / 財報日 AVWAP（-1% ～ +3%）+ 近期回落 + 縮量止穩 + 緊貼止損
+        List<NormalizedBarDto> dailyBars = extractDailyBars(priceStructure);
+        if (dailyBars.size() < 2) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_BARS_INSUFFICIENT", "缺少完整日線行情，無法判定回踩止穩結構。");
+        }
+        NormalizedBarDto lastBar = dailyBars.getLast();
+        NormalizedBarDto prevBar = dailyBars.get(dailyBars.size() - 2);
+        BigDecimal dailyClose = lastBar.close();
+        if (dailyClose == null || dailyClose.signum() <= 0 || prevBar.close() == null || prevBar.close().signum() <= 0) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_BARS_INSUFFICIENT", "缺少有效日線收盤價，維持不追高。");
+        }
+
+        AnchorCandidate matchedAnchor = matchPullbackAnchor(horizon, dailyClose, marketContext);
+        if (matchedAnchor == null) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_NOT_IN_ZONE", "股價尚未回踩至 EMA21／SMA50／財報成本線（-1%～+3%）區間內，維持不追高。");
+        }
+        if (!hasRecentPullbackFromHigherPrice(dailyBars, dailyClose)) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_NO_RETRACEMENT", "近 10 日未見自較高價位回落結構，維持不追高。");
+        }
+        BigDecimal rvol20 = extractRvol20(marketContext);
+        if (rvol20 == null || rvol20.signum() <= 0 || rvol20.compareTo(STARTER_RVOL_MAX) > 0) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_VOLUME_NOT_CONTRACTED", "回踩量能尚未收斂（須 0 < RVOL20 ≤ 1.0），暫不啟動試單。");
+        }
+        BigDecimal dayReturn = dailyClose.divide(prevBar.close(), MC).subtract(BigDecimal.ONE, MC);
+        BigDecimal closePosition = computeClosePosition(lastBar);
+        boolean stabilizedCandle = dayReturn.compareTo(STARTER_DAY_RET_MIN) >= 0
+                && (dailyClose.compareTo(lastBar.open()) > 0
+                || (closePosition != null && closePosition.compareTo(STARTER_CLOSE_POS_MIN) >= 0));
+        if (!stabilizedCandle) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_NOT_STABILIZED", "當日 K 線跌幅偏大或收在當日低位，尚未量縮止穩，維持不追高。");
+        }
+        BigDecimal atr14 = extractIndicator(marketContext, "ATR14");
+        if (atr14 == null || atr14.signum() <= 0) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_ATR_UNAVAILABLE", "缺少有效日線 ATR14，無法設定緊貼均線保護止損。");
+        }
+        BigDecimal suggestedStop = matchedAnchor.price().subtract(atr14.multiply(HALF_ATR, MC), MC).setScale(4, RoundingMode.HALF_UP);
+        if (suggestedStop.signum() <= 0 || suggestedStop.compareTo(dailyClose) >= 0) {
+            return ineligibleStarter(forwardPeg, fm.forwardPegBasis(), forwardPe,
+                    "TREND_PULLBACK_STOP_INVALID", "計算得出的試單止損價無效，暫不輸出試單建議。");
+        }
+
+        String positionFraction = macroCaution != null && macroCaution.active() ? "1/6" : "1/3";
+        return new TrendPullbackStarterDto(
+                true,
+                matchedAnchor.name(),
+                matchedAnchor.price().setScale(4, RoundingMode.HALF_UP),
+                matchedAnchor.distanceRatio().setScale(6, RoundingMode.HALF_UP),
+                suggestedStop,
+                positionFraction,
+                forwardGrowthBasis,
+                forwardPeg,
+                fm.forwardPegBasis(),
+                forwardPe,
+                null,
+                null
+        );
+    }
+
+    private TrendPullbackStarterDto ineligibleStarter(
+            BigDecimal forwardPeg, String forwardPegBasis, BigDecimal forwardPe,
+            String reasonCode, String reasonMessage) {
+        return new TrendPullbackStarterDto(
+                false, null, null, null, null, null, null,
+                forwardPeg, forwardPegBasis, forwardPe, reasonCode, reasonMessage);
+    }
+
+    private boolean passesNonLowBaseHighGrowthCheck(FundamentalSnapshotDto f) {
+        if (f == null) {
+            return false;
+        }
+        BigDecimal revYoy = val(f.revenueGrowthYoy());
+        BigDecimal epsYoy = val(f.epsGrowthYoy());
+        BigDecimal fcfMargin = val(f.fcfMargin());
+        BigDecimal roe = val(f.roe());
+        boolean solidRevenue = revYoy != null && revYoy.compareTo(STARTER_HYPER_GROWTH_MIN_REV_YOY) >= 0;
+        boolean positiveTrailingEps = epsYoy != null && epsYoy.signum() > 0;
+        boolean qualityProfitability = f.financialInstitution()
+                ? (roe != null && roe.compareTo(STRONG_NON_FIN_ROE) >= 0)
+                : ((fcfMargin != null && fcfMargin.compareTo(STRONG_FCF_MARGIN) >= 0)
+                        || (roe != null && roe.compareTo(STRONG_NON_FIN_ROE) >= 0));
+        return solidRevenue && positiveTrailingEps && qualityProfitability;
+    }
+
+    private AnchorCandidate matchPullbackAnchor(AnalysisHorizon horizon, BigDecimal dailyClose,
+                                                MetricResult<MarketContextDto> marketContext) {
+        BigDecimal ema21 = extractIndicator(marketContext, "EMA21");
+        BigDecimal sma50 = extractIndicator(marketContext, "SMA50");
+        BigDecimal earningsAvwap = extractEarningsAvwap(marketContext);
+        List<AnchorCandidate> ordered = new ArrayList<>();
+        if (horizon == AnalysisHorizon.SWING) {
+            addAnchorIfPresent(ordered, "EMA21", ema21, dailyClose);
+            addAnchorIfPresent(ordered, "EARNINGS_AVWAP", earningsAvwap, dailyClose);
+            addAnchorIfPresent(ordered, "SMA50", sma50, dailyClose);
+        } else {
+            addAnchorIfPresent(ordered, "SMA50", sma50, dailyClose);
+            addAnchorIfPresent(ordered, "EARNINGS_AVWAP", earningsAvwap, dailyClose);
+            addAnchorIfPresent(ordered, "EMA21", ema21, dailyClose);
+        }
+        for (AnchorCandidate candidate : ordered) {
+            if (candidate.distanceRatio().compareTo(STARTER_PULLBACK_DIST_MIN) >= 0
+                    && candidate.distanceRatio().compareTo(STARTER_PULLBACK_DIST_MAX) <= 0) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private void addAnchorIfPresent(List<AnchorCandidate> list, String name, BigDecimal anchorPrice, BigDecimal dailyClose) {
+        if (anchorPrice != null && anchorPrice.signum() > 0) {
+            BigDecimal dist = dailyClose.subtract(anchorPrice, MC).divide(anchorPrice, MC);
+            list.add(new AnchorCandidate(name, anchorPrice, dist));
+        }
+    }
+
+    private boolean hasRecentPullbackFromHigherPrice(List<NormalizedBarDto> dailyBars, BigDecimal dailyClose) {
+        int lastIdx = dailyBars.size() - 1;
+        int start = Math.max(0, lastIdx - STARTER_PULLBACK_HIGH_LOOKBACK);
+        for (int i = start; i < lastIdx; i++) {
+            NormalizedBarDto bar = dailyBars.get(i);
+            if (bar != null && bar.high() != null && bar.high().compareTo(dailyClose) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 保留原始高精度供 0.40 門檻比較，避免 0.39996 四捨五入誤判通過。 */
+    private BigDecimal computeClosePosition(NormalizedBarDto bar) {
+        if (bar == null || bar.high() == null || bar.low() == null || bar.close() == null) {
+            return null;
+        }
+        BigDecimal range = bar.high().subtract(bar.low(), MC);
+        if (range.signum() <= 0) {
+            return null;
+        }
+        return bar.close().subtract(bar.low(), MC).max(BigDecimal.ZERO).divide(range, MC);
+    }
+
+    private record AnchorCandidate(String name, BigDecimal price, BigDecimal distanceRatio) {}
 
     private List<SummaryFlagDto> buildRiskFlags(
             String verdict,
@@ -713,7 +1209,9 @@ public class ValuationSummaryCalculator {
             Boolean aboveSma200,
             boolean eventGateBlocked,
             LocalDate nextBlockingEventDate,
-            boolean stopBreachedOrReclaim) {
+            boolean stopBreachedOrReclaim,
+            MacroCautionDto macroCaution,
+            BreakoutDiagnosisDto primaryDiagnosis) {
         List<SummaryFlagDto> candidates = new ArrayList<>();
 
         if (eventGateBlocked) {
@@ -722,6 +1220,27 @@ public class ValuationSummaryCalculator {
                 params.put("eventDate", nextBlockingEventDate.toString());
             }
             candidates.add(new SummaryFlagDto("EARNINGS_IMMINENT_BLOCK", "HIGH", params));
+        }
+        if (macroCaution != null && macroCaution.marketRegime() != null
+                && (macroCaution.marketRegime() == MarketRegime.PANIC
+                || macroCaution.marketRegime() == MarketRegime.BEAR
+                || macroCaution.marketRegime() == MarketRegime.CORRECTION)) {
+            String sev = macroCaution.marketRegime() == MarketRegime.CORRECTION ? "MEDIUM" : "HIGH";
+            candidates.add(new SummaryFlagDto("MARKET_REGIME_HEADWIND", sev,
+                    Map.of("regime", macroCaution.marketRegime().name())));
+        }
+        if (macroCaution != null && (macroCaution.triggerCodes().contains("VIX_ELEVATED")
+                || macroCaution.triggerCodes().contains("TREASURY_10Y_SURGE_20P"))) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (macroCaution.vixClose() != null) params.put("vixClose", macroCaution.vixClose());
+            if (macroCaution.tenYearChange20() != null) params.put("tenYearChange20", macroCaution.tenYearChange20());
+            candidates.add(new SummaryFlagDto("MACRO_VOLATILITY_OR_RATE_STRESS", "MEDIUM", params));
+        }
+        if (primaryDiagnosis != null && primaryDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (primaryDiagnosis.breachDate() != null) params.put("breachDate", primaryDiagnosis.breachDate().toString());
+            if (primaryDiagnosis.rvolAtBreach() != null) params.put("rvol", primaryDiagnosis.rvolAtBreach());
+            candidates.add(new SummaryFlagDto("SUPPORT_HIGH_RISK_BREAKDOWN", "HIGH", params));
         }
         if (stopBreachedOrReclaim) {
             candidates.add(new SummaryFlagDto("PROTECTIVE_STOP_OR_RECLAIM_PENDING", "HIGH", Map.of()));
@@ -799,13 +1318,36 @@ public class ValuationSummaryCalculator {
 
     private List<WatchItemDto> buildWatchItems(
             String verdict,
+            String stance,
             String fundamentalBacking,
             boolean forwardValueTrap,
             FairValueBandDto band,
             LevelZoneDto supportZone,
             LocalDate nextBlockingEventDate,
-            boolean stopBreachedOrReclaim) {
+            boolean stopBreachedOrReclaim,
+            MarketRegime marketRegime,
+            String rightSideConfirmationBasis,
+            TrendPullbackStarterDto starter) {
         List<WatchItemDto> items = new ArrayList<>();
+        if (starter != null && starter.eligible()) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("anchor", starter.matchedAnchor());
+            params.put("anchorPrice", starter.anchorPrice());
+            params.put("suggestedStop", starter.suggestedStop());
+            params.put("positionFraction", starter.positionFraction());
+            if (band.currency() != null) params.put("currency", band.currency());
+            items.add(new WatchItemDto("WATCH_TREND_PULLBACK_STARTER", params));
+        }
+        if (marketRegime == MarketRegime.CORRECTION && rightSideConfirmationBasis != null
+                && "WATCH_PULLBACK_TO_BAND".equals(stance)) {
+            items.add(new WatchItemDto("WATCH_CORRECTION_RIGHT_SIDE", Map.of(
+                    "basis", rightSideConfirmationBasis,
+                    "positionScale", MACRO_POSITION_SCALE
+            )));
+        }
+        if ("WAIT_FOR_MARKET_STABILIZATION".equals(stance) && marketRegime != null) {
+            items.add(new WatchItemDto("WATCH_MARKET_STABILIZATION", Map.of("regime", marketRegime.name())));
+        }
         if (band.low() != null && band.currency() != null) {
             items.add(new WatchItemDto("WATCH_REFERENCE_LOW_BAND", Map.of(
                     "priceLow", band.low(),
@@ -848,26 +1390,109 @@ public class ValuationSummaryCalculator {
         return null;
     }
 
-    private BigDecimal extractLatestDailyClose(MetricResult<PriceStructureDto> priceStructure) {
+    private List<NormalizedBarDto> extractDailyBars(MetricResult<PriceStructureDto> priceStructure) {
         if (priceStructure == null || priceStructure.status() != MetricStatus.AVAILABLE || priceStructure.value() == null) {
-            return null;
+            return List.of();
         }
         for (TimeframeStructureDto tf : priceStructure.value().timeframes()) {
             if (tf != null && tf.timeframe() == AnalysisTimeframe.DAILY && !tf.bars().isEmpty()) {
-                NormalizedBarDto last = tf.bars().getLast();
-                return last == null ? null : last.close();
+                return tf.bars();
             }
         }
-        return null;
+        return List.of();
+    }
+
+    private BigDecimal extractLatestDailyClose(MetricResult<PriceStructureDto> priceStructure) {
+        List<NormalizedBarDto> bars = extractDailyBars(priceStructure);
+        return bars.isEmpty() || bars.getLast() == null ? null : bars.getLast().close();
+    }
+
+    private LocalDate extractLatestDailySession(MetricResult<PriceStructureDto> priceStructure) {
+        List<NormalizedBarDto> bars = extractDailyBars(priceStructure);
+        return bars.isEmpty() || bars.getLast() == null ? null : bars.getLast().sessionDate();
     }
 
     private BigDecimal extractSma200(MetricResult<MarketContextDto> marketContext) {
+        return extractIndicator(marketContext, "SMA200");
+    }
+
+    private BigDecimal extractIndicator(MetricResult<MarketContextDto> marketContext, String code) {
         if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE
                 || marketContext.value() == null || marketContext.value().momentumDetail() == null) {
             return null;
         }
-        MetricResult<BigDecimal> sma200 = marketContext.value().momentumDetail().indicators().get("SMA200");
-        return val(sma200);
+        return val(marketContext.value().momentumDetail().indicators().get(code));
+    }
+
+    private BigDecimal extractEarningsAvwap(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE
+                || marketContext.value() == null || marketContext.value().volume() == null) {
+            return null;
+        }
+        return val(marketContext.value().volume().earningsAnchoredVwap());
+    }
+
+    private BigDecimal extractRvol20(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE || marketContext.value() == null) {
+            return null;
+        }
+        if (marketContext.value().volume() != null) {
+            BigDecimal v = val(marketContext.value().volume().rvol20());
+            if (v != null) return v;
+        }
+        if (marketContext.value().momentum() != null) {
+            return val(marketContext.value().momentum().volumeVs20Day());
+        }
+        return null;
+    }
+
+    private MarketRegime extractMarketRegime(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE
+                || marketContext.value() == null || marketContext.value().market() == null
+                || marketContext.value().market().status() != MetricStatus.AVAILABLE
+                || marketContext.value().market().value() == null) {
+            return null;
+        }
+        MarketRegime regime = marketContext.value().market().value().regime();
+        return regime == MarketRegime.UNAVAILABLE ? null : regime;
+    }
+
+    private BigDecimal extractVixClose(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE || marketContext.value() == null) {
+            return null;
+        }
+        return val(marketContext.value().vixClose());
+    }
+
+    private BigDecimal extractTenYearChange20(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE
+                || marketContext.value() == null || marketContext.value().treasury() == null) {
+            return null;
+        }
+        return val(marketContext.value().treasury().tenYearChange20());
+    }
+
+    private BreakoutDiagnosisDto extractPrimaryDiagnosis(MetricResult<SupportResistanceDto> supportResistance) {
+        if (supportResistance == null || supportResistance.status() != MetricStatus.AVAILABLE
+                || supportResistance.value() == null) {
+            return null;
+        }
+        BreakoutDiagnosisDto diag = supportResistance.value().breakoutDiagnosis();
+        return diag != null && diag.diagnosis() != BreakoutDiagnosis.NONE ? diag : null;
+    }
+
+    private BreakoutDiagnosisDto findDiagnosisForZone(MetricResult<SupportResistanceDto> supportResistance, LevelZoneDto zone) {
+        if (supportResistance == null || supportResistance.status() != MetricStatus.AVAILABLE
+                || supportResistance.value() == null || zone == null) {
+            return null;
+        }
+        for (BreakoutDiagnosisDto diag : supportResistance.value().zoneDiagnoses()) {
+            if (diag != null && diag.matchesZone(zone)) {
+                return diag;
+            }
+        }
+        BreakoutDiagnosisDto primary = supportResistance.value().breakoutDiagnosis();
+        return primary != null && primary.matchesZone(zone) ? primary : null;
     }
 
     private PlanConstraintDto extractConstraint(MetricResult<MarketContextDto> marketContext) {

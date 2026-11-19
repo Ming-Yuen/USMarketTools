@@ -3,6 +3,8 @@ package com.ykm.stock.analytics.service.analysis.calculator;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisTimeframe;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosis;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryMethod;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EventRiskDto;
@@ -12,6 +14,8 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsD
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketRegime;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketSnapshotDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MomentumAnalysisDto;
@@ -31,6 +35,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TreasuryContextDt
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TrendState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationReferenceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.VolumeAnalysisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
@@ -39,6 +44,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -352,6 +358,457 @@ class ValuationSummaryCalculatorTests {
                 structure(TrendState.UPTREND, "160"), null, confirmPendingPlans,
                 marketContext("4.10", "150", EntryPermission.ALLOW, false)).value();
         assertThat(forwardTrapWithConfirmPending.stance()).isEqualTo("CAUTION_VALUE_TRAP");
+    }
+
+    @Test
+    void marketRegimeHeadwindDowngradesUndervaluedAndPreservesFairValueBandAndMacroCautionTriggers() {
+        ValuationReferenceDto hist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("18"), new BigDecimal("22"), new BigDecimal("26"),
+                new BigDecimal("180"), new BigDecimal("260"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("15"), new BigDecimal("5"), new BigDecimal("220"));
+        ValuationResultDto deepUnder = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("150"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        FundamentalSnapshotDto strong = fundamentals(false, "0.18", "0.22", "0.20", "0.95", "0.24", "0.18", "0.40", "0.06", "0.065");
+        LevelZoneDto weeklySupport = new LevelZoneDto("ZW", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("70"), CLOSE, 2, CLOSE, ZoneState.ACTIVE, new BigDecimal("149"), new BigDecimal("5"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("70"), 1, CLOSE, null, List.of(), List.of(), 2, 0, 2, null, null, RetestState.NONE, true, List.of());
+        MetricResult<SupportResistanceDto> sr = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(weeklySupport), List.of(), List.of(), List.of()));
+
+        // 1) BEAR 與 PANIC 一票降級：即使 DEEP_UNDERVALUED + STRONG + 強支撐，必須輸出 WAIT_FOR_MARKET_STABILIZATION，且 [L,M,H] 不變
+        for (MarketRegime badRegime : List.of(MarketRegime.BEAR, MarketRegime.PANIC)) {
+            InvestmentSummaryDto res = calculator.calculate(
+                    AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                    structure(TrendState.UPTREND, "150"), sr, null,
+                    richMarketContext(badRegime, "4.10", null, null, "140", null, null, null, null, null,
+                            EntryPermission.BLOCK, List.of("MARKET_" + badRegime.name()), false)).value();
+            assertThat(res.verdict()).isEqualTo("DEEP_UNDERVALUED");
+            assertThat(res.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+            assertThat(res.fairValue().low()).isEqualByComparingTo("180");
+            assertThat(res.fairValue().mid()).isEqualByComparingTo("220");
+            assertThat(res.fairValue().high()).isEqualByComparingTo("260");
+            assertThat(res.macroCaution().active()).isTrue();
+            assertThat(res.macroCaution().suggestedMarginBufferMin()).isEqualByComparingTo("0.05");
+            assertThat(res.macroCaution().suggestedMarginBufferMax()).isEqualByComparingTo("0.10");
+            assertThat(res.macroCaution().suggestedPositionScale()).isEqualByComparingTo("0.50");
+            assertThat(res.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code).contains("MARKET_REGIME_HEADWIND");
+        }
+
+        // 2) BEAR + WEAKENING 保留 CAUTION_VALUE_TRAP 並並列宏觀警戒橫幅
+        FundamentalSnapshotDto weak = fundamentals(false, "-0.15", "-0.30", null, null, "0.02", "-0.02", "4.50", "-0.01", "0.03");
+        InvestmentSummaryDto bearTrap = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, weak, null,
+                structure(TrendState.UPTREND, "150"), sr, null,
+                richMarketContext(MarketRegime.BEAR, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.BLOCK, List.of("MARKET_BEAR"), false)).value();
+        assertThat(bearTrap.stance()).isEqualTo("CAUTION_VALUE_TRAP");
+        assertThat(bearTrap.macroCaution().active()).isTrue();
+
+        // 3) CORRECTION：一般回踩 -> WAIT_FOR_MARKET_STABILIZATION；同區 SPRING_RECLAIMED -> WATCH_PULLBACK_TO_BAND；
+        //    CORRECTION + CPI + 僅 Spring -> WAIT_FOR_MARKET_STABILIZATION；CORRECTION + CPI + CONFIRMED_RETEST -> WATCH_PULLBACK_TO_BAND
+        InvestmentSummaryDto corrPullback = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), sr, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
+        assertThat(corrPullback.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+
+        BreakoutDiagnosisDto springOnZw = new BreakoutDiagnosisDto(
+                BreakoutDiagnosis.SPRING_RECLAIMED, "ZW", 1, 1, AnalysisTimeframe.WEEKLY,
+                new BigDecimal("146"), new BigDecimal("152"), DAY.minusDays(2), DAY.minusDays(1), DAY.plusDays(4), DAY,
+                2, new BigDecimal("0.8"), new BigDecimal("1.5"), null, null, null, null, null, null,
+                List.of("SPRING_RECLAIMED"), List.of());
+        MetricResult<SupportResistanceDto> srSpring = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(weeklySupport), List.of(), List.of(), List.of(), springOnZw, List.of(springOnZw)));
+        InvestmentSummaryDto corrSpring = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srSpring, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
+        assertThat(corrSpring.stance()).isEqualTo("WATCH_PULLBACK_TO_BAND");
+        assertThat(corrSpring.rightSideConfirmationBasis()).isEqualTo("SPRING_RECLAIMED");
+
+        InvestmentSummaryDto corrCpiSpring = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srSpring, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION", "MARKET_CORRECTION"), false)).value();
+        assertThat(corrCpiSpring.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+
+        LevelZoneDto retestZone = new LevelZoneDto("ZW", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("70"), CLOSE, 2, CLOSE, ZoneState.ACTIVE, new BigDecimal("149"), new BigDecimal("5"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("70"), 2, CLOSE, new BigDecimal("150"), List.of(), List.of(), 2, 0, 2, null, null, RetestState.SUCCEEDED, true, List.of());
+        MetricResult<SupportResistanceDto> srRetest = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(retestZone), List.of(), List.of(), List.of()));
+        InvestmentSummaryDto corrCpiRetest = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srRetest, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION", "MARKET_CORRECTION"), false)).value();
+        assertThat(corrCpiRetest.stance()).isEqualTo("WATCH_PULLBACK_TO_BAND");
+        assertThat(corrCpiRetest.rightSideConfirmationBasis()).isEqualTo("CONFIRMED_RETEST");
+
+        // 4) regime 缺失但 VIX 恰 25.0 或 10Y 變動恰 +0.30 皆獨立觸發 MacroCaution；STALE VIX 不觸發
+        InvestmentSummaryDto vix25Only = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), sr, null,
+                richMarketContext(null, "4.10", null, MetricResult.available(new BigDecimal("25.0")), "140", null, null, null, null, null,
+                        EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false)).value();
+        assertThat(vix25Only.macroCaution().active()).isTrue();
+        assertThat(vix25Only.macroCaution().triggerCodes()).containsExactly("VIX_ELEVATED");
+
+        InvestmentSummaryDto rate30Only = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), sr, null,
+                richMarketContext(null, "4.50", MetricResult.available(new BigDecimal("0.30")),
+                        MetricResult.unavailable(MetricStatus.STALE, AnalysisReasonDto.of("VIX_CLOSE_STALE", "MARKET", "stale")),
+                        "140", null, null, null, null, null,
+                        EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false)).value();
+        assertThat(rate30Only.macroCaution().active()).isTrue();
+        assertThat(rate30Only.macroCaution().triggerCodes()).containsExactly("TREASURY_10Y_SURGE_20P");
+    }
+
+    @Test
+    void trendPullbackStarterHandlesForwardPegHyperGrowthCapConsensusMissingAndBoundaries() {
+        ValuationReferenceDto hist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("18"), new BigDecimal("22"), new BigDecimal("26"),
+                new BigDecimal("150"), new BigDecimal("200"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("28"), new BigDecimal("85"), new BigDecimal("175"));
+        // 現價 210（位於 [200, 230] -> MODERATELY_OVERVALUED）
+        ValuationResultDto modOver = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("210"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        // 現價 240（> 200 * 1.15 = 230 -> OVERVALUED_RISK）
+        ValuationResultDto overRisk = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("240"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        FundamentalSnapshotDto strongHighGrowth = fundamentals(false, "0.28", "0.35", "0.30", "1.10", "0.26", "0.22", "-0.30", "0.04", "0.045");
+        MetricResult<PriceStructureDto> pullbackStructure = pullbackDailyStructure(TrendState.UPTREND, "220", "211", "209", "212", "208", "210");
+        MetricResult<MarketContextDto> riskOnCtx = richMarketContext(MarketRegime.RISK_ON, "4.10", null,
+                MetricResult.available(new BigDecimal("16")), "185", "208", "207", "206", "5", "0.85",
+                EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false);
+        MetricResult<BigDecimal> na = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("NA", "TEST", "NA"));
+
+        // 1) Forward PEG = 1.50（含等號邊界）+ RISK_ON + 回踩 EMA21 (208 -> +0.96%) + 縮量 RVOL 0.85 -> TREND_PULLBACK_STARTER (1/3)
+        ForwardMetrics peg150 = new ForwardMetrics(DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("28")), na, MetricResult.available(new BigDecimal("1.50")), "FORWARD_FY1_VS_TTM",
+                MetricResult.available(new BigDecimal("0.25")), null, null, null, null, null, na, na, na, na);
+        InvestmentSummaryDto starterOk = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg150),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(starterOk.verdict()).isEqualTo("MODERATELY_OVERVALUED");
+        assertThat(starterOk.stance()).isEqualTo("TREND_PULLBACK_STARTER");
+        assertThat(starterOk.trendPullbackStarter().eligible()).isTrue();
+        assertThat(starterOk.trendPullbackStarter().matchedAnchor()).isEqualTo("EMA21");
+        assertThat(starterOk.trendPullbackStarter().positionFraction()).isEqualTo("1/3");
+        assertThat(starterOk.trendPullbackStarter().suggestedStop()).isEqualByComparingTo("205.5000");
+
+        // 2) 中性市但 VIX=26 觸發宏觀警戒 -> 試單倉位明示減半為 1/6
+        MetricResult<MarketContextDto> neutralHighVix = richMarketContext(MarketRegime.NEUTRAL, "4.10", null,
+                MetricResult.available(new BigDecimal("26")), "185", "208", "207", "206", "5", "0.85",
+                EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false);
+        InvestmentSummaryDto starterHalved = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg150),
+                pullbackStructure, null, null, neutralHighVix).value();
+        assertThat(starterHalved.stance()).isEqualTo("TREND_PULLBACK_STARTER");
+        assertThat(starterHalved.trendPullbackStarter().positionFraction()).isEqualTo("1/6");
+
+        // 3) Forward PEG = 1.51 -> 維持 HOLD_TRAIL_NO_CHASE
+        ForwardMetrics peg151 = new ForwardMetrics(DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("32")), na, MetricResult.available(new BigDecimal("1.51")), "FORWARD_FY1_VS_TTM",
+                MetricResult.available(new BigDecimal("0.21")), null, null, null, null, null, na, na, na, na);
+        InvestmentSummaryDto pegTooHigh = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg151),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(pegTooHigh.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(pegTooHigh.trendPullbackStarter().eligible()).isFalse();
+        assertThat(pegTooHigh.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("FORWARD_PEG_ABOVE_THRESHOLD");
+        assertThat(pegTooHigh.trendPullbackStarter().suggestedStop()).isNull();
+        assertThat(pegTooHigh.trendPullbackStarter().positionFraction()).isNull();
+
+        // 4) FORWARD_EPS_GROWTH_ABOVE_PEG_CAP + Forward P/E = 35.0 + 真高成長 -> 放行；P/E = 35.1 或低基期 revYoy = 0.05 -> 擋下
+        MetricResult<BigDecimal> pegCapNa = MetricResult.unavailable(MetricStatus.NOT_APPLICABLE,
+                AnalysisReasonDto.of("FORWARD_EPS_GROWTH_ABOVE_PEG_CAP", "FORWARD_VALUATION", "超過 100% 上限"));
+        ForwardMetrics hyperPe35 = new ForwardMetrics(DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("35.0")), na, pegCapNa, null,
+                MetricResult.available(new BigDecimal("1.20")), null, null, null, null, null, na, na, na, na);
+        InvestmentSummaryDto hyperPass = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), hyperPe35),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(hyperPass.stance()).isEqualTo("TREND_PULLBACK_STARTER");
+        assertThat(hyperPass.trendPullbackStarter().forwardGrowthBasis()).isEqualTo("HYPER_GROWTH_FORWARD_PE");
+
+        ForwardMetrics hyperPe351 = new ForwardMetrics(DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("35.1")), na, pegCapNa, null,
+                MetricResult.available(new BigDecimal("1.20")), null, null, null, null, null, na, na, na, na);
+        InvestmentSummaryDto hyperFailPe = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), hyperPe351),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(hyperFailPe.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(hyperFailPe.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("FORWARD_PE_ABOVE_HYPER_GROWTH_CAP");
+
+        FundamentalSnapshotDto lowBaseStrong = fundamentals(false, "0.05", "0.35", "0.10", "1.00", "0.20", "0.15", "0.50", "0.04", "0.045");
+        InvestmentSummaryDto hyperLowBase = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, lowBaseStrong, new FutuObservationsDto(null, List.of(), hyperPe35),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(hyperLowBase.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(hyperLowBase.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("HYPER_GROWTH_LOW_BASE_UNVERIFIED");
+
+        // 5) 缺少年度共識 -> 維持 HOLD_TRAIL_NO_CHASE 並保留原始原因碼
+        MetricResult<BigDecimal> noAnnual = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                AnalysisReasonDto.of("ANNUAL_EARNINGS_FORECAST_MISSING", "FORWARD_VALUATION", "缺少年度預期"));
+        ForwardMetrics missingAnnual = new ForwardMetrics(DAY, null, null, null, noAnnual, noAnnual, noAnnual, null, noAnnual,
+                null, null, null, null, null, na, na, na, na);
+        InvestmentSummaryDto noConsensus = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), missingAnnual),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(noConsensus.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(noConsensus.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("ANNUAL_EARNINGS_FORECAST_MISSING");
+
+        // 6) 跳空重挫日（前收 220 -> 今日跳空開 207 收 210，雖收紅但單日跌 -4.5%）-> 不得誤放行；OVERVALUED_RISK 維持 CAUTION_OVEREXTENSION
+        MetricResult<PriceStructureDto> gapDownStructure = pullbackDailyStructure(TrendState.UPTREND, "222", "220", "207", "211", "206", "210");
+        InvestmentSummaryDto gapDownRejected = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg150),
+                gapDownStructure, null, null, riskOnCtx).value();
+        assertThat(gapDownRejected.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(gapDownRejected.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("TREND_PULLBACK_NOT_STABILIZED");
+
+        InvestmentSummaryDto overRiskBlocked = calculator.calculate(
+                AnalysisHorizon.SWING, overRisk, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg150),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(overRiskBlocked.verdict()).isEqualTo("OVERVALUED_RISK");
+        assertThat(overRiskBlocked.stance()).isEqualTo("CAUTION_OVEREXTENSION");
+
+        // 7) 金融股 ROE=11%（雖獲 STRONG 評級，但低於高成長豁免統一 12% 門檻）與平盤十字收最低（open==close==low）皆須擋下
+        FundamentalSnapshotDto bankRoe11 = fundamentals(true, "0.25", "0.35", "0.25", "1.00", "0.11", null, null, null, "0.06");
+        InvestmentSummaryDto bankRoe11Summary = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, bankRoe11, new FutuObservationsDto(null, List.of(), hyperPe35),
+                pullbackStructure, null, null, riskOnCtx).value();
+        assertThat(bankRoe11Summary.fundamentalBacking()).isEqualTo("STRONG");
+        assertThat(bankRoe11Summary.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(bankRoe11Summary.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("HYPER_GROWTH_LOW_BASE_UNVERIFIED");
+
+        MetricResult<PriceStructureDto> dojiAtLowStructure = pullbackDailyStructure(TrendState.UPTREND, "220", "211", "210", "214", "210", "210");
+        InvestmentSummaryDto dojiBlocked = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, new FutuObservationsDto(null, List.of(), peg150),
+                dojiAtLowStructure, null, null, riskOnCtx).value();
+        assertThat(dojiBlocked.stance()).isEqualTo("HOLD_TRAIL_NO_CHASE");
+        assertThat(dojiBlocked.trendPullbackStarter().ineligibleReasonCode()).isEqualTo("TREND_PULLBACK_NOT_STABILIZED");
+    }
+
+    @Test
+    void expiredRetestZoneIsolationAndFairUpperMixedCorrectionEventGatesAreEnforced() {
+        ValuationReferenceDto hist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("18"), new BigDecimal("22"), new BigDecimal("26"),
+                new BigDecimal("180"), new BigDecimal("260"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("16"), new BigDecimal("10"), new BigDecimal("220"));
+        ValuationResultDto deepUnder = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("150"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        ValuationResultDto fairUpper = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("240"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        FundamentalSnapshotDto strong = fundamentals(false, "0.18", "0.22", "0.20", "0.95", "0.24", "0.18", "0.40", "0.06", "0.065");
+        FundamentalSnapshotDto mixed = fundamentals(false, "0.04", "0.02", null, null, "0.09", "0.05", "1.50", "0.03", "0.04");
+
+        // 1) 距離第四、數週前（21 天前）已過期之 retest 區域即使不在 plans 前三名中，於 CORRECTION+CPI 仍須降級 WAIT_FOR_MARKET_STABILIZATION
+        Instant threeWeeksAgo = CLOSE.minusSeconds(21L * 86400);
+        LevelZoneDto expiredRetestZone = new LevelZoneDto("Z4_EXPIRED", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("85"), threeWeeksAgo, 2, threeWeeksAgo, ZoneState.ACTIVE, new BigDecimal("149"), new BigDecimal("5"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("85"), 2, threeWeeksAgo, new BigDecimal("150"), List.of(), List.of(),
+                2, 0, 2, null, null, RetestState.SUCCEEDED, true, List.of());
+        MetricResult<SupportResistanceDto> srExpired = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(expiredRetestZone), List.of(), List.of(), List.of()));
+        InvestmentSummaryDto expiredRetestSummary = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srExpired, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION", "MARKET_CORRECTION"), false)).value();
+        assertThat(expiredRetestSummary.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+        assertThat(expiredRetestSummary.rightSideConfirmationBasis()).isNull();
+
+        // 2) 選定健康支撐 ZB（本身方案 WAITING_TRIGGER 無破位）時，他區 ZA 的 PROTECTIVE_STOP_BREACHED 不得壓掉 ZB
+        LevelZoneDto zoneB = new LevelZoneDto("ZB", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("80"), CLOSE, 2, CLOSE, ZoneState.ACTIVE, new BigDecimal("149"), new BigDecimal("5"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("80"), 1, CLOSE, null, List.of(), List.of(), 2, 0, 2, null, null, RetestState.NONE, true, List.of());
+        MetricResult<SupportResistanceDto> srB = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(zoneB), List.of(), List.of(), List.of()));
+        TradePlanDto planABreached = new TradePlanDto("PA", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, EntryMethod.ZONE_LIMIT,
+                null, null, List.of(), MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TP", "NA")),
+                TradePlanStatus.INVALIDATED, List.of(AnalysisReasonDto.of("PROTECTIVE_STOP_BREACHED", "TRADE_PLAN", "A 區破止損")),
+                "ZA", 1, AnalysisTimeframe.WEEKLY, CLOSE, null, List.of());
+        TradePlanDto planBHealthy = new TradePlanDto("PB", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, EntryMethod.ZONE_LIMIT,
+                null, null, List.of(), MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TP", "NA")),
+                TradePlanStatus.WAITING_TRIGGER, List.of(AnalysisReasonDto.of("NO_FIXED_TARGET", "TRADE_PLAN", "無上方固定目標")),
+                "ZB", 1, AnalysisTimeframe.WEEKLY, CLOSE, null, List.of());
+        MetricResult<TradePlanResultDto> mixedPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(planABreached, planBHealthy), new BigDecimal("150"), DAY, null, List.of(), List.of(), true));
+        InvestmentSummaryDto zoneBIsolated = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srB, mixedPlans,
+                richMarketContext(MarketRegime.RISK_ON, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false)).value();
+        assertThat(zoneBIsolated.technicalSupportZoneId()).isEqualTo("ZB");
+        assertThat(zoneBIsolated.stance()).isEqualTo("ACCUMULATE_AT_SUPPORT");
+
+        // 3) FAIR_UPPER + MIXED 遇 CORRECTION -> WAIT_FOR_MARKET_STABILIZATION；遇財報 BLOCK -> WAIT_FOR_STABILIZATION
+        InvestmentSummaryDto fairUpperCorr = calculator.calculate(
+                AnalysisHorizon.POSITION, fairUpper, null, mixed, null,
+                structure(TrendState.UPTREND, "240"), null, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "200", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
+        assertThat(fairUpperCorr.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+
+        InvestmentSummaryDto fairUpperEarnings = calculator.calculate(
+                AnalysisHorizon.POSITION, fairUpper, null, mixed, null,
+                structure(TrendState.UPTREND, "240"), null, null,
+                richMarketContext(MarketRegime.RISK_ON, "4.10", null, null, "200", null, null, null, null, null,
+                        EntryPermission.BLOCK, List.of("EARNINGS_EVENT_WINDOW"), true)).value();
+        assertThat(fairUpperEarnings.stance()).isEqualTo("WAIT_FOR_STABILIZATION");
+
+        // 4) 第四支撐區 Z4 不在 TradePlanService 前三名計畫內：
+        //    (a) Z4 自身無失效，ZA 失效 -> ZA 不得壓掉 Z4，仍為 ACCUMULATE_AT_SUPPORT；
+        //    (b) Z4 自身曾連續兩日收於凍結閾值下（146 - 0.25*4 = 145）今日站回 -> 摘要偵測自身失效，絕不誤採 Z4 或其 Spring！
+        LevelZoneDto zone4 = new LevelZoneDto("Z4_STRONG", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("90"), CLOSE.minusSeconds(10 * 86400L), 2, CLOSE.minusSeconds(10 * 86400L), ZoneState.ACTIVE,
+                new BigDecimal("149"), new BigDecimal("4"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("90"), 1,
+                CLOSE.minusSeconds(10 * 86400L), null, List.of(), List.of(), 2, 0, 2, null, null, RetestState.NONE, true, List.of());
+        MetricResult<SupportResistanceDto> srZ4 = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(zone4), List.of(), List.of(), List.of()));
+        MetricResult<TradePlanResultDto> onlyOtherPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(planABreached), new BigDecimal("150"), DAY, null, List.of(), List.of(), true));
+        InvestmentSummaryDto z4Healthy = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                structure(TrendState.UPTREND, "150"), srZ4, onlyOtherPlans,
+                richMarketContext(MarketRegime.RISK_ON, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false)).value();
+        assertThat(z4Healthy.technicalSupportZoneId()).isEqualTo("Z4_STRONG");
+        assertThat(z4Healthy.stance()).isEqualTo("ACCUMULATE_AT_SUPPORT");
+
+        // Z4 自身曾於 2026-11-10 與 2026-11-11 連續兩日收 144.5 (< 145) 失效，即使 2026-11-13 站回 150 亦不可選入；
+        // 且即使 tradePlans 裡沒有任何他區破位（僅無破位之其他計畫或空清單），最後候選支撐因自身失效被排除後仍須落回 WAIT_FOR_STABILIZATION
+        NormalizedBarDto b1 = new NormalizedBarDto(LocalDate.of(2026, 11, 10), new BigDecimal("145"), new BigDecimal("145"), new BigDecimal("144"), new BigDecimal("144.5"),
+                MetricResult.available(BigDecimal.ONE), Instant.parse("2026-11-10T14:30:00Z"), Instant.parse("2026-11-10T21:00:00Z"),
+                Instant.parse("2026-11-10T21:00:00Z"), Instant.parse("2026-11-10T21:00:00Z"), null, "B1");
+        NormalizedBarDto b2 = new NormalizedBarDto(LocalDate.of(2026, 11, 11), new BigDecimal("144.5"), new BigDecimal("145"), new BigDecimal("144"), new BigDecimal("144.5"),
+                MetricResult.available(BigDecimal.ONE), Instant.parse("2026-11-11T14:30:00Z"), Instant.parse("2026-11-11T21:00:00Z"),
+                Instant.parse("2026-11-11T21:00:00Z"), Instant.parse("2026-11-11T21:00:00Z"), null, "B1");
+        NormalizedBarDto b3 = new NormalizedBarDto(DAY, new BigDecimal("149"), new BigDecimal("151"), new BigDecimal("148"), new BigDecimal("150"),
+                MetricResult.available(BigDecimal.ONE), Instant.parse("2026-11-13T14:30:00Z"), CLOSE, CLOSE, CLOSE, null, "B1");
+        MetricResult<StructureTrendDto> upTrend = MetricResult.available(
+                new StructureTrendDto(TrendState.UPTREND, CLOSE, PriceRelation.HH, PriceRelation.HL, List.of(), CLOSE));
+        MetricResult<PriceStructureDto> invalidatedDailyStruct = MetricResult.available(new PriceStructureDto("FIGI", null, DAY, List.of(
+                new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(b1, b2, b3), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of()),
+                new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(b3), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of())
+        ), List.of(), List.of()));
+        MetricResult<TradePlanResultDto> nonBreachedOtherPlans = MetricResult.available(
+                new TradePlanResultDto(List.of(planBHealthy), new BigDecimal("150"), DAY, null, List.of(), List.of(), true));
+        InvestmentSummaryDto z4SelfInvalidated = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null,
+                invalidatedDailyStruct, srZ4, nonBreachedOtherPlans,
+                richMarketContext(MarketRegime.RISK_ON, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false)).value();
+        assertThat(z4SelfInvalidated.technicalSupportZoneId()).isNull();
+        assertThat(z4SelfInvalidated.stance()).isEqualTo("WAIT_FOR_STABILIZATION");
+        assertThat(z4SelfInvalidated.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("PROTECTIVE_STOP_OR_RECLAIM_PENDING");
+
+        // 5) 精確 NYSE 交易日曆 5 交易日視窗（2012-10-25 跨桑迪休市 10-29/10-30 -> 第 5 交易日為 2012-11-05，相隔 11 日曆日仍有效；11-06 過期）
+        LocalDate sandyDay5 = LocalDate.of(2012, 11, 5);
+        LocalDate sandyDay6 = LocalDate.of(2012, 11, 6);
+        Instant sandyRetestAt = Instant.parse("2012-10-25T20:00:00Z");
+        LevelZoneDto sandyZone = new LevelZoneDto("Z_SANDY", AnalysisTimeframe.WEEKLY, new BigDecimal("146"), new BigDecimal("152"),
+                ZoneRole.SUPPORT, new BigDecimal("85"), sandyRetestAt, 2, sandyRetestAt, ZoneState.ACTIVE, new BigDecimal("149"), new BigDecimal("5"),
+                1, ZoneStrengthLabel.HIGH, new BigDecimal("85"), 2, sandyRetestAt, new BigDecimal("150"), List.of(), List.of(),
+                2, 0, 2, null, null, RetestState.SUCCEEDED, true, List.of());
+        MetricResult<SupportResistanceDto> srSandy = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(sandyZone), List.of(), List.of(), List.of()));
+        NormalizedBarDto barDay5 = new NormalizedBarDto(sandyDay5, new BigDecimal("150"), new BigDecimal("151"), new BigDecimal("149"), new BigDecimal("150"),
+                MetricResult.available(BigDecimal.ONE), Instant.parse("2012-11-05T14:30:00Z"), Instant.parse("2012-11-05T21:00:00Z"),
+                Instant.parse("2012-11-05T21:00:00Z"), Instant.parse("2012-11-05T21:00:00Z"), null, "B1");
+        NormalizedBarDto barDay6 = new NormalizedBarDto(sandyDay6, new BigDecimal("150"), new BigDecimal("151"), new BigDecimal("149"), new BigDecimal("150"),
+                MetricResult.available(BigDecimal.ONE), Instant.parse("2012-11-06T14:30:00Z"), Instant.parse("2012-11-06T21:00:00Z"),
+                Instant.parse("2012-11-06T21:00:00Z"), Instant.parse("2012-11-06T21:00:00Z"), null, "B1");
+        MetricResult<PriceStructureDto> structDay5 = MetricResult.available(new PriceStructureDto("FIGI", null, sandyDay5, List.of(
+                new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(barDay5), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of()),
+                new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(barDay5), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of())
+        ), List.of(), List.of()));
+        MetricResult<PriceStructureDto> structDay6 = MetricResult.available(new PriceStructureDto("FIGI", null, sandyDay6, List.of(
+                new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(barDay5, barDay6), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of()),
+                new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(barDay6), null, List.of(), List.of(), null, null, upTrend, upTrend, List.of(), List.of())
+        ), List.of(), List.of()));
+        InvestmentSummaryDto sandyValid = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null, structDay5, srSandy, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
+        assertThat(sandyValid.stance()).isEqualTo("WATCH_PULLBACK_TO_BAND");
+        assertThat(sandyValid.rightSideConfirmationBasis()).isEqualTo("CONFIRMED_RETEST");
+
+        InvestmentSummaryDto sandyExpired = calculator.calculate(
+                AnalysisHorizon.POSITION, deepUnder, null, strong, null, structDay6, srSandy, null,
+                richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
+                        EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
+        assertThat(sandyExpired.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+    }
+
+    private MetricResult<PriceStructureDto> pullbackDailyStructure(
+            TrendState weeklyState, String highRecent, String prevClose, String open, String high, String low, String close) {
+        NormalizedBarDto bar1 = new NormalizedBarDto(DAY.minusDays(3), new BigDecimal(highRecent), new BigDecimal(highRecent),
+                new BigDecimal(prevClose), new BigDecimal(prevClose), MetricResult.available(BigDecimal.ONE),
+                CLOSE.minusSeconds(259200), CLOSE.minusSeconds(259200), CLOSE.minusSeconds(259200), CLOSE.minusSeconds(259200), null, "B1");
+        NormalizedBarDto bar2 = new NormalizedBarDto(DAY.minusDays(1), new BigDecimal(prevClose), new BigDecimal(prevClose),
+                new BigDecimal(prevClose), new BigDecimal(prevClose), MetricResult.available(BigDecimal.ONE),
+                CLOSE.minusSeconds(86400), CLOSE.minusSeconds(86400), CLOSE.minusSeconds(86400), CLOSE.minusSeconds(86400), null, "B1");
+        NormalizedBarDto bar3 = new NormalizedBarDto(DAY, new BigDecimal(open), new BigDecimal(high),
+                new BigDecimal(low), new BigDecimal(close), MetricResult.available(BigDecimal.ONE),
+                CLOSE, CLOSE, CLOSE, CLOSE, null, "B1");
+        MetricResult<StructureTrendDto> trend = MetricResult.available(
+                new StructureTrendDto(weeklyState, CLOSE, PriceRelation.HH, PriceRelation.HL, List.of(), CLOSE));
+        TimeframeStructureDto daily = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar1, bar2, bar3), null, List.of(), List.of(),
+                null, null, trend, trend, List.of(), List.of());
+        TimeframeStructureDto weekly = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(bar3), null, List.of(), List.of(),
+                null, null, trend, trend, List.of(), List.of());
+        return MetricResult.available(new PriceStructureDto("FIGI", null, DAY, List.of(daily, weekly), List.of(), List.of()));
+    }
+
+    private MetricResult<MarketContextDto> richMarketContext(
+            MarketRegime regime, String tenYearPct, MetricResult<BigDecimal> tenYearChange20, MetricResult<BigDecimal> vixClose,
+            String sma200, String ema21, String sma50, String earningsAvwap, String atr14, String rvol20,
+            EntryPermission perm, List<String> constraintReasons, boolean earningsBlock) {
+        TreasuryContextDto treasury = new TreasuryContextDto(
+                MetricResult.available(new BigDecimal(tenYearPct)), null, tenYearChange20, null, List.of(), List.of());
+        Map<String, MetricResult<BigDecimal>> inds = new LinkedHashMap<>();
+        if (sma200 != null) inds.put("SMA200", MetricResult.available(new BigDecimal(sma200)));
+        if (ema21 != null) inds.put("EMA21", MetricResult.available(new BigDecimal(ema21)));
+        if (sma50 != null) inds.put("SMA50", MetricResult.available(new BigDecimal(sma50)));
+        if (atr14 != null) inds.put("ATR14", MetricResult.available(new BigDecimal(atr14)));
+        MomentumAnalysisDto detail = new MomentumAnalysisDto(inds, null, List.of());
+        MetricResult<MarketSnapshotDto> snap = regime == null ? null : MetricResult.available(
+                new MarketSnapshotDto(regime, null, null, null, DAY, CLOSE, List.of(), List.of()));
+        VolumeAnalysisDto vol = (rvol20 != null || earningsAvwap != null)
+                ? new VolumeAnalysisDto(
+                        rvol20 == null ? null : MetricResult.available(new BigDecimal(rvol20)),
+                        null, null, null, null, null, List.of(), List.of(),
+                        earningsAvwap == null ? null : DAY.minusDays(15),
+                        earningsAvwap == null ? null : DAY.minusDays(14),
+                        earningsAvwap == null ? null : MetricResult.available(new BigDecimal(earningsAvwap)),
+                        List.of())
+                : null;
+        List<EventRiskDto> evs = earningsBlock
+                ? List.of(new EventRiskDto("E1", "EARNINGS", "QUARTERLY", "Q4 Earnings", DAY.plusDays(1), null, "DATE_ONLY", CLOSE, "FUTU", true))
+                : List.of();
+        PlanConstraintDto constraint = new PlanConstraintDto(perm, constraintReasons, List.of());
+        return MetricResult.available(new MarketContextDto(null, null, snap, evs, constraint, List.of(), List.of(),
+                detail, vol, null, treasury, Map.of(), vixClose));
     }
 
     private FundamentalSnapshotDto fundamentals(

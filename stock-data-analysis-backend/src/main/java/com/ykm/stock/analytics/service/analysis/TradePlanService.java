@@ -54,22 +54,59 @@ public class TradePlanService {
                     AnalysisReasonDto.of("NO_ELIGIBLE_SUPPORT", "TRADE_PLAN", "沒有符合持有期的有效支撐。"));
         }
         List<TradePlanDto> plans = supports.stream().map(support -> {
-            java.time.Instant signalAt = support.retestState() == RetestState.SUCCEEDED && support.roleConfirmedAt() != null
-                    ? support.roleConfirmedAt() : support.confirmedAt();
-            LocalDate signalDate = signalAt == null ? priceDate : signalAt.atZone(NEW_YORK).toLocalDate();
-            LocalDate earliestExecutable = calendar.getNextTradingDay(signalDate);
-            // 舊支撐可以持續有效；5 個 session 期限只屬於已確認的短期 retest 觸發。
-            boolean shortLivedRetest = support.retestState() == RetestState.SUCCEEDED
+            BreakoutDiagnosisDto zoneDiagnosis = findZoneDiagnosis(levels, support);
+            boolean hasRetestMetadata = support.retestState() == RetestState.SUCCEEDED
                     && support.roleVersion() > 1
                     && support.roleConfirmationPrice() != null
                     && support.roleConfirmationPrice().signum() > 0;
-            LocalDate validThrough = null;
-            if (shortLivedRetest) {
-                validThrough = signalDate;
-                for (int i = 0; i < 5; i++) validThrough = calendar.getNextTradingDay(validThrough);
+            LocalDate retestSignalDate = hasRetestMetadata && support.roleConfirmedAt() != null
+                    ? support.roleConfirmedAt().atZone(NEW_YORK).toLocalDate()
+                    : (hasRetestMetadata ? priceDate : null);
+            LocalDate retestValidThrough = retestSignalDate != null ? advanceTradingDays(retestSignalDate, 5) : null;
+            boolean activeRetest = hasRetestMetadata && (retestValidThrough == null || !priceDate.isAfter(retestValidThrough));
+
+            boolean hasSpring = zoneDiagnosis != null
+                    && zoneDiagnosis.matchesZone(support)
+                    && zoneDiagnosis.diagnosis() == BreakoutDiagnosis.SPRING_RECLAIMED
+                    && zoneDiagnosis.reclaimDate() != null;
+            LocalDate springValidThrough = hasSpring
+                    ? (zoneDiagnosis.validThroughSession() != null
+                            ? zoneDiagnosis.validThroughSession()
+                            : advanceTradingDays(zoneDiagnosis.reclaimDate(), 5))
+                    : null;
+            boolean activeSpring = hasSpring && (springValidThrough == null || !priceDate.isAfter(springValidThrough));
+
+            LocalDate earliestExecutable;
+            LocalDate validThrough;
+            boolean allowConfirmedRetest;
+            java.time.Instant signalCreatedAt;
+            if (activeRetest) {
+                earliestExecutable = calendar.getNextTradingDay(retestSignalDate);
+                validThrough = retestValidThrough;
+                allowConfirmedRetest = true;
+                signalCreatedAt = support.roleConfirmedAt();
+            } else if (activeSpring) {
+                // 同區舊 retest 已過期而今日出現新 Spring：採用新 Spring 的凍結訊號日與 5 交易日視窗，且不得沿用過期 retest 繞過宏觀 CPI 限制。
+                earliestExecutable = calendar.getNextTradingDay(zoneDiagnosis.reclaimDate());
+                validThrough = springValidThrough;
+                allowConfirmedRetest = false;
+                signalCreatedAt = calendar.getSessionCloseAt(zoneDiagnosis.reclaimDate());
+            } else if (hasRetestMetadata) {
+                // 過期 retest 且無新 Spring：保留原過期期限（ENTRY_EXPIRED），不復活舊訊號。
+                earliestExecutable = calendar.getNextTradingDay(retestSignalDate);
+                validThrough = retestValidThrough;
+                allowConfirmedRetest = true;
+                signalCreatedAt = support.roleConfirmedAt();
+            } else {
+                LocalDate baseDate = support.confirmedAt() == null ? priceDate : support.confirmedAt().atZone(NEW_YORK).toLocalDate();
+                earliestExecutable = calendar.getNextTradingDay(baseDate);
+                validThrough = null;
+                allowConfirmedRetest = false;
+                signalCreatedAt = support.confirmedAt();
             }
             TradePlanDto plan = calculator.build(context, price.priceBasis().basisId(), price.inputHash(), current, priceDate,
-                    support, levels.resistances(), frame.minorTrend(), frame.atr14().value().atr(), earliestExecutable, validThrough, constraint);
+                    support, levels.resistances(), frame.minorTrend(), frame.atr14().value().atr(),
+                    earliestExecutable, validThrough, constraint, zoneDiagnosis, allowConfirmedRetest, signalCreatedAt);
             return applyCloseInvalidation(plan, price.bars());
         }).toList();
         MetricResult<RiskRewardDto> currentRR = MetricResult.unavailable(MetricStatus.NOT_APPLICABLE,
@@ -113,6 +150,27 @@ public class TradePlanService {
         return new TradePlanDto(plan.planId(), plan.horizon(), plan.setupType(), plan.entryRange(), plan.entryMethod(), plan.trigger(),
                 plan.stop(), plan.targets(), plan.riskReward(), TradePlanStatus.INVALIDATED, reasons, plan.sourceZoneId(),
                 plan.sourceBoundsVersion(), plan.structureTimeframe(), plan.createdSignalAt(), plan.validThroughSession(), plan.evidenceRefs());
+    }
+
+    private LocalDate advanceTradingDays(LocalDate start, int sessions) {
+        LocalDate cursor = start;
+        for (int i = 0; i < sessions; i++) {
+            cursor = calendar.getNextTradingDay(cursor);
+        }
+        return cursor;
+    }
+
+    private BreakoutDiagnosisDto findZoneDiagnosis(SupportResistanceDto levels, LevelZoneDto support) {
+        if (levels == null || support == null) return null;
+        for (BreakoutDiagnosisDto diag : levels.zoneDiagnoses()) {
+            if (diag != null && diag.matchesZone(support)) {
+                return diag;
+            }
+        }
+        if (levels.breakoutDiagnosis() != null && levels.breakoutDiagnosis().matchesZone(support)) {
+            return levels.breakoutDiagnosis();
+        }
+        return null;
     }
 
     // 用途：處理distance，作為「交易計劃服務」流程中的處理步驟。

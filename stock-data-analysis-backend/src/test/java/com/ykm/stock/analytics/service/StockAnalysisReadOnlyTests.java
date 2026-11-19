@@ -33,9 +33,11 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDt
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
+import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
+import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.service.analysis.MarketContextService;
@@ -78,6 +80,7 @@ class StockAnalysisReadOnlyTests {
 
     private final StockRepository stocks = mock(StockRepository.class);
     private final StockIndustryHistoryRepository industries = mock(StockIndustryHistoryRepository.class);
+    private final MarketEventRepository marketEvents = mock(MarketEventRepository.class);
     private final MarketStatusService calendar = mock(MarketStatusService.class);
     private final QuoteNormalizationService prices = mock(QuoteNormalizationService.class);
     private final PriceStructureService structures = mock(PriceStructureService.class);
@@ -87,7 +90,7 @@ class StockAnalysisReadOnlyTests {
     private final StockObservationService stockObservations = mock(StockObservationService.class);
     private final StockValuationService stockValuations = mock(StockValuationService.class);
     private final StockAnalysisService service = new StockAnalysisService(
-            stocks, industries, calendar, prices, structures, levels, plans, market, stockObservations, stockValuations);
+            stocks, industries, marketEvents, calendar, prices, structures, levels, plans, market, stockObservations, stockValuations);
 
     private Stock testStock;
 
@@ -115,7 +118,7 @@ class StockAnalysisReadOnlyTests {
         assertThat(report.financials()).isNull();
         assertThat(report.reasons()).extracting(AnalysisReasonDto::code).contains("VALUATION_NOT_CALCULATED", "PRICE_MISSING");
         verify(stocks, never()).save(any());
-        verifyNoInteractions(structures, levels, plans, market);
+        verifyNoInteractions(structures, levels, plans, market, marketEvents);
     }
 
     @Test
@@ -249,7 +252,7 @@ class StockAnalysisReadOnlyTests {
         ExecutionCostCalculator costs = new ExecutionCostCalculator();
         TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
         StockAnalysisService reportService = new StockAnalysisService(
-                stocks, industries, calendar, prices, structures, levels, realPlans, market, stockObservations, localValuation);
+                stocks, industries, marketEvents, calendar, prices, structures, levels, realPlans, market, stockObservations, localValuation);
         Instant confirmedAt = CLOSE.minusSeconds(86400);
         when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
         NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),
@@ -265,11 +268,20 @@ class StockAnalysisReadOnlyTests {
         SupportResistanceDto zones = new SupportResistanceDto(List.of(zone("S", "95", "100", ZoneRole.SUPPORT, confirmedAt)),
                 hasResistance ? List.of(zone("R", "130", "135", ZoneRole.RESISTANCE, confirmedAt)) : List.of(), List.of(), List.of(), List.of(), List.of());
         MarketContextDto background = new MarketContextDto(null, null, null, List.of(), new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()), List.of(), List.of());
+        MarketEvent pastEarnings = new MarketEvent();
+        pastEarnings.setEventKey("EARNINGS|TEST_FIGI|2025-Q1");
+        pastEarnings.setFigi("TEST_FIGI");
+        pastEarnings.setEventType("EARNINGS");
+        pastEarnings.setEventDate(DAY.minusDays(20));
+        pastEarnings.setStatus("SCHEDULED");
         when(prices.normalize(any(), any(), any())).thenReturn(MetricResult.available(price));
         when(structures.analyze(any(), same(price))).thenReturn(MetricResult.available(structure));
-        when(levels.analyze(any(), same(price), same(structure))).thenReturn(MetricResult.available(zones));
-        when(market.evaluate(any(), same(price), same(structure))).thenReturn(MetricResult.available(background));
-        return reportService.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, AnalysisHorizon.SWING));
+        when(marketEvents.findVisiblePastEarnings("TEST_FIGI", DAY, CLOSE)).thenReturn(List.of(pastEarnings));
+        when(market.evaluate(any(), same(price), same(structure), eq(List.of(pastEarnings)))).thenReturn(MetricResult.available(background));
+        when(levels.analyze(any(), same(price), same(structure), same(background))).thenReturn(MetricResult.available(zones));
+        StockAnalysisReportDto result = reportService.analyze(new AnalysisReportRequest("TEST_FIGI", DAY, AnalysisHorizon.SWING));
+        verify(marketEvents).findVisiblePastEarnings("TEST_FIGI", DAY, CLOSE);
+        return result;
     }
 
     private LevelZoneDto zone(String id, String low, String high, ZoneRole role, Instant confirmedAt) {

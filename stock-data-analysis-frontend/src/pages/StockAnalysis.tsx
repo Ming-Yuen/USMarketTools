@@ -74,7 +74,7 @@ export function StockAnalysisPage() {
       </Alert>}
 
       {/* L1. 置頂首屏：綜合估值位置、參考價帶標尺、觀察傾向與當期核心估值倍數 */}
-      <ExecutiveSummaryPanel valuation={valuation} summaryResult={report.summary} />
+      <ExecutiveSummaryPanel valuation={valuation} summaryResult={report.summary} breakoutDiagnosis={levels?.breakoutDiagnosis} />
 
       {/* L2. 看圖與時機工作台（嚴格保持位於估值參考三面板之前） */}
       <InteractivePriceWorkbench structure={structure} levels={levels} market={market} valuation={valuation} summary={summary} />

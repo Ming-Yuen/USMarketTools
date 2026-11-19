@@ -410,10 +410,12 @@
       },
       "stances": {
         "ACCUMULATE_AT_SUPPORT": "Below reference band with active support · Observe staged entries near support",
+        "TREND_PULLBACK_STARTER": "Strong trend pullback starter · Consider starter tranche near MA/AVWAP with tight stop",
         "WATCH_PULLBACK_TO_BAND": "Compare against reference lower bound and support zones; avoid chasing",
         "HOLD_TRAIL_NO_CHASE": "Strong fundamentals and uptrend with rich multiple · Trail trend without chasing",
         "CAUTION_VALUE_TRAP": "Weakening fundamentals · Guard against value trap or earnings downgrade",
         "CAUTION_OVEREXTENSION": "Above market reference band · Monitor multiple compression risk",
+        "WAIT_FOR_MARKET_STABILIZATION": "Market regime headwind · Pause left-side buying until market stabilizes or right-side confirmation",
         "WAIT_FOR_STABILIZATION": "Stop/zone breach, below SMA200 downtrend, or event gate · Wait for stabilization",
         "INSUFFICIENT_EVIDENCE": "Insufficient market anchors · Displaying individual metrics only"
       },
@@ -425,6 +427,9 @@
       },
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "Upcoming earnings or event ({{eventDate}}) restricts new entries",
+        "MARKET_REGIME_HEADWIND": "Market regime headwind ({{regime}}); avoid catching falling knives",
+        "MACRO_VOLATILITY_OR_RATE_STRESS": "Elevated VIX or 10Y Treasury 20-period surge; add safety buffer and halve sizing",
+        "SUPPORT_HIGH_RISK_BREAKDOWN": "High-risk support breakdown diagnosed; enforce stop discipline",
         "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "Protective stop breached or price below zone; reclaim required first",
         "SWUNG_TO_LOSS": "Trailing TTM EPS swung from profit to loss YoY",
         "NEGATIVE_TRAILING_EARNINGS": "Trailing TTM EPS is non-positive",
@@ -437,6 +442,9 @@
         "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices"
       },
       "watchItems": {
+        "WATCH_TREND_PULLBACK_STARTER": "Trend pullback starter ({{anchor}} {{anchorPrice}} {{currency}}): {{positionFraction}} tranche, tight stop {{suggestedStop}} {{currency}}",
+        "WATCH_CORRECTION_RIGHT_SIDE": "Correction right-side confirmation ({{basis}}) · Observe with half sizing",
+        "WATCH_MARKET_STABILIZATION": "Wait for market to exit {{regime}} into RECOVERY or right-side confirmation",
         "WATCH_REFERENCE_LOW_BAND": "Lower reference threshold: {{priceLow}} {{currency}} (Mid {{priceMid}})",
         "WATCH_TECHNICAL_SUPPORT": "Paired {{timeframe}} support zone: {{lower}}–{{upper}} {{currency}}",
         "WATCH_RECLAIM_STABILIZATION": "Watch for price to reclaim support zone and stabilize",

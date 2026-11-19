@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Alert, Box, Button, ButtonGroup, Chip, Divider, Grid, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import {
-  AnalysisHorizon, IndicatorSeriesPoint, InvestmentSummary, LevelZone, MarketContext, MetricResult,
+  AnalysisHorizon, BreakoutDiagnosis, IndicatorSeriesPoint, InvestmentSummary, LevelZone, MarketContext, MetricResult,
   NormalizedBar, PriceStructure, SupportResistance, TradePlanResult,
 } from "../services/types/dto/analysis";
 import { ValuationResult } from "../services/types/dto/valuation";
@@ -238,6 +238,8 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
   const [showSma200, setShowSma200] = useState(true);
   const [showBollinger, setShowBollinger] = useState(false);
   const [showZones, setShowZones] = useState(true);
+  const [showEarningsAvwap, setShowEarningsAvwap] = useState(true);
+  const [showVolumeProfile, setShowVolumeProfile] = useState(true);
   const [showValBand, setShowValBand] = useState(false);
   const [showVolume, setShowVolume] = useState(true);
   const [showRsi, setShowRsi] = useState(true);
@@ -311,6 +313,16 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
     return map;
   }, [market?.momentumDetail?.series]);
 
+  const earningsAvwapByDate = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const pt of market?.volume?.earningsAnchoredVwapSeries ?? []) {
+      if (pt && pt.sessionDate && pt.value != null && Number.isFinite(pt.value)) {
+        map.set(pt.sessionDate, pt.value);
+      }
+    }
+    return map;
+  }, [market?.volume?.earningsAnchoredVwapSeries]);
+
   const visibleBars = useMemo(() => allBars.slice(winStart, winEnd), [allBars, winStart, winEnd]);
 
   if (visibleBars.length < 2) {
@@ -319,6 +331,14 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
 
   const isDaily = (tfData?.timeframe ?? "DAILY") === "DAILY";
   const hasIndicatorSeries = isDaily && indicatorByDate.size > 0;
+  const hasEarningsAvwap = isDaily
+    && market?.volume?.earningsAnchoredVwap?.status === "AVAILABLE"
+    && earningsAvwapByDate.size > 0;
+  const earningsAnchorDate = market?.volume?.earningsAnchorDate ?? null;
+  const earningsEventDate = market?.volume?.earningsEventDate ?? null;
+  const rawVolumeProfile = market?.volume?.profile252?.status === "AVAILABLE" ? market.volume.profile252.value : null;
+  const volumeProfile = rawVolumeProfile && (rawVolumeProfile.bins ?? []).some(b => (b.volume ?? 0) > 0)
+    ? rawVolumeProfile : null;
   const activeRsi = showRsi && hasIndicatorSeries;
   const activeMacd = showMacd && hasIndicatorSeries;
 
@@ -363,6 +383,13 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
             if (v < minP) minP = v;
             if (v > maxP) maxP = v;
           }
+        }
+      }
+      if (hasEarningsAvwap && showEarningsAvwap) {
+        const av = earningsAvwapByDate.get(b.sessionDate);
+        if (av != null && Number.isFinite(av)) {
+          if (av < minP) minP = av;
+          if (av > maxP) maxP = av;
         }
       }
     }
@@ -607,6 +634,12 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
         <Chip size="small" label="布林通道 BB20" color={showBollinger ? "info" : "default"} variant={showBollinger ? "filled" : "outlined"} onClick={() => setShowBollinger(v => !v)} />
       </>}
       <Chip size="small" label="支撐／阻力帶" color={showZones ? "success" : "default"} variant={showZones ? "filled" : "outlined"} onClick={() => setShowZones(v => !v)} />
+      {hasEarningsAvwap && (
+        <Chip size="small" label="財報成本線 AVWAP" color={showEarningsAvwap ? "info" : "default"} variant={showEarningsAvwap ? "filled" : "outlined"} onClick={() => setShowEarningsAvwap(v => !v)} />
+      )}
+      {volumeProfile && (
+        <Chip size="small" label="籌碼密集區 POC/HVN" color={showVolumeProfile ? "warning" : "default"} variant={showVolumeProfile ? "filled" : "outlined"} onClick={() => setShowVolumeProfile(v => !v)} />
+      )}
       {compositeBand && (
         <Chip size="small" label={compositeBand.label} color={showValBand ? "info" : "default"} variant={showValBand ? "filled" : "outlined"} onClick={() => setShowValBand(v => !v)} />
       )}
@@ -640,7 +673,19 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
         {activeRsi && <Typography variant="caption">RSI14: <b>{formatNumber(activeInd.rsi14)}</b></Typography>}
         {activeMacd && <Typography variant="caption">MACD: <b>{formatNumber(activeInd.macd)}</b> / 訊號 <b>{formatNumber(activeInd.macdSignal)}</b> / 柱 <b>{formatNumber(activeInd.macdHistogram)}</b></Typography>}
       </>}
+      {hasEarningsAvwap && showEarningsAvwap && (
+        <Typography variant="caption" sx={{ color: "#0f766e" }}>
+          財報 AVWAP: <b>{formatNumber(earningsAvwapByDate.get(activeBar.sessionDate))}</b>
+          {earningsAnchorDate ? `（錨定 ${earningsAnchorDate}${earningsEventDate && earningsEventDate !== earningsAnchorDate ? ` / 事件日 ${earningsEventDate}` : ""}）` : ""}
+        </Typography>
+      )}
     </Stack>
+    {showVolumeProfile && volumeProfile && (
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.6 }}>
+        籌碼分布（POC/HVN）：採報告日近 252 日日線近似分布（DAILY_OHLCV_APPROXIMATION）
+        {volumeProfile.poc && volumeProfile.poc.volume > 0 ? ` · POC 價位約 ${formatNumber((volumeProfile.poc.lower + volumeProfile.poc.upper) / 2)}` : ""}。
+      </Typography>
+    )}
 
     <Box sx={{ width: "100%", overflowX: "auto", mt: 1, userSelect: "none" }}>
       <svg ref={mainSvgRef} role="img" aria-label="每日收盤價" viewBox={`0 0 ${W} ${totalH}`}
@@ -677,6 +722,41 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
           </g>;
         })()}
 
+        {/* Volume Profile 252 日籌碼密集區（HVN / POC，僅作報告日近 252 日日線近似標示） */}
+        {showVolumeProfile && volumeProfile && (() => {
+          const maxBinVol = Math.max(0, ...(volumeProfile.bins ?? []).map(b => b.volume ?? 0));
+          if (maxBinVol <= 0) return null;
+          const hvnBins = (volumeProfile.highVolumeNodes ?? []).filter(
+            b => b.volume > 0 && b.upper >= pLow && b.lower <= pHigh,
+          );
+          const poc = volumeProfile.poc && volumeProfile.poc.volume > 0
+            && volumeProfile.poc.upper >= pLow && volumeProfile.poc.lower <= pHigh
+            ? volumeProfile.poc : null;
+          const pocMid = poc ? (poc.lower + poc.upper) / 2 : null;
+          const pocInPriceWindow = pocMid != null && pocMid >= pLow && pocMid <= pHigh;
+          const pocY = pocInPriceWindow ? yPrice(pocMid) : null;
+          return <g data-volume-profile="true">
+            {hvnBins.map(bin => {
+              const yTop = Math.max(priceTop, yPrice(Math.min(bin.upper, pHigh)));
+              const yBot = Math.min(priceTop + priceH, yPrice(Math.max(bin.lower, pLow)));
+              const barW = Math.max(8, (bin.volume / maxBinVol) * 68);
+              const isPoc = poc != null && poc.index === bin.index;
+              return <rect key={bin.index} data-vp-hvn={bin.index}
+                x={padL + plotW - barW} y={yTop} width={barW} height={Math.max(2, yBot - yTop)}
+                fill={isPoc ? "rgba(217, 119, 6, 0.26)" : "rgba(245, 158, 11, 0.14)"} />;
+            })}
+            {poc && pocY != null && pocMid != null && pocY >= priceTop && pocY <= priceTop + priceH && (
+              <g data-vp-poc="true">
+                <line x1={padL} x2={padL + plotW} y1={pocY} y2={pocY}
+                  stroke="#b45309" strokeWidth="1.2" strokeDasharray="6,4" opacity={0.85} />
+                <text x={padL + 6} y={Math.min(priceTop + priceH - 3, Math.max(priceTop + 11, pocY - 3))} fontSize="10" fontWeight={700} fill="#b45309">
+                  POC {formatNumber(pocMid, 1)}
+                </text>
+              </g>
+            )}
+          </g>;
+        })()}
+
         {/* 支撐／阻力水平色帶（右側標籤已做防重疊錯開與導引線） */}
         {placedZoneLabels.map(({ zone, yTop, yBot, anchorY, labelY }) => {
           const h = Math.max(2, yBot - yTop);
@@ -686,6 +766,7 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
           const edgeX = W - padR;
           const labelX = edgeX + 7;
           const needsLeader = Math.abs(labelY - anchorY) > 1.5;
+          const vpSuffix = zone.volumeProfileConfluence ? `·${zone.volumeProfileConfluence}` : "";
           return <g key={zone.id} data-zone-label={zone.id}>
             <rect x={padL} width={plotW} y={yTop} height={h}
               fill={isSup ? "rgba(22, 163, 74, 0.12)" : "rgba(220, 38, 38, 0.11)"} />
@@ -696,7 +777,7 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
             <rect x={labelX - 2} y={labelY - 7} width={padR - 8} height={13} rx="2"
               fill={isSup ? "rgba(240, 253, 244, 0.94)" : "rgba(254, 242, 242, 0.94)"} />
             <text x={labelX} y={labelY + 3.5} fontSize="10" fontWeight={600} fill={textColor}>
-              {isSup ? "支撐 " : "阻力 "}{formatNumber(zone.center ?? (zone.lower + zone.upper) / 2, 1)}
+              {isSup ? "支撐 " : "阻力 "}{formatNumber(zone.center ?? (zone.lower + zone.upper) / 2, 1)}{vpSuffix}
             </text>
           </g>;
         })}
@@ -728,10 +809,22 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
           })
         )}
 
-        {/* 均線 SMA20 / SMA50 / SMA200 */}
+        {/* 均線 SMA20 / SMA50 / SMA200 與財報日 Anchored VWAP（僅日線圖顯示） */}
         {hasIndicatorSeries && showSma20 && <path d={buildPath(b => indicatorByDate.get(b.sessionDate)?.sma20, yPrice)} fill="none" stroke="#f59e0b" strokeWidth="1.5" />}
         {hasIndicatorSeries && showSma50 && <path d={buildPath(b => indicatorByDate.get(b.sessionDate)?.sma50, yPrice)} fill="none" stroke="#2563eb" strokeWidth="1.5" />}
         {hasIndicatorSeries && showSma200 && <path d={buildPath(b => indicatorByDate.get(b.sessionDate)?.sma200, yPrice)} fill="none" stroke="#7c3aed" strokeWidth="2" />}
+        {hasEarningsAvwap && showEarningsAvwap && (() => {
+          const avwapPath = buildPath(b => earningsAvwapByDate.get(b.sessionDate), yPrice);
+          const anchorIdx = earningsAnchorDate ? visibleBars.findIndex(b => b.sessionDate === earningsAnchorDate) : -1;
+          const anchorVal = anchorIdx >= 0 ? earningsAvwapByDate.get(visibleBars[anchorIdx].sessionDate) : undefined;
+          return <g data-earnings-avwap="true">
+            {avwapPath && <path d={avwapPath} fill="none" stroke="#0d9488" strokeWidth="1.8" strokeDasharray="5,3" />}
+            {anchorIdx >= 0 && anchorVal != null && (
+              <circle data-earnings-anchor={earningsAnchorDate} cx={xAt(anchorIdx)} cy={yPrice(anchorVal)}
+                r="4" fill="#0d9488" stroke="#fff" strokeWidth="1.5" />
+            )}
+          </g>;
+        })()}
 
         {/* 成交量副圖 */}
         {showVolume && <g>
@@ -825,6 +918,58 @@ export function InteractivePriceWorkbench({ structure, levels, market, valuation
   </Paper>;
 }
 
+const BREAKOUT_EVIDENCE_LABELS: Record<string, string> = {
+  SOLID_BEARISH_CLOSE_NEAR_LOW: "實體長黑收在當日低位",
+  HIGH_VOLUME_BREAKDOWN: "放量破位（RVOL ≥ 1.5x）",
+  INDEPENDENT_WEAKNESS_VS_SPY: "大盤平穩但個股獨立走弱",
+  LOW_VOLUME_BREACH: "縮量跌破（RVOL < 1.0x）",
+  MARKET_WIDE_SELLOFF_DRAG: "受大盤同步重挫拖累",
+  LONG_LOWER_SHADOW: "長下影線承接",
+  INTRADAY_BELOW_SUPPORT_RECOVERED: "盤中跌穿但收盤站回支撐內",
+  SPRING_RECLAIMED: "彈簧效應收復支撐下緣",
+  RECLAIM_VOLUME_CONFIRMED: "收復日量能確認",
+  FAILED_RECLAIM_BOUNCE: "反抽支撐後收復失敗",
+  PERSISTENT_BELOW_SUPPORT: "連續多日持續失守支撐",
+  WEAK_REBOUND_VOLUME: "反彈量能偏弱（RVOL < 1.0x）",
+  SINGLE_CLOSE_BELOW_SUPPORT: "單日收盤低於支撐下緣（待觀察）",
+};
+
+function renderBreakoutDiagnosisAlert(diag?: BreakoutDiagnosis | null) {
+  if (!diag || diag.diagnosis === "NONE") return null;
+  const metaMap: Record<string, { severity: "error" | "warning" | "success" | "info"; title: string; action: string }> = {
+    HIGH_RISK_BREAKDOWN: { severity: "error", title: "高機率真破位", action: "建議嚴格執行保護止損紀律，避免逆勢承接。" },
+    SUSPECTED_SHAKEOUT: { severity: "warning", title: "疑似洗盤假跌破", action: "暫緩砍倉，觀察 1–3 個交易日能否放量站回支撐下緣。" },
+    SPRING_RECLAIMED: { severity: "success", title: "彈簧效應收回（Spring Reclaimed）", action: "跌破支撐後 1–3 個交易日內放量收復，可作為右側確認參考（次一交易日起有效）。" },
+    BREACH_OBSERVING: { severity: "warning", title: "跌破支撐待觀察", action: "收盤已低於支撐下緣但量價訊號分化，待後續交易日確認方向。" },
+  };
+  const meta = metaMap[diag.diagnosis];
+  if (!meta) return null;
+  const evidenceText = (diag.evidenceCodes ?? []).map(code => BREAKOUT_EVIDENCE_LABELS[code] ?? code).join("、");
+  return <Alert severity={meta.severity} sx={{ mt: 1.5 }}>
+    <Typography variant="body2" fontWeight={700}>
+      支撐破位診斷：{meta.title}（{diag.supportLower != null && diag.supportUpper != null
+        ? `支撐區 ${formatNumber(diag.supportLower)}–${formatNumber(diag.supportUpper)}` : "關鍵支撐"}）
+    </Typography>
+    <Typography variant="caption" display="block">
+      {meta.action}
+      {diag.breachDate ? ` 破位日：${diag.breachDate}` : ""}
+      {diag.barsSinceBreach != null ? `（距破位 ${diag.barsSinceBreach} 個交易日）` : ""}
+      {diag.reclaimDate ? ` · 收復日：${diag.reclaimDate}` : ""}
+      {diag.validThroughSession ? ` · 右側觀察有效至：${diag.validThroughSession}` : ""}
+      {diag.rvolAtBreach != null ? ` · 破位量比 RVOL：${formatNumber(diag.rvolAtBreach)}x` : ""}
+      {diag.rvolAtReclaim != null ? ` · 收復量比 RVOL：${formatNumber(diag.rvolAtReclaim)}x` : ""}
+      {diag.bodyRatio != null ? ` · 實體佔比：${(diag.bodyRatio * 100).toFixed(0)}%` : ""}
+      {diag.lowerShadowRatio != null ? ` · 下影線佔比：${(diag.lowerShadowRatio * 100).toFixed(0)}%` : ""}
+      {diag.excessReturnOnBreach != null ? ` · 當日對 SPY 超額：${formatSignedPct(diag.excessReturnOnBreach * 100)}` : ""}
+    </Typography>
+    {evidenceText && (
+      <Typography variant="caption" color="text.secondary" display="block">
+        診斷依據：{evidenceText}
+      </Typography>
+    )}
+  </Alert>;
+}
+
 /** 關鍵支撐阻力階梯 ＆ 技術觀察方案面板（過濾未啟用之空白卡片，呈現可讀價位表）。 */
 export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansReasons, horizon, onHorizonChange }: {
   levels?: SupportResistance | null;
@@ -860,7 +1005,18 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
           <TableCell align="right" sx={{ whiteSpace: "nowrap", color }}>
             {containingIds.has(z.id) ? "處於區間內" : formatSignedPct(z.role === "SUPPORT" ? z.distanceUpperPercent : z.distanceLowerPercent)}
           </TableCell>
-          <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatNumber(z.effectiveStrength, 1)}（{readableState(t, z.strengthLabel)}）</TableCell>
+          <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+            {formatNumber(z.effectiveStrength, 1)}（{readableState(t, z.strengthLabel)}）
+            {z.volumeProfileConfluence && (
+              <Chip
+                size="small"
+                color={z.volumeProfileConfluence === "POC" ? "warning" : "default"}
+                variant="outlined"
+                label={`籌碼共振 · ${z.volumeProfileConfluence}`}
+                sx={{ ml: 0.7, height: 18, fontSize: "0.68rem" }}
+              />
+            )}
+          </TableCell>
         </TableRow>)}</TableBody>
       </Table></TableContainer> : <Typography variant="body2" color="text.secondary">暫無有效區域紀錄。</Typography>}
     </Box>
@@ -879,6 +1035,8 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
         <Button variant={horizon === "SWING" ? "contained" : "outlined"} onClick={() => onHorizonChange("SWING")}>短線波段（日線支撐）</Button>
       </ButtonGroup>
     </Stack>
+
+    {renderBreakoutDiagnosisAlert(levels?.breakoutDiagnosis)}
 
     {tradePlans && !tradePlans.contextEvaluated && <Alert severity="info" sx={{ mt: 1.5 }}>市場環境判斷尚未完成，以下僅作技術觀察。</Alert>}
 

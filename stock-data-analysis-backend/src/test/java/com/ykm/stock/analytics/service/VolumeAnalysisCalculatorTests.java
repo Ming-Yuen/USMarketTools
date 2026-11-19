@@ -28,6 +28,56 @@ class VolumeAnalysisCalculatorTests {
   assertThat(calculator.calculate(b,new PriceStructureDto("FIGI","hash",d,List.of(tf),List.of(),List.of()))
    .primarySignal().value()).isEqualByComparingTo("0");
  }
+
+ // 例子：財報日 Anchored VWAP 依拆股對齊後之典型價加權手算一致，首日零量不出點、後續零量延續前值；缺量與窗外錨皆失敗關閉。
+ @Test void earningsAnchoredVwapHandlesExactMathZeroVolumeAndFailClosedBoundaries() {
+  List<NormalizedBarDto> b = new ArrayList<>();
+  // bar 0 (2025-01-01): 首日零量不產點
+  b.add(bar(0, BigDecimal.ZERO, new BigDecimal("100"), new BigDecimal("99"), new BigDecimal("101")));
+  // bar 1 (2025-01-02): typical = (102+98+100)/3 = 100, vol = 10 -> avwap = 100
+  b.add(bar(1, new BigDecimal("10"), new BigDecimal("100"), new BigDecimal("98"), new BigDecimal("102")));
+  // bar 2 (2025-01-03): 中途零量 -> 延續 100
+  b.add(bar(2, BigDecimal.ZERO, new BigDecimal("120"), new BigDecimal("119"), new BigDecimal("121")));
+  // bar 3 (2025-01-04): typical = (132+128+130)/3 = 130, vol = 30 -> (100*10 + 130*30)/40 = 4900/40 = 122.5
+  b.add(bar(3, new BigDecimal("30"), new BigDecimal("130"), new BigDecimal("128"), new BigDecimal("132")));
+
+  LocalDate eventDate = LocalDate.of(2024, 12, 31);
+  LocalDate anchorDate = LocalDate.of(2025, 1, 1);
+  VolumeAnalysisDto res = calculator.calculate(b, null, eventDate, anchorDate);
+  assertThat(res.earningsEventDate()).isEqualTo(eventDate);
+  assertThat(res.earningsAnchorDate()).isEqualTo(anchorDate);
+  assertThat(res.earningsAnchoredVwap().status()).isEqualTo(MetricStatus.AVAILABLE);
+  assertThat(res.earningsAnchoredVwap().value()).isEqualByComparingTo("122.5");
+  assertThat(res.earningsAnchoredVwapSeries()).hasSize(3);
+  assertThat(res.earningsAnchoredVwapSeries().get(0).sessionDate()).isEqualTo(LocalDate.of(2025, 1, 2));
+  assertThat(res.earningsAnchoredVwapSeries().get(0).value()).isEqualByComparingTo("100.0000");
+  assertThat(res.earningsAnchoredVwapSeries().get(1).value()).isEqualByComparingTo("100.0000");
+  assertThat(res.earningsAnchoredVwapSeries().get(2).value()).isEqualByComparingTo("122.5000");
+
+  // 窗外錨點不得截短重算
+  VolumeAnalysisDto outside = calculator.calculate(b, null, LocalDate.of(2024, 12, 1), LocalDate.of(2024, 12, 2));
+  assertThat(outside.earningsAnchoredVwap().status()).isEqualTo(MetricStatus.INSUFFICIENT_DATA);
+  assertThat(outside.earningsAnchoredVwap().reasons()).extracting(AnalysisReasonDto::code)
+          .containsExactly("EARNINGS_AVWAP_ANCHOR_OUTSIDE_WINDOW");
+
+  // 全段零量 -> UNVERIFIED (AVWAP_VOLUME_ZERO)
+  List<NormalizedBarDto> allZero = List.of(
+          bar(0, BigDecimal.ZERO, new BigDecimal("100"), new BigDecimal("99"), new BigDecimal("101")),
+          bar(1, BigDecimal.ZERO, new BigDecimal("102"), new BigDecimal("101"), new BigDecimal("103")));
+  VolumeAnalysisDto zeroRes = calculator.calculate(allZero, null, anchorDate, anchorDate);
+  assertThat(zeroRes.earningsAnchoredVwap().status()).isEqualTo(MetricStatus.UNVERIFIED);
+  assertThat(zeroRes.earningsAnchoredVwap().reasons()).extracting(AnalysisReasonDto::code).containsExactly("AVWAP_VOLUME_ZERO");
+
+  // 中途缺量 -> UNVERIFIED，絕不補零
+  List<NormalizedBarDto> missingMid = new ArrayList<>(b);
+  NormalizedBarDto old = missingMid.get(2);
+  missingMid.set(2, new NormalizedBarDto(old.sessionDate(), old.open(), old.high(), old.low(), old.close(),
+          MetricResult.unavailable(MetricStatus.UNVERIFIED, AnalysisReasonDto.of("NO_VOLUME", "VOLUME", "missing")),
+          old.sessionOpenAt(), old.sessionCloseAt(), old.availableAt(), old.observedAt(), old.versionRef(), old.basisId()));
+  VolumeAnalysisDto missingRes = calculator.calculate(missingMid, null, eventDate, anchorDate);
+  assertThat(missingRes.earningsAnchoredVwap().status()).isEqualTo(MetricStatus.UNVERIFIED);
+  assertThat(missingRes.earningsAnchoredVwapSeries()).isEmpty();
+ }
  private BigDecimal breakoutSignal(String eventCode) {
   List<NormalizedBarDto> b=bars(40);
   b.set(39,bar(39,new BigDecimal("200"),BigDecimal.valueOf(139),BigDecimal.valueOf(138),BigDecimal.valueOf(140)));

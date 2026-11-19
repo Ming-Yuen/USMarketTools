@@ -16,7 +16,9 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StockAnalysisRepo
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistanceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
+import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.service.analysis.StockObservationService.ForwardObservationContext;
@@ -40,6 +42,7 @@ import java.util.List;
 public class StockAnalysisService {
     private final StockRepository stocks;
     private final StockIndustryHistoryRepository industries;
+    private final MarketEventRepository marketEvents;
     private final MarketStatusService calendar;
     private final QuoteNormalizationService prices;
     private final PriceStructureService structures;
@@ -108,12 +111,15 @@ public class StockAnalysisService {
         MetricResult<TradePlanResultDto> tradePlans = unavailable("TECHNICAL_STRUCTURE_MISSING");
         if (price.status() == MetricStatus.AVAILABLE) {
             structure = structures.analyze(context, price.value());
+            LocalDate lastQuoteDate = price.value().bars().isEmpty() ? resolvedReportDate : price.value().bars().getLast().sessionDate();
+            List<MarketEvent> pastEarnings = marketEvents.findVisiblePastEarnings(stock.getFigi(), lastQuoteDate, supplementalCutoff);
+            marketResult = market.evaluate(context, price.value(), structure.value(), pastEarnings);
+            MarketContextDto marketValue = marketResult.status() == MetricStatus.AVAILABLE ? marketResult.value() : null;
             if (structure.status() == MetricStatus.AVAILABLE) {
-                support = levels.analyze(context, price.value(), structure.value());
+                support = levels.analyze(context, price.value(), structure.value(), marketValue);
             }
-            marketResult = market.evaluate(context, price.value(), structure.value());
             if (support.status() == MetricStatus.AVAILABLE) {
-                PlanConstraintDto constraint = marketResult.status() == MetricStatus.AVAILABLE ? marketResult.value().tradeConstraint() : null;
+                PlanConstraintDto constraint = marketValue != null ? marketValue.tradeConstraint() : null;
                 tradePlans = plans.build(context, price.value(), structure.value(), support.value(), constraint);
             }
         }

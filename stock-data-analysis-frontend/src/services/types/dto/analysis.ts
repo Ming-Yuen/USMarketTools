@@ -17,12 +17,49 @@ export interface TimeframeStructure {
   reasons: AnalysisReason[];
 }
 export interface PriceStructure { figi: string; priceDataThrough: string; timeframes: TimeframeStructure[]; reasons: AnalysisReason[]; }
+export type BreakoutDiagnosisCode = "NONE" | "SUSPECTED_SHAKEOUT" | "SPRING_RECLAIMED" | "BREACH_OBSERVING" | "HIGH_RISK_BREAKDOWN";
+
+export interface BreakoutDiagnosis {
+  diagnosis: BreakoutDiagnosisCode;
+  zoneId?: string | null;
+  zoneBoundsVersion?: number;
+  zoneRoleVersion?: number;
+  zoneTimeframe?: string | null;
+  supportLower?: number | null;
+  supportUpper?: number | null;
+  breachDate?: string | null;
+  reclaimDate?: string | null;
+  validThroughSession?: string | null;
+  diagnosisDate?: string | null;
+  barsSinceBreach?: number | null;
+  rvolAtBreach?: number | null;
+  rvolAtReclaim?: number | null;
+  rvolLatest?: number | null;
+  lowerShadowRatio?: number | null;
+  bodyRatio?: number | null;
+  closePositionInRange?: number | null;
+  stockReturnOnBreach?: number | null;
+  spyReturnOnBreach?: number | null;
+  excessReturnOnBreach?: number | null;
+  evidenceCodes?: string[];
+  reasons?: AnalysisReason[];
+}
+
 export interface LevelZone {
   id: string; timeframe: string; lower: number; upper: number; role: "SUPPORT" | "RESISTANCE"; strength: number;
   confirmedAt?: string | null; testCount: number; lastTestAt?: string | null; state: string; center?: number | null; strengthLabel: string;
   effectiveStrength: number; distanceLowerPercent?: number | null; distanceUpperPercent?: number | null; retestState: string; majorLevel?: boolean;
+  volumeProfileConfluence?: "POC" | "HVN" | string | null;
+  confluenceTags?: string[];
 }
-export interface SupportResistance { supports: LevelZone[]; resistances: LevelZone[]; containingZones: LevelZone[]; reasons: AnalysisReason[]; }
+export interface SupportResistance {
+  supports: LevelZone[];
+  resistances: LevelZone[];
+  containingZones: LevelZone[];
+  reasons: AnalysisReason[];
+  breakoutDiagnosis?: BreakoutDiagnosis | null;
+  zoneDiagnoses?: BreakoutDiagnosis[];
+}
 export interface RiskReward { entry: number; stop: number; grossRR: number; netRR: number; potentialUpsidePercent: number; potentialDownsidePercent: number; }
 export interface PriceRange { lower: number; upper: number; }
 export interface TradePlan {
@@ -87,6 +124,40 @@ export interface EventRisk {
   source?: string | null;
   blocksNewEntry: boolean;
 }
+export interface AnchoredVwapPoint {
+  sessionDate: string;
+  value: number;
+}
+
+export interface VolumeBin {
+  index: number;
+  lower: number;
+  upper: number;
+  volume: number;
+}
+
+export interface VolumeProfile {
+  bins: VolumeBin[];
+  poc?: VolumeBin | null;
+  highVolumeNodes: VolumeBin[];
+  lowVolumeNodes: VolumeBin[];
+  approximationLabel?: string | null;
+}
+
+export interface VolumeAnalysis {
+  rvol20?: MetricResult<number> | null;
+  obv?: MetricResult<number> | null;
+  netVolumeDays20?: MetricResult<number> | null;
+  primarySignal?: MetricResult<number> | null;
+  profile252?: MetricResult<VolumeProfile> | null;
+  anchoredVwap?: MetricResult<number> | null;
+  earningsEventDate?: string | null;
+  earningsAnchorDate?: string | null;
+  earningsAnchoredVwap?: MetricResult<number> | null;
+  earningsAnchoredVwapSeries?: AnchoredVwapPoint[];
+  reasons?: AnalysisReason[];
+}
+
 export interface MarketContext {
   momentum: MomentumVolume;
   relativeStrength?: RelativeStrength | null;
@@ -95,8 +166,10 @@ export interface MarketContext {
   tradeConstraint: { entryPermission: string; reasonCodes: string[] };
   reasons: AnalysisReason[];
   momentumDetail?: MomentumAnalysis | null;
+  volume?: VolumeAnalysis | null;
   drawdown?: DrawdownAnalysis | null;
   treasury?: TreasuryContext | null;
+  vixClose?: MetricResult<number> | null;
 }
 
 export interface FundamentalSnapshot {
@@ -148,6 +221,33 @@ export interface WatchItem {
   params?: Record<string, unknown>;
 }
 
+export interface MacroCaution {
+  active: boolean;
+  evaluated: boolean;
+  marketRegime?: string | null;
+  vixClose?: number | null;
+  tenYearChange20?: number | null;
+  triggerCodes: string[];
+  suggestedMarginBufferMin?: number | null;
+  suggestedMarginBufferMax?: number | null;
+  suggestedPositionScale?: number | null;
+}
+
+export interface TrendPullbackStarter {
+  eligible: boolean;
+  matchedAnchor?: string | null;
+  anchorPrice?: number | null;
+  distanceRatio?: number | null;
+  suggestedStop?: number | null;
+  positionFraction?: string | null;
+  forwardGrowthBasis?: string | null;
+  forwardPeg?: number | null;
+  forwardPegBasis?: string | null;
+  forwardPe?: number | null;
+  ineligibleReasonCode?: string | null;
+  ineligibleMessage?: string | null;
+}
+
 export interface InvestmentSummary {
   verdict: string;
   fundamentalBacking: string;
@@ -171,6 +271,10 @@ export interface InvestmentSummary {
   risks: SummaryFlag[];
   watchItems: WatchItem[];
   reasons: AnalysisReason[];
+  macroCaution?: MacroCaution | null;
+  trendPullbackStarter?: TrendPullbackStarter | null;
+  breakoutDiagnosis?: BreakoutDiagnosis | null;
+  rightSideConfirmationBasis?: string | null;
 }
 
 export interface FutuValuationObservation {

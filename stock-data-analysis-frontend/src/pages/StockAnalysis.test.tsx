@@ -763,3 +763,283 @@ test("renders peer tiering scope, full-industry subtitle, peer fundamental media
   expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["stock-screen"] });
   expect(refetchMock).not.toHaveBeenCalled();
 });
+
+test("renders macro safety caution without altering fairValue band, breakout diagnosis alerts, earnings AVWAP curve, and Volume Profile confluence", () => {
+  const dailyBars = Array.from({ length: 15 }, (_, i) => {
+    const day = String(i + 1).padStart(2, "0");
+    const close = 150 + i;
+    return {
+      sessionDate: `2026-10-${day}`,
+      open: close - 1, high: close + 2, low: close - 2, close,
+      volume: { status: "AVAILABLE", value: 10000000, reasons: [] },
+    };
+  });
+  const weeklyBars = [
+    { sessionDate: "2026-10-02", open: 150, high: 155, low: 148, close: 154, volume: { status: "AVAILABLE", value: 40000000, reasons: [] } },
+    { sessionDate: "2026-10-09", open: 154, high: 162, low: 152, close: 160, volume: { status: "AVAILABLE", value: 42000000, reasons: [] } },
+    { sessionDate: "2026-10-15", open: 160, high: 168, low: 158, close: 164, volume: { status: "AVAILABLE", value: 41000000, reasons: [] } },
+  ];
+  report.valuation.price = 164;
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      priceDataThrough: "2026-10-15",
+      timeframes: [
+        { timeframe: "DAILY", bars: dailyBars, majorTrend: { status: "AVAILABLE", value: { state: "UPTREND" }, reasons: [] }, atr14: { status: "AVAILABLE", value: { atr: 4.5 }, reasons: [] } },
+        { timeframe: "WEEKLY", bars: weeklyBars, majorTrend: { status: "AVAILABLE", value: { state: "UPTREND" }, reasons: [] }, atr14: { status: "AVAILABLE", value: { atr: 8.0 }, reasons: [] } },
+      ],
+    },
+  };
+  const diag = {
+    diagnosis: "HIGH_RISK_BREAKDOWN",
+    zoneId: "sup-poc",
+    zoneBoundsVersion: 1,
+    zoneRoleVersion: 1,
+    zoneTimeframe: "DAILY",
+    supportLower: 155,
+    supportUpper: 159,
+    breachDate: "2026-10-15",
+    diagnosisDate: "2026-10-15",
+    barsSinceBreach: 0,
+    rvolAtBreach: 1.92,
+    lowerShadowRatio: 0.08,
+    excessReturnOnBreach: -0.032,
+    evidenceCodes: ["SOLID_BEARISH_CLOSE_NEAR_LOW", "HIGH_VOLUME_BREAKDOWN", "INDEPENDENT_WEAKNESS_VS_SPY"],
+  };
+  report.supportResistance = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      supports: [
+        {
+          id: "sup-poc", timeframe: "DAILY", role: "SUPPORT", lower: 155, upper: 159, center: 157,
+          effectiveStrength: 75, strengthLabel: "HIGH", state: "ACTIVE", distanceLowerPercent: -5.4, distanceUpperPercent: -3.0,
+          retestState: "NONE", volumeProfileConfluence: "POC", confluenceTags: ["VOLUME_PROFILE_CONFLUENCE"],
+        },
+      ],
+      resistances: [],
+      containingZones: [],
+      breakoutDiagnosis: diag,
+      zoneDiagnoses: [diag],
+    },
+  };
+  report.marketContext = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      momentum: { volumeVs20Day: metric(1.92), return20: metric(-0.04), return60: metric(0.05), drawdownFrom252High: metric(-0.08) },
+      market: { status: "AVAILABLE", value: { regime: "BEAR", fearGreedScore: metric(25), breadthScore: metric(30) }, reasons: [] },
+      vixClose: metric(27.5),
+      treasury: { tenYear: metric(4.5), tenYearChange20: metric(0.35), curve10yMinus2y: metric(0.2), reasons: [] },
+      volume: {
+        rvol20: metric(1.92),
+        earningsEventDate: "2026-10-09",
+        earningsAnchorDate: "2026-10-10",
+        earningsAnchoredVwap: metric(160.25),
+        earningsAnchoredVwapSeries: [
+          { sessionDate: "2026-10-10", value: 159.0 },
+          { sessionDate: "2026-10-11", value: 159.4 },
+          { sessionDate: "2026-10-12", value: 159.8 },
+          { sessionDate: "2026-10-14", value: 160.1 },
+          { sessionDate: "2026-10-15", value: 160.25 },
+        ],
+        profile252: {
+          status: "AVAILABLE", reasons: [],
+          value: {
+            bins: [{ index: 1, lower: 155, upper: 159, volume: 90000000 }],
+            poc: { index: 1, lower: 155, upper: 159, volume: 90000000 },
+            highVolumeNodes: [{ index: 1, lower: 155, upper: 159, volume: 90000000 }],
+            lowVolumeNodes: [],
+            approximationLabel: "DAILY_OHLCV_APPROXIMATION",
+          },
+        },
+      },
+    },
+  };
+  report.summary = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      verdict: "DEEP_UNDERVALUED",
+      fundamentalBacking: "STRONG",
+      stance: "WAIT_FOR_MARKET_STABILIZATION",
+      primaryMetric: "PE",
+      anchorSource: "HISTORICAL_ONLY",
+      fairValue: { low: 180, mid: 210, high: 240, currency: "USD" },
+      discountToMid: 0.219,
+      upsideToMid: 0.28,
+      yieldSpreadVs10y: metric(0.02),
+      yieldSpreadBasis: "FCF_YIELD_MINUS_10Y",
+      technicalSupportZoneId: "sup-poc",
+      technicalSupportRange: { lower: 155, upper: 159 },
+      technicalSupportTimeframe: "DAILY",
+      technicalSupportStrength: 75,
+      weeklyTrend: "UPTREND",
+      aboveSma200: true,
+      entryPermission: "BLOCK",
+      eventGateBlocked: false,
+      nextBlockingEventDate: null,
+      risks: [{ code: "MARKET_REGIME_HEADWIND", severity: "HIGH", params: { regime: "BEAR" } }],
+      watchItems: [],
+      reasons: [],
+      macroCaution: {
+        active: true,
+        evaluated: true,
+        marketRegime: "BEAR",
+        vixClose: 27.5,
+        tenYearChange20: 0.35,
+        triggerCodes: ["MARKET_REGIME_BEAR", "VIX_ELEVATED", "TREASURY_10Y_SURGE_20P"],
+        suggestedMarginBufferMin: 0.05,
+        suggestedMarginBufferMax: 0.10,
+        suggestedPositionScale: 0.50,
+      },
+      breakoutDiagnosis: diag,
+    },
+  };
+
+  render(<StockAnalysisPage />);
+
+  // 1) 首屏摘要：顯示大盤逆風降級、宏觀安全邊際提示條、破位診斷標籤，且客觀 [180, 210, 240] 未被竄改
+  const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+  expect(within(summarySection).getByText(/180\.00 USD/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/210\.00 USD/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/240\.00 USD/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/大盤處於逆風環境/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/宏觀環境安全邊際提示/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/5%–10%/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/單筆建議倉位減半（50%）/)).toBeInTheDocument();
+  expect(within(summarySection).getByText("破位診斷：高機率真破位")).toBeInTheDocument();
+  expect(within(summarySection).getByText("支撐破位診斷：高機率真破位")).toBeInTheDocument();
+
+  // 2) 圖表區：日線實際繪出財報 AVWAP 曲線（含缺日斷線兩段 M）、錨點圓點、hover 讀數與 POC/HVN 分布標註
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  const avwapGroup = chartSection.querySelector('g[data-earnings-avwap="true"]');
+  expect(avwapGroup).toBeTruthy();
+  const avwapPath = avwapGroup!.querySelector("path")!.getAttribute("d")!;
+  expect(avwapPath.split("M").length - 1).toBe(2); // 2026-10-13 缺失，曲線必斷開為兩段不硬連
+  expect(avwapGroup!.querySelector('circle[data-earnings-anchor="2026-10-10"]')).toBeTruthy();
+  expect(within(chartSection).getByText(/財報 AVWAP:/)).toBeInTheDocument();
+  expect(within(chartSection).getByText(/160\.25/)).toBeInTheDocument();
+  expect(within(chartSection).getByText(/報告日近 252 日日線近似分布/)).toBeInTheDocument();
+  expect(chartSection.querySelector('g[data-vp-poc="true"]')).toBeTruthy();
+
+  // 切換至週線後，日線財報 AVWAP 應隱藏不錯位繪製
+  fireEvent.click(within(chartSection).getByRole("button", { name: "週線" }));
+  expect(chartSection.querySelector('g[data-earnings-avwap="true"]')).toBeNull();
+
+  // 3) 支撐阻力面板：顯示破位診斷詳細卡片與籌碼共振 POC 徽章
+  const levelsSection = screen.getByRole("region", { name: "關鍵價位與技術觀察方案" });
+  expect(within(levelsSection).getByText(/籌碼共振 · POC/)).toBeInTheDocument();
+  expect(within(levelsSection).getByText(/實體長黑收在當日低位/)).toBeInTheDocument();
+  expect(within(levelsSection).getByText(/1\.92x/)).toBeInTheDocument();
+});
+
+test("renders TREND_PULLBACK_STARTER 1/3 and 1/6 callout as well as HOLD_TRAIL_NO_CHASE ineligible reason", () => {
+  report.summary = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      verdict: "MODERATELY_OVERVALUED",
+      fundamentalBacking: "STRONG",
+      stance: "TREND_PULLBACK_STARTER",
+      primaryMetric: "PE",
+      anchorSource: "HISTORICAL_ONLY",
+      fairValue: { low: 150, mid: 175, high: 200, currency: "USD" },
+      discountToMid: -0.2,
+      upsideToMid: -0.1667,
+      yieldSpreadVs10y: metric(0.01),
+      yieldSpreadBasis: "FCF_YIELD_MINUS_10Y",
+      technicalSupportZoneId: null,
+      technicalSupportRange: null,
+      technicalSupportTimeframe: null,
+      technicalSupportStrength: null,
+      weeklyTrend: "UPTREND",
+      aboveSma200: true,
+      entryPermission: "ALLOW",
+      eventGateBlocked: false,
+      nextBlockingEventDate: null,
+      risks: [],
+      watchItems: [],
+      reasons: [],
+      trendPullbackStarter: {
+        eligible: true,
+        matchedAnchor: "EMA21",
+        anchorPrice: 208,
+        distanceRatio: 0.0096,
+        suggestedStop: 205.5,
+        positionFraction: "1/6",
+        forwardGrowthBasis: "HYPER_GROWTH_FORWARD_PE",
+        forwardPe: 31.5,
+      },
+    },
+  };
+
+  const { rerender } = render(<StockAnalysisPage />);
+  const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+  expect(within(summarySection).getByText(/強勢股趨勢回踩試單指引/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/1\/6/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/205\.50 USD/)).toBeInTheDocument();
+  expect(within(summarySection).getByText(/Forward P\/E 31\.50x/)).toBeInTheDocument();
+
+  // 切換為缺少年度共識之 HOLD_TRAIL_NO_CHASE -> 清楚呈現原因且不顯示試單指引
+  report.summary.value.stance = "HOLD_TRAIL_NO_CHASE";
+  report.summary.value.trendPullbackStarter = {
+    eligible: false,
+    ineligibleReasonCode: "ANNUAL_EARNINGS_FORECAST_MISSING",
+    ineligibleMessage: "缺少可用年度市場共識預期，維持不追高。",
+  };
+  rerender(<StockAnalysisPage />);
+  expect(within(summarySection).queryByText(/強勢股趨勢回踩試單指引/)).not.toBeInTheDocument();
+  expect(within(summarySection).getByText(/缺少可用年度市場共識預期，維持不追高/)).toBeInTheDocument();
+});
+
+test("does not fabricate macro caution buffer/scale or zero-volume POC when backend omits them", () => {
+  const dailyBars = Array.from({ length: 10 }, (_, i) => ({
+    sessionDate: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 100 + i, high: 102 + i, low: 99 + i, close: 101 + i,
+    volume: { status: "AVAILABLE", value: 0, reasons: [] },
+  }));
+  report.priceStructure = {
+    status: "AVAILABLE", reasons: [],
+    value: { priceDataThrough: "2026-10-10", timeframes: [{ timeframe: "DAILY", bars: dailyBars }] },
+  };
+  report.marketContext = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      momentum: {},
+      volume: {
+        profile252: {
+          status: "AVAILABLE", reasons: [],
+          value: {
+            bins: [{ index: 0, lower: 99, upper: 101, volume: 0 }],
+            poc: { index: 0, lower: 99, upper: 101, volume: 0 },
+            highVolumeNodes: [{ index: 0, lower: 99, upper: 101, volume: 0 }],
+            lowVolumeNodes: [],
+            approximationLabel: "DAILY_OHLCV_APPROXIMATION",
+          },
+        },
+      },
+    },
+  };
+  report.summary = {
+    status: "AVAILABLE", reasons: [],
+    value: {
+      verdict: "FAIR_LOWER", fundamentalBacking: "STRONG", stance: "WAIT_FOR_MARKET_STABILIZATION",
+      primaryMetric: "PE", anchorSource: "HISTORICAL_ONLY",
+      fairValue: { low: 100, mid: 120, high: 140, currency: "USD" },
+      discountToMid: 0.1, upsideToMid: 0.11, yieldSpreadVs10y: null, yieldSpreadBasis: null,
+      technicalSupportZoneId: null, technicalSupportRange: null, technicalSupportTimeframe: null,
+      technicalSupportStrength: null, weeklyTrend: "UPTREND", aboveSma200: true,
+      entryPermission: "BLOCK", eventGateBlocked: false, nextBlockingEventDate: null,
+      risks: [], watchItems: [], reasons: [],
+      macroCaution: {
+        active: true, evaluated: true, marketRegime: "BEAR", triggerCodes: ["MARKET_REGIME_BEAR"],
+        suggestedMarginBufferMin: null, suggestedMarginBufferMax: null, suggestedPositionScale: null,
+      },
+    },
+  };
+  render(<StockAnalysisPage />);
+  const summarySection = screen.getByRole("region", { name: "綜合估值與觀察結論" });
+  expect(within(summarySection).getByText(/宏觀環境安全邊際提示/)).toBeInTheDocument();
+  expect(within(summarySection).queryByText(/5%–10%/)).not.toBeInTheDocument();
+  expect(within(summarySection).queryByText(/50%/)).not.toBeInTheDocument();
+  const chartSection = screen.getByRole("region", { name: "股價與技術指標互動圖表" });
+  expect(chartSection.querySelector('g[data-vp-poc="true"]')).toBeNull();
+  expect(within(chartSection).queryByText(/POC 價位約/)).not.toBeInTheDocument();
+});

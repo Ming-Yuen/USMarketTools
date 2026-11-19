@@ -34,6 +34,7 @@ public class MomentumCalculator {
 
         for (int n : List.of(20,50,100,150,200)) out.put("SMA" + n, sma(closes, n));
         out.put("EMA20", emaPublished(closes,20));
+        out.put("EMA21", emaPublished(closes,21));
         out.put("EMA50", emaPublished(closes,50));
         Macd macd = macd(closes);
         out.put("MACD", macd.macd()); out.put("MACD_SIGNAL", macd.signal()); out.put("MACD_HISTOGRAM", macd.histogram());
@@ -272,7 +273,7 @@ public class MomentumCalculator {
     }
 
     // 用途：取得或整理指標 codes的內部表示，供本服務其他分析步驟重用。
-    private Set<String> metricCodes() { return Set.of("RSI14","SMA20","SMA50","SMA100","SMA150","SMA200","EMA20","EMA50","MACD","MACD_SIGNAL","MACD_HISTOGRAM","ROC20","MOMENTUM20","STOCH_K14","STOCH_D3","HV20","BOLLINGER_LOWER20","BOLLINGER_MID20","BOLLINGER_UPPER20","BOLLINGER_BANDWIDTH20","BOLLINGER_POSITION20","DISTANCE_TO_MA20","SLOPE5_MA20","SLOPE5_MA50","SLOPE5_MA200","MA20_50_CROSS","MA_COMPRESSION","MA_EXTENSION_ATR","ATR14"); }
+    private Set<String> metricCodes() { return Set.of("RSI14","SMA20","SMA50","SMA100","SMA150","SMA200","EMA20","EMA21","EMA50","MACD","MACD_SIGNAL","MACD_HISTOGRAM","ROC20","MOMENTUM20","STOCH_K14","STOCH_D3","HV20","BOLLINGER_LOWER20","BOLLINGER_MID20","BOLLINGER_UPPER20","BOLLINGER_BANDWIDTH20","BOLLINGER_POSITION20","DISTANCE_TO_MA20","SLOPE5_MA20","SLOPE5_MA50","SLOPE5_MA200","MA20_50_CROSS","MA_COMPRESSION","MA_EXTENSION_ATR","ATR14"); }
 
     // 用途：處理動能 signal的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。
     private BigDecimal momentumSignal(List<BigDecimal> rsi) {

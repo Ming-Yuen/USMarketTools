@@ -43,6 +43,13 @@ public class MarketContextService {
     /** 直接讀已入庫的行情、情緒、利率及已知日程；不存在原始檔案或證據再驗證步驟。 */
     @Transactional(readOnly = true)
     public MetricResult<MarketContextDto> evaluate(AnalysisContext context, NormalizedPriceSeriesDto stockPrice, PriceStructureDto structures) {
+        return evaluate(context, stockPrice, structures, List.of());
+    }
+
+    /** 支援由報告入口傳入已查詢之過去財報列表以計算財報 Anchored VWAP，同時不破壞原有單次 findVisible 測試契約。 */
+    @Transactional(readOnly = true)
+    public MetricResult<MarketContextDto> evaluate(AnalysisContext context, NormalizedPriceSeriesDto stockPrice,
+                                                   PriceStructureDto structures, List<MarketEvent> pastEarnings) {
         if (stockPrice == null || stockPrice.bars().isEmpty()) return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                 AnalysisReasonDto.of("PRICE_REQUIRED", "MARKET_CONTEXT", "需要行情資料。"));
         if (stockPrice.quality() != MetricStatus.AVAILABLE) return MetricResult.unavailable(stockPrice.quality(),
@@ -53,12 +60,14 @@ public class MarketContextService {
         MetricResult<NormalizedPriceSeriesDto> spy = benchmark(context, "SPY", from, through);
         MetricResult<NormalizedPriceSeriesDto> qqq = benchmark(context, "QQQ", from, through);
         Map<String, List<Observation>> inputs = loadInputs(through);
+        MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", context, inputs, 1);
         MomentumAnalysisDto momentum = momentumCalculator.calculate(bars);
-        VolumeAnalysisDto volume = volumeCalculator.calculate(bars, structures);
+        EarningsAnchorSelection earningsAnchor = resolveEarningsAnchor(pastEarnings, through);
+        VolumeAnalysisDto volume = volumeCalculator.calculate(bars, structures, earningsAnchor.eventDate(), earningsAnchor.anchorSession());
         DrawdownAnalysisDto drawdown = drawdownCalculator.calculate(bars, structures);
         RelativeStrengthDto relative = spy.status() == MetricStatus.AVAILABLE
                 ? relativeStrengthCalculator.calculate(bars, spy.value().bars(), "SPY") : missingRelative(spy);
-        MetricResult<MarketSnapshotDto> market = market(context, spy, qqq, inputs);
+        MetricResult<MarketSnapshotDto> market = market(context, spy, qqq, inputs, vixClose);
         TreasuryContextDto treasury = treasury(context, inputs);
         List<MarketEvent> knownEvents = events.findVisible(context.figi(), context.analysisAsOf().atZone(NY).toLocalDate().minusDays(10),
                 context.analysisAsOf().atZone(NY).toLocalDate().plusDays(20), context.observationCutoff());
@@ -81,7 +90,7 @@ public class MarketContextService {
         for (String source : List.of("TREASURY_10Y", "TREASURY_2Y", "VIX_CLOSE", "CNN_FG"))
             freshness.put(source, freshness(source, context, inputs, source.startsWith("TREASURY") ? 3 : 1));
         MarketContextDto result = new MarketContextDto(summary, relative, market, risks, constraint(context, market, knownEvents, risks),
-                List.copyOf(reasons), List.of(), momentum, volume, drawdown, treasury, freshness);
+                List.copyOf(reasons), List.of(), momentum, volume, drawdown, treasury, freshness, vixClose);
         return MetricResult.available(result);
     }
 
@@ -132,10 +141,11 @@ public class MarketContextService {
     }
 
     private MetricResult<MarketSnapshotDto> market(AnalysisContext context, MetricResult<NormalizedPriceSeriesDto> spy,
-                                                  MetricResult<NormalizedPriceSeriesDto> qqq, Map<String, List<Observation>> inputs) {
+                                                  MetricResult<NormalizedPriceSeriesDto> qqq, Map<String, List<Observation>> inputs,
+                                                  MetricResult<BigDecimal> vixClose) {
         if (spy.status() != MetricStatus.AVAILABLE || qqq.status() != MetricStatus.AVAILABLE)
             return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("MARKET_INDEX_SERIES_REQUIRED", "MARKET", "需要 SPY 與 QQQ 行情。"));
-        MetricResult<MarketRegime> regime = regimeCalculator.classify(spy.value().bars(), qqq.value().bars(), value("VIX_CLOSE", context, inputs, 1));
+        MetricResult<MarketRegime> regime = regimeCalculator.classify(spy.value().bars(), qqq.value().bars(), vixClose);
         if (regime.status() != MetricStatus.AVAILABLE) return MetricResult.unavailable(regime.status(), regime.reasons(), List.of());
         MetricResult<BigDecimal> fear = value("CNN_FG", context, inputs, 1);
         MetricResult<BigDecimal> breadth = value("CNN_BREADTH_SCORE", context, inputs, 1);
@@ -179,21 +189,93 @@ public class MarketContextService {
         return sessions.getLast();
     }
 
+    /** 合併所有同時命中的事件與大盤市況限制，避免宏觀事件蓋過 PANIC／BEAR 封鎖。 */
     private PlanConstraintDto constraint(AnalysisContext context, MetricResult<MarketSnapshotDto> market,
                                         List<MarketEvent> knownEvents, List<EventRiskDto> risks) {
-        if (risks.stream().anyMatch(EventRiskDto::blocksNewEntry)) return new PlanConstraintDto(EntryPermission.BLOCK, List.of("EARNINGS_EVENT_WINDOW"), List.of());
+        List<String> reasonCodes = new ArrayList<>();
+        boolean blocked = false;
+        boolean requireCloseConfirmation = false;
+        boolean marketUnavailable = false;
+
+        if (risks.stream().anyMatch(EventRiskDto::blocksNewEntry)) {
+            blocked = true;
+            reasonCodes.add("EARNINGS_EVENT_WINDOW");
+        }
         boolean macroToday = knownEvents.stream().anyMatch(event -> "MACRO".equals(event.getEventType())
                 && event.getEventDate().equals(context.analysisAsOf().atZone(NY).toLocalDate())
                 && Set.of("FOMC", "CPI", "NONFARM_PAYROLLS").contains(event.getEventSubtype()));
-        if (macroToday) return new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION"), List.of());
-        if (market.status() != MetricStatus.AVAILABLE) return new PlanConstraintDto(EntryPermission.UNKNOWN, List.of("MARKET_CONTEXT_UNAVAILABLE"), List.of());
-        return switch (market.value().regime()) {
-            case PANIC -> new PlanConstraintDto(EntryPermission.BLOCK, List.of("MARKET_PANIC"), List.of());
-            case BEAR, CORRECTION -> new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_" + market.value().regime()), List.of());
-            case UNAVAILABLE -> new PlanConstraintDto(EntryPermission.UNKNOWN, List.of("MARKET_CONTEXT_UNAVAILABLE"), List.of());
-            default -> new PlanConstraintDto(EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), List.of());
-        };
+        if (macroToday) {
+            requireCloseConfirmation = true;
+            reasonCodes.add("EVENT_REQUIRES_CLOSE_CONFIRMATION");
+        }
+        if (market.status() != MetricStatus.AVAILABLE || market.value() == null || market.value().regime() == MarketRegime.UNAVAILABLE) {
+            marketUnavailable = true;
+            reasonCodes.add("MARKET_CONTEXT_UNAVAILABLE");
+        } else {
+            MarketRegime regime = market.value().regime();
+            if (regime == MarketRegime.PANIC) {
+                blocked = true;
+                reasonCodes.add("MARKET_PANIC");
+            } else if (regime == MarketRegime.BEAR) {
+                blocked = true;
+                reasonCodes.add("MARKET_BEAR");
+            } else if (regime == MarketRegime.CORRECTION) {
+                requireCloseConfirmation = true;
+                reasonCodes.add("MARKET_CORRECTION");
+            }
+        }
+
+        if (blocked) {
+            return new PlanConstraintDto(EntryPermission.BLOCK, List.copyOf(reasonCodes), List.of());
+        }
+        if (marketUnavailable) {
+            return new PlanConstraintDto(EntryPermission.UNKNOWN, List.copyOf(reasonCodes), List.of());
+        }
+        if (requireCloseConfirmation) {
+            return new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.copyOf(reasonCodes), List.of());
+        }
+        return new PlanConstraintDto(EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), List.of());
     }
+
+    /** 依交易日曆解析最近一次已完成反應交易日的財報錨點；盤後／未附時刻保守採用下一完整交易日，跳過尚未反應的事件。 */
+    private EarningsAnchorSelection resolveEarningsAnchor(List<MarketEvent> pastEarnings, LocalDate through) {
+        if (pastEarnings == null || pastEarnings.isEmpty() || through == null) {
+            return new EarningsAnchorSelection(null, null);
+        }
+        List<MarketEvent> sorted = pastEarnings.stream()
+                .filter(e -> e != null && "EARNINGS".equals(e.getEventType())
+                        && !"CANCELLED".equals(e.getStatus()) && e.getEventDate() != null)
+                .sorted(Comparator.comparing(MarketEvent::getEventDate, Comparator.reverseOrder())
+                        .thenComparing(MarketEvent::getOccurrenceAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(MarketEvent::getEventKey, Comparator.nullsLast(String::compareTo)))
+                .toList();
+        for (MarketEvent event : sorted) {
+            LocalDate anchorSession = resolvePostEventSession(event);
+            if (anchorSession != null && !anchorSession.isAfter(through)) {
+                return new EarningsAnchorSelection(event.getEventDate(), anchorSession);
+            }
+        }
+        return new EarningsAnchorSelection(null, null);
+    }
+
+    private LocalDate resolvePostEventSession(MarketEvent event) {
+        LocalDate eventDate = event.getEventDate();
+        String precision = event.getTimePrecision();
+        if ("BEFORE_OPEN".equals(precision)) {
+            return calendar.isTradingDay(eventDate) ? eventDate : calendar.getNextTradingDay(eventDate);
+        }
+        if ("EXACT".equals(precision) && event.getOccurrenceAt() != null) {
+            LocalDate tradingDay = calendar.isTradingDay(eventDate) ? eventDate : calendar.getNextTradingDay(eventDate);
+            if (!event.getOccurrenceAt().isAfter(calendar.getSessionOpenAt(tradingDay))) {
+                return tradingDay;
+            }
+            return calendar.getNextTradingDay(tradingDay);
+        }
+        // AFTER_CLOSE、DATE_ONLY 或缺精確時刻皆保守採用事件後第一個完整正規交易日
+        return calendar.getNextTradingDay(eventDate);
+    }
+
+    private record EarningsAnchorSelection(LocalDate eventDate, LocalDate anchorSession) {}
 
     private SourceFreshnessDto freshness(String code, AnalysisContext context, Map<String, List<Observation>> inputs, int maxLag) {
         MetricResult<BigDecimal> metric = value(code, context, inputs, maxLag);

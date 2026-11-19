@@ -146,6 +146,85 @@ class TradePlanCalculatorTests {
         assertThat(plan.reasons()).extracting(AnalysisReasonDto::code).contains("NO_FIXED_TARGET");
     }
 
+    // 例子：BEAR/PANIC 阻擋右側入場；CORRECTION 僅同區有效 SPRING_RECLAIMED 或 CONFIRMED_RETEST 可放行，
+    // 跨區 Spring 不得解鎖他區，宏觀 CPI 限制下僅 CONFIRMED_RETEST 放行，HIGH_RISK_BREAKDOWN 阻擋入場。
+    @Test
+    void correctionSpringTimingZoneIsolationMacroConstraintAndBearBlockAreEnforced() {
+        LocalDate reclaimDate = LocalDate.of(2026, 10, 14);
+        LocalDate nextSession = LocalDate.of(2026, 10, 15);
+        LocalDate validThrough = LocalDate.of(2026, 10, 21);
+        LevelZoneDto supA = support();
+        BreakoutDiagnosisDto springOnA = new BreakoutDiagnosisDto(
+                BreakoutDiagnosis.SPRING_RECLAIMED, "S", 1, 1, AnalysisTimeframe.DAILY,
+                new BigDecimal("95"), new BigDecimal("100"), LocalDate.of(2026, 10, 13), reclaimDate, validThrough, nextSession,
+                2, new BigDecimal("0.8"), new BigDecimal("1.5"), null, null, null, null, null, null,
+                List.of("SPRING_RECLAIMED", "RECLAIM_VOLUME_CONFIRMED"), List.of());
+        BreakoutDiagnosisDto springOnOtherZone = new BreakoutDiagnosisDto(
+                BreakoutDiagnosis.SPRING_RECLAIMED, "OTHER_ZONE", 1, 1, AnalysisTimeframe.DAILY,
+                new BigDecimal("95"), new BigDecimal("100"), LocalDate.of(2026, 10, 13), reclaimDate, validThrough, nextSession,
+                2, new BigDecimal("0.8"), new BigDecimal("1.5"), null, null, null, null, null, null,
+                List.of("SPRING_RECLAIMED"), List.of());
+        BreakoutDiagnosisDto highRiskOnA = new BreakoutDiagnosisDto(
+                BreakoutDiagnosis.HIGH_RISK_BREAKDOWN, "S", 1, 1, AnalysisTimeframe.DAILY,
+                new BigDecimal("95"), new BigDecimal("100"), nextSession, null, null, nextSession,
+                0, new BigDecimal("2.0"), new BigDecimal("2.0"), null, null, null, null, null, null,
+                List.of("HIGH_VOLUME_BREAKDOWN"), List.of());
+        PlanConstraintDto correctionOnly = new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), List.of());
+        PlanConstraintDto correctionWithCpi = new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION,
+                List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION", "MARKET_CORRECTION"), List.of());
+        PlanConstraintDto bearBlocked = new PlanConstraintDto(EntryPermission.BLOCK,
+                List.of("EVENT_REQUIRES_CLOSE_CONFIRMATION", "MARKET_BEAR"), List.of());
+
+        // 1) CORRECTION + 同區 Spring：收復當日尚不可執行；次一交易日可 ACTIVE；過期後 INVALIDATED
+        TradePlanDto onReclaimDay = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), reclaimDate,
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionOnly, springOnA);
+        assertThat(onReclaimDay.status()).isEqualTo(TradePlanStatus.WAITING_TRIGGER);
+        assertThat(onReclaimDay.reasons()).extracting(AnalysisReasonDto::code).contains("SIGNAL_NOT_EXECUTABLE_YET");
+
+        TradePlanDto onNextSession = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), nextSession,
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionOnly, springOnA);
+        assertThat(onNextSession.status()).isEqualTo(TradePlanStatus.ACTIVE);
+
+        TradePlanDto expiredSpring = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), validThrough.plusDays(1),
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionOnly, springOnA);
+        assertThat(expiredSpring.status()).isEqualTo(TradePlanStatus.INVALIDATED);
+        assertThat(expiredSpring.reasons()).extracting(AnalysisReasonDto::code).contains("ENTRY_EXPIRED");
+
+        // 2) 他區 Spring 不得解鎖本區
+        TradePlanDto wrongZone = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), nextSession,
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionOnly, springOnOtherZone);
+        assertThat(wrongZone.status()).isEqualTo(TradePlanStatus.WAITING_TRIGGER);
+        assertThat(wrongZone.reasons()).extracting(AnalysisReasonDto::code).contains("CLOSE_CONFIRMATION_REQUIRED");
+
+        // 3) CORRECTION + 當日 CPI：單純 Spring 仍等待，CONFIRMED_RETEST 可放行
+        TradePlanDto springBlockedByCpi = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), nextSession,
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionWithCpi, springOnA);
+        assertThat(springBlockedByCpi.status()).isEqualTo(TradePlanStatus.WAITING_TRIGGER);
+        assertThat(springBlockedByCpi.reasons()).extracting(AnalysisReasonDto::code).contains("CLOSE_CONFIRMATION_REQUIRED");
+
+        LevelZoneDto confirmedRetestZone = new LevelZoneDto(supA.id(), supA.timeframe(), supA.lower(), supA.upper(),
+                supA.role(), supA.strength(), supA.confirmedAt(), supA.testCount(), supA.lastTestAt(), supA.state(),
+                supA.center(), supA.anchorAtr(), supA.boundsVersion(), supA.strengthLabel(), supA.effectiveStrength(),
+                2, supA.confirmedAt(), new BigDecimal("98"), supA.seedIds(), supA.dependenceKeys(),
+                supA.rejectionCount(), supA.penetrationCount(), supA.ageBars(), supA.distanceLowerPercent(),
+                supA.distanceUpperPercent(), RetestState.SUCCEEDED, supA.majorLevel(), supA.evidenceRefs());
+        TradePlanDto retestWithCpi = calculator.build(context(), "BASIS", "hash", new BigDecimal("98.5"), nextSession,
+                confirmedRetestZone, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, correctionWithCpi, null);
+        assertThat(retestWithCpi.status()).isEqualTo(TradePlanStatus.ACTIVE);
+
+        // 4) BEAR + FOMC + CONFIRMED_RETEST 仍一律禁止入場；HIGH_RISK_BREAKDOWN 亦阻擋入場
+        TradePlanDto bearRetest = calculator.build(context(), "BASIS", "hash", new BigDecimal("98.5"), nextSession,
+                confirmedRetestZone, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, validThrough, bearBlocked, null);
+        assertThat(bearRetest.status()).isEqualTo(TradePlanStatus.WAITING_TRIGGER);
+        assertThat(bearRetest.reasons()).extracting(AnalysisReasonDto::code).contains("ENTRY_CONSTRAINT");
+
+        TradePlanDto highRiskBlocked = calculator.build(context(), "BASIS", "hash", new BigDecimal("98"), nextSession,
+                supA, List.of(resistance()), uptrend(), new BigDecimal("5"), nextSession, null,
+                new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()), highRiskOnA);
+        assertThat(highRiskBlocked.status()).isEqualTo(TradePlanStatus.WAITING_TRIGGER);
+        assertThat(highRiskBlocked.reasons()).extracting(AnalysisReasonDto::code).contains("HIGH_RISK_BREAKDOWN_DETECTED");
+    }
+
     private LevelZoneDto withTimeframe(LevelZoneDto z, AnalysisTimeframe tf) {
         return new LevelZoneDto(z.id(), tf, z.lower(), z.upper(), z.role(), z.strength(),
                 z.confirmedAt(), z.testCount(), z.lastTestAt(), z.state(), z.center(), z.anchorAtr(),

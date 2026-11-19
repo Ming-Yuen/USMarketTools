@@ -876,10 +876,12 @@
       },
       "stances": {
         "ACCUMULATE_AT_SUPPORT": "估值偏低且具备结构支撑 · 可留意支撑区分批观察",
+        "TREND_PULLBACK_STARTER": "强势趋势回踩试单 · 建议底仓分批试单，紧贴均线设止损，余下仓位留待深回调",
         "WATCH_PULLBACK_TO_BAND": "对照市场参考下缘与支撑区分批观察，不追高",
         "HOLD_TRAIL_NO_CHASE": "基本面与趋势强劲但估值偏高 · 宜沿趋势观察、不追高",
         "CAUTION_VALUE_TRAP": "基本面转弱警戒 · 提防价值陷阱或盈利下修，暂缓承接",
         "CAUTION_OVEREXTENSION": "估值高于市场参考上缘 · 留意溢价收敛风险",
+        "WAIT_FOR_MARKET_STABILIZATION": "大盘处于逆风环境 · 暂缓左侧接刀，等待大盘企稳或右侧确认",
         "WAIT_FOR_STABILIZATION": "技术破位待收复、低于年线或事件受限 · 等待企稳与条件明朗",
         "INSUFFICIENT_EVIDENCE": "核心锚点不足 · 仅展示单项可用指标"
       },
@@ -891,6 +893,9 @@
       },
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "财报或重大事件临近（{{eventDate}}），新入场条件受限",
+        "MARKET_REGIME_HEADWIND": "大盘市况处于逆风状态（{{regime}}），左侧接刀风险偏高",
+        "MACRO_VOLATILITY_OR_RATE_STRESS": "市场波动率（VIX）或 10Y 美债近 20 期变动处于警戒水位，宜预留额外安全边际并缩减仓位",
+        "SUPPORT_HIGH_RISK_BREAKDOWN": "关键支撑已触发高概率真破位诊断，须严格执行止损纪律",
         "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "股价已跌穿保护止损或低于入场区，须先收复企稳",
         "SWUNG_TO_LOSS": "TTM 每股盈利较去年同期由盈转亏",
         "NEGATIVE_TRAILING_EARNINGS": "当期 TTM 每股盈利为负（亏损状态）",
@@ -903,6 +908,9 @@
         "ANCHOR_DIVERGENCE": "自身历史中位价与同行中位价差距较大，请一并对照下方分项"
       },
       "watchItems": {
+        "WATCH_TREND_PULLBACK_STARTER": "强势回踩试单（{{anchor}} {{anchorPrice}} {{currency}}）：建议 {{positionFraction}} 底仓试单，紧贴止损 {{suggestedStop}} {{currency}}",
+        "WATCH_CORRECTION_RIGHT_SIDE": "大盘修正期已完成右侧确认（{{basis}}），建议采半仓小额分批观察",
+        "WATCH_MARKET_STABILIZATION": "等待大盘脱离 {{regime}} 逆风进入企稳（RECOVERY）或右侧确认",
         "WATCH_REFERENCE_LOW_BAND": "低接观察门槛（参考下缘）：{{priceLow}} {{currency}}（中枢 {{priceMid}}）",
         "WATCH_TECHNICAL_SUPPORT": "配对{{timeframe}}支撑区：{{lower}}–{{upper}} {{currency}}",
         "WATCH_RECLAIM_STABILIZATION": "观察股价重新站回支撑区并确认止跌结构",

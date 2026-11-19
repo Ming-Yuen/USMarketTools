@@ -20,7 +20,39 @@ public class RelativeStrengthCalculator {
         MetricResult<BigDecimal> signal=e60.status()==MetricStatus.AVAILABLE
                 ? MetricResult.available(e60.value().divide(new BigDecimal("0.05"),MC).max(BigDecimal.ONE.negate()).min(BigDecimal.ONE))
                 : MetricResult.unavailable(e60.status(),e60.reasons(),e60.evidenceRefs());
-        return new RelativeStrengthDto(benchmarkCode,e20,e60,e120,windows,signal,List.of());
+        Map<LocalDate, BigDecimal> recentBenchmarkDailyReturns = recentAlignedBenchmarkDailyReturns(stock, benchmark, 10);
+        return new RelativeStrengthDto(benchmarkCode,e20,e60,e120,windows,signal,List.of(),recentBenchmarkDailyReturns);
+    }
+
+    /** 依個股與基準相同前後兩個交易日對齊計算近期基準單日報酬，供破位診斷判定系統性拖累或獨立走弱。 */
+    private Map<LocalDate, BigDecimal> recentAlignedBenchmarkDailyReturns(
+            List<NormalizedBarDto> stock, List<NormalizedBarDto> benchmark, int maxSessions) {
+        if (stock == null || benchmark == null || stock.size() < 2) {
+            return Map.of();
+        }
+        Map<LocalDate, NormalizedBarDto> benchByDate = new HashMap<>();
+        for (NormalizedBarDto b : benchmark) {
+            if (b != null && b.sessionDate() != null) {
+                benchByDate.put(b.sessionDate(), b);
+            }
+        }
+        Map<LocalDate, BigDecimal> returns = new LinkedHashMap<>();
+        int start = Math.max(1, stock.size() - maxSessions);
+        for (int i = start; i < stock.size(); i++) {
+            NormalizedBarDto sPrev = stock.get(i - 1);
+            NormalizedBarDto sCurr = stock.get(i);
+            if (sPrev == null || sCurr == null || sPrev.sessionDate() == null || sCurr.sessionDate() == null) {
+                continue;
+            }
+            NormalizedBarDto bPrev = benchByDate.get(sPrev.sessionDate());
+            NormalizedBarDto bCurr = benchByDate.get(sCurr.sessionDate());
+            if (bPrev == null || bCurr == null || !compatible(sPrev, bPrev) || !compatible(sCurr, bCurr)) {
+                continue;
+            }
+            BigDecimal benchReturn = bCurr.close().divide(bPrev.close(), MC).subtract(BigDecimal.ONE, MC);
+            returns.put(sCurr.sessionDate(), benchReturn);
+        }
+        return Map.copyOf(returns);
     }
 
     // 用途：處理window的內部流程，統一輸入、輸出與資料品質規則供後續步驟使用。

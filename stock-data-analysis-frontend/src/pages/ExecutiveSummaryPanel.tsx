@@ -1,7 +1,7 @@
 import React from "react";
 import { Alert, Box, Chip, Divider, Grid, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
-import { InvestmentSummary, MetricResult, SummaryFlag, WatchItem } from "../services/types/dto/analysis";
+import { BreakoutDiagnosis, InvestmentSummary, MacroCaution, MetricResult, SummaryFlag, WatchItem } from "../services/types/dto/analysis";
 import { ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, metricLabel, readableReason, readableState, reasonLabel, statusLabel } from "./AnalysisPanels";
 
@@ -24,10 +24,12 @@ const BACKING_DEFAULTS: Record<string, string> = {
 
 const STANCE_DEFAULTS: Record<string, string> = {
   ACCUMULATE_AT_SUPPORT: "估值偏低且具備結構支撐 · 可留意支撐區分批觀察",
+  TREND_PULLBACK_STARTER: "強勢趨勢回踩試單 · 建議底倉分批試單，緊貼均線設止損，餘下倉位留待深回檔",
   WATCH_PULLBACK_TO_BAND: "對照市場參考下緣與支撐區分批觀察，不追高",
   HOLD_TRAIL_NO_CHASE: "基本面與趨勢強勁但估值偏高 · 宜沿趨勢觀察、不追高",
   CAUTION_VALUE_TRAP: "基本面轉弱警戒 · 提防價值陷阱或盈利下修，暫緩承接",
   CAUTION_OVEREXTENSION: "估值高於市場參考上緣 · 留意溢價收斂風險",
+  WAIT_FOR_MARKET_STABILIZATION: "大盤處於逆風環境 · 暫緩左側接刀，等待大盤止穩或右側確認",
   WAIT_FOR_STABILIZATION: "技術破位待收復、低於年線或事件受限 · 等待止穩與條件明朗",
   INSUFFICIENT_EVIDENCE: "核心錨點不足 · 僅展示單項可用指標",
 };
@@ -41,6 +43,9 @@ const ANCHOR_DEFAULTS: Record<string, string> = {
 
 const RISK_DEFAULTS: Record<string, string> = {
   EARNINGS_IMMINENT_BLOCK: "財報或重大事件臨近，新入場條件受限",
+  MARKET_REGIME_HEADWIND: "大盤市況處於逆風狀態，左側接刀風險偏高",
+  MACRO_VOLATILITY_OR_RATE_STRESS: "市場波動率（VIX）或 10Y 美債近 20 期變動處於警戒水位，宜預留額外安全邊際並縮減倉位",
+  SUPPORT_HIGH_RISK_BREAKDOWN: "關鍵支撐已觸發高機率真破位診斷，須嚴格執行止損紀律",
   PROTECTIVE_STOP_OR_RECLAIM_PENDING: "股價已跌穿保護止損或低於入場區，須先收復止穩",
   FORWARD_EARNINGS_CONTRACTION: "市場共識預期年度 EPS 較當期 TTM 顯著下滑或轉虧（提防價值陷阱，共識口徑僅供對照）",
   EARNINGS_FORECAST_DOWNGRADE_90D: "近 90 日市場共識預期 EPS 顯著下修逾 10%",
@@ -54,6 +59,55 @@ const RISK_DEFAULTS: Record<string, string> = {
   BELOW_SMA200_DOWNTREND: "週線處於下降趨勢且日線收盤低於 SMA200 年線",
   ANCHOR_DIVERGENCE: "自身歷史中位價與同業中位價差距較大，請一併對照下方分項",
 };
+
+const BREAKOUT_DIAGNOSIS_META: Record<string, { label: string; color: "warning" | "success" | "error" | "info"; guidance: string }> = {
+  SUSPECTED_SHAKEOUT: {
+    label: "疑似洗盤假跌破",
+    color: "warning",
+    guidance: "暫緩砍倉，觀察 1–3 個交易日能否放量站回支撐下緣",
+  },
+  SPRING_RECLAIMED: {
+    label: "彈簧效應收回",
+    color: "success",
+    guidance: "跌破支撐後 1–3 個交易日內已放量收復支撐下緣",
+  },
+  BREACH_OBSERVING: {
+    label: "跌破支撐待觀察",
+    color: "warning",
+    guidance: "收盤已低於支撐下緣，量價特徵尚待後續交易日確認",
+  },
+  HIGH_RISK_BREAKDOWN: {
+    label: "高機率真破位",
+    color: "error",
+    guidance: "建議嚴格執行保護止損紀律，避免逆勢承接",
+  },
+};
+
+const STARTER_ANCHOR_LABELS: Record<string, string> = {
+  EMA21: "EMA21",
+  SMA50: "SMA50",
+  EARNINGS_AVWAP: "財報日 AVWAP",
+};
+
+const FORWARD_PEG_BASIS_LABELS: Record<string, string> = {
+  FORWARD_FY1_VS_TTM: "FY1 較 TTM",
+  FORWARD_FY2_VS_FY1: "FY2 較 FY1",
+};
+
+function formatMacroTriggers(caution: MacroCaution): string[] {
+  const labels: string[] = [];
+  for (const code of caution.triggerCodes ?? []) {
+    if (code === "MARKET_REGIME_PANIC") labels.push("大盤處於恐慌（PANIC）");
+    else if (code === "MARKET_REGIME_BEAR") labels.push("大盤處於空頭（BEAR）");
+    else if (code === "MARKET_REGIME_CORRECTION") labels.push("大盤處於修正（CORRECTION）");
+    else if (code === "VIX_ELEVATED") labels.push(`VIX 處於高位（${formatNumber(caution.vixClose)} ≥ 25）`);
+    else if (code === "TREASURY_10Y_SURGE_20P") {
+      const bps = caution.tenYearChange20 != null ? Math.round(caution.tenYearChange20 * 100) : null;
+      labels.push(`10Y 美債近 20 期急升${bps != null ? `（+${bps} bps）` : "（≥ +30 bps）"}`);
+    } else labels.push(code);
+  }
+  return labels;
+}
 
 const INDUSTRY_NA_REASON_CODES = new Set([
   "PFCF_NOT_APPLICABLE_TO_INDUSTRY",
@@ -87,12 +141,19 @@ function isPrimaryCodeMatch(cardKey: string, primaryMetric?: string | null): boo
   return cardKey.toUpperCase() === upper;
 }
 
-export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
+export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagnosis }: {
   valuation?: ValuationResult | null;
   summaryResult?: MetricResult<InvestmentSummary> | null;
+  breakoutDiagnosis?: BreakoutDiagnosis | null;
 }) {
   const { t } = useTranslation();
   const summary = summaryResult?.status === "AVAILABLE" ? summaryResult.value : null;
+  const activeDiagnosis = (summary?.breakoutDiagnosis && summary.breakoutDiagnosis.diagnosis !== "NONE")
+    ? summary.breakoutDiagnosis
+    : (breakoutDiagnosis && breakoutDiagnosis.diagnosis !== "NONE" ? breakoutDiagnosis : null);
+  const diagnosisMeta = activeDiagnosis ? BREAKOUT_DIAGNOSIS_META[activeDiagnosis.diagnosis] : null;
+  const macroCaution = summary?.macroCaution ?? null;
+  const starter = summary?.trendPullbackStarter ?? null;
   const price = valuation?.price ?? null;
   const currency = summary?.fairValue?.currency ?? valuation?.currency ?? "";
   const band = summary?.fairValue ?? null;
@@ -106,6 +167,8 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
     let fallback = RISK_DEFAULTS[flag.code] ?? flag.code;
     if (flag.code === "EARNINGS_IMMINENT_BLOCK" && flag.params?.eventDate) {
       fallback = `財報或重大事件臨近（${String(flag.params.eventDate)}），新入場條件受限`;
+    } else if (flag.code === "MARKET_REGIME_HEADWIND" && flag.params?.regime) {
+      fallback = `大盤市況處於逆風狀態（${readableState(t, String(flag.params.regime))}），左側接刀風險偏高`;
     } else if (flag.code === "FORWARD_EARNINGS_CONTRACTION") {
       const fp = flag.params?.fiscalPeriod ? `（${String(flag.params.fiscalPeriod)}）` : "";
       if (flag.params?.swungToLoss) {
@@ -125,7 +188,15 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
   const renderWatchText = (item: WatchItem) => {
     const p = item.params ?? {};
     let fallback = item.code;
-    if (item.code === "WATCH_REFERENCE_LOW_BAND") {
+    if (item.code === "WATCH_TREND_PULLBACK_STARTER") {
+      const anchorName = STARTER_ANCHOR_LABELS[String(p.anchor ?? "")] ?? String(p.anchor ?? "");
+      fallback = `強勢回踩試單（${anchorName} ${formatNumber(Number(p.anchorPrice))} ${String(p.currency ?? currency)}）：建議 ${String(p.positionFraction ?? "1/3")} 底倉試單，緊貼止損 ${formatNumber(Number(p.suggestedStop))} ${String(p.currency ?? currency)}`;
+    } else if (item.code === "WATCH_CORRECTION_RIGHT_SIDE") {
+      const basisLabel = p.basis === "SPRING_RECLAIMED" ? "彈簧效應收回" : "已確認突破回測";
+      fallback = `大盤修正期已完成右側確認（${basisLabel}），建議採半倉小額分批觀察`;
+    } else if (item.code === "WATCH_MARKET_STABILIZATION") {
+      fallback = `等待大盤脫離 ${readableState(t, String(p.regime ?? ""))} 逆風進入止穩（RECOVERY）或右側確認`;
+    } else if (item.code === "WATCH_REFERENCE_LOW_BAND") {
       fallback = `低接觀察門檻（參考下緣）：${formatNumber(Number(p.priceLow))} ${String(p.currency ?? currency)}（中樞 ${formatNumber(Number(p.priceMid))}）`;
     } else if (item.code === "WATCH_TECHNICAL_SUPPORT") {
       const tfLabel = readableState(t, String(p.timeframe ?? "DAILY"));
@@ -139,6 +210,9 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
     }
     return t(`analysisReport.executiveSummary.watchItems.${item.code}`, {
       ...p,
+      anchor: p.anchor ? (STARTER_ANCHOR_LABELS[String(p.anchor)] ?? String(p.anchor)) : undefined,
+      anchorPrice: p.anchorPrice != null ? formatNumber(Number(p.anchorPrice)) : undefined,
+      suggestedStop: p.suggestedStop != null ? formatNumber(Number(p.suggestedStop)) : undefined,
       priceLow: p.priceLow != null ? formatNumber(Number(p.priceLow)) : undefined,
       priceMid: p.priceMid != null ? formatNumber(Number(p.priceMid)) : undefined,
       lower: p.lower != null ? formatNumber(Number(p.lower)) : undefined,
@@ -181,6 +255,22 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
             size="small"
             color="warning"
             label={summary.nextBlockingEventDate ? `事件門鎖：${summary.nextBlockingEventDate}` : "事件門鎖受限"}
+          />
+        )}
+        {summary?.rightSideConfirmationBasis && (
+          <Chip
+            size="small"
+            color="info"
+            variant="outlined"
+            label={`修正市右側確認（${summary.rightSideConfirmationBasis === "SPRING_RECLAIMED" ? "彈簧收回" : "突破回測"}）· 半倉觀察`}
+          />
+        )}
+        {diagnosisMeta && (
+          <Chip
+            size="small"
+            color={diagnosisMeta.color}
+            label={`破位診斷：${diagnosisMeta.label}`}
+            sx={{ fontWeight: 700 }}
           />
         )}
       </Stack>
@@ -284,6 +374,38 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
           })}
         </Typography>
 
+        {summary.stance === "TREND_PULLBACK_STARTER" && starter?.eligible && (
+          <Alert severity="info" sx={{ mt: 1 }}>
+            <b>強勢股趨勢回踩試單指引</b>：回踩 <b>{STARTER_ANCHOR_LABELS[starter.matchedAnchor ?? ""] ?? starter.matchedAnchor}</b>
+            （{formatNumber(starter.anchorPrice)} {currency}，距現價 {formatSignedRatioPct(starter.distanceRatio)}）
+            {starter.positionFraction && (
+              <>
+                ，建議 <b>{starter.positionFraction}</b> 底倉試單
+                {starter.positionFraction === "1/6" ? "（原 1/3 底倉因宏觀警戒再減半）"
+                  : starter.positionFraction === "1/3" ? "（餘下 2/3 留待深回檔）" : ""}
+              </>
+            )}
+            {starter.suggestedStop != null && (
+              <>，緊貼止損參考 <b>{formatNumber(starter.suggestedStop)} {currency}</b></>
+            )}
+            。前瞻成長依據：{starter.forwardGrowthBasis === "HYPER_GROWTH_FORWARD_PE"
+              ? `預期 EPS 成長逾 100% 豁免 · Forward P/E ${formatNumber(starter.forwardPe)}x`
+              : `Forward PEG ${formatNumber(starter.forwardPeg)}${starter.forwardPegBasis ? `（${FORWARD_PEG_BASIS_LABELS[starter.forwardPegBasis] ?? starter.forwardPegBasis}）` : ""}`}。
+          </Alert>
+        )}
+
+        {summary.stance === "HOLD_TRAIL_NO_CHASE" && starter && !starter.eligible && starter.ineligibleMessage && (
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.6 }}>
+            未啟動回踩試單：{starter.ineligibleMessage}
+          </Typography>
+        )}
+
+        {macroCaution && !macroCaution.evaluated && (
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.6 }}>
+            宏觀安全邊際（大盤市況／VIX／10Y 美債）目前缺少可用觀測資料，暫未評估環境警戒。
+          </Typography>
+        )}
+
         {(summary.risks.length > 0 || summary.watchItems.length > 0) && (
           <Grid container spacing={1.5} sx={{ mt: 0.5 }}>
             {summary.risks.length > 0 && (
@@ -315,6 +437,38 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult }: {
       <Typography variant="body2" color="text.secondary" sx={{ mt: 1.2 }}>
         {summaryResult.reasons.map(r => readableReason(t, r)).join("；")}
       </Typography>
+    )}
+
+    {macroCaution?.active && (
+      <Alert
+        severity={macroCaution.marketRegime === "PANIC" || macroCaution.marketRegime === "BEAR" ? "error" : "warning"}
+        sx={{ mt: 1.5 }}
+      >
+        <b>宏觀環境安全邊際提示</b>（{formatMacroTriggers(macroCaution).join("；")}）：客觀參考帶 [L, M, H] 維持不變
+        {macroCaution.suggestedMarginBufferMin != null && macroCaution.suggestedMarginBufferMax != null && (
+          <>
+            ；建議低接目標再預留{" "}
+            <b>
+              {Math.round(macroCaution.suggestedMarginBufferMin * 100)}%–{Math.round(macroCaution.suggestedMarginBufferMax * 100)}%
+            </b>{" "}
+            安全邊際
+          </>
+        )}
+        {macroCaution.suggestedPositionScale != null && (
+          <>，單筆建議倉位減半（{Math.round(macroCaution.suggestedPositionScale * 100)}%）</>
+        )}
+        。
+      </Alert>
+    )}
+
+    {activeDiagnosis && diagnosisMeta && (
+      <Alert severity={diagnosisMeta.color} sx={{ mt: 1.5 }}>
+        <b>支撐破位診斷：{diagnosisMeta.label}</b> — {diagnosisMeta.guidance}
+        {activeDiagnosis.breachDate ? `（破位日：${activeDiagnosis.breachDate}` : ""}
+        {activeDiagnosis.reclaimDate ? ` · 收復日：${activeDiagnosis.reclaimDate}` : ""}
+        {activeDiagnosis.rvolAtBreach != null ? ` · 破位量比 RVOL ${formatNumber(activeDiagnosis.rvolAtBreach)}x` : ""}
+        {activeDiagnosis.breachDate ? "）" : ""}
+      </Alert>
     )}
 
     {summary?.eventGateBlocked && (

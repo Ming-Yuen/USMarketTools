@@ -5,6 +5,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -15,6 +17,9 @@ import org.hibernate.annotations.Comment;
 /** FIGI + 交易日的未復權 OHLCV；市值由股價與財報股數計算，不重複保存。 */
 @Data
 @Entity
+@Table(name = "stock_quote", indexes = {
+        @Index(name = "idx_stock_quote_figi_date", columnList = "figi,quote_date")
+})
 @IdClass(StockQuoteId.class)
 public class StockQuote {
     @Id

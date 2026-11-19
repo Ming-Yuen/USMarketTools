@@ -52,13 +52,32 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
                                         @Param("from") LocalDate from,
                                         @Param("through") LocalDate through);
 
-    /** 批次取得每股最近一筆已入庫日線收盤紀錄（不超過指定日），供持倉清單快速計算最新市值與損益，免載入 5 年日線。 */
+    /** 批次取得每股最近一筆已入庫日線收盤紀錄（不超過指定日），透過 LATERAL + (figi, quote_date) 索引每檔僅回讀 1 列。 */
+    default List<StockQuote> findLatestQuotesUpTo(Collection<String> figis, LocalDate through) {
+        if (figis == null || figis.isEmpty() || through == null) {
+            return List.of();
+        }
+        String[] distinctFigis = figis.stream()
+                .filter(f -> f != null && !f.isBlank())
+                .distinct()
+                .toArray(String[]::new);
+        if (distinctFigis.length == 0) {
+            return List.of();
+        }
+        return findLatestQuotesUpToArray(distinctFigis, through);
+    }
+
     @Query(value = """
-            select distinct on (q.figi) q.*
-            from stock_quote q
-            where q.figi in (:figis) and q.quote_date <= :through
-            order by q.figi, q.quote_date desc
+            select q.*
+            from unnest(cast(:figis as text[])) as u(figi)
+            cross join lateral (
+                select sq.*
+                from stock_quote sq
+                where sq.figi = u.figi and sq.quote_date <= :through
+                order by sq.quote_date desc
+                limit 1
+            ) q
             """, nativeQuery = true)
-    List<StockQuote> findLatestQuotesUpTo(@Param("figis") Collection<String> figis,
-                                          @Param("through") LocalDate through);
+    List<StockQuote> findLatestQuotesUpToArray(@Param("figis") String[] figis,
+                                               @Param("through") LocalDate through);
 }

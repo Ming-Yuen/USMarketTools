@@ -85,7 +85,7 @@ public class EarningsForecastSyncService {
                     continue;
                 }
                 StockEarningsForecast.Key key = new StockEarningsForecast.Key(matches.getFirst().getFigi(), fiscalPeriod,
-                        periodType, observedAt.atZone(ZoneId.of("America/New_York")).toLocalDate());
+                        periodType, observedAt.atZone(ZoneId.of("America/New_York")).toLocalDate(), "FUTU");
                 StockEarningsForecast row = rows.computeIfAbsent(key, ignored -> forecast(key, currency, observedAt));
                 if (!currency.equals(row.getCurrency())) throw new IllegalStateException("EARNINGS_FORECAST_CURRENCY_CONFLICT:" + symbol);
                 BigDecimal value = finite(estimate.getPredictValue());

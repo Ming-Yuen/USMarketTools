@@ -18,9 +18,9 @@ import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import jakarta.validation.constraints.NotBlank;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -46,7 +46,6 @@ import java.util.Set;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class StockService {
     public static final List<String> SCREEN_MARKET_CAP_TIERS = List.of("MEGA_LARGE", "MID", "SMALL");
     public static final List<String> SCREEN_VERDICTS = List.of(
@@ -63,6 +62,36 @@ public class StockService {
     private final StockClassificationConverter stockClassificationConverter;
     private final StockConceptRepository stockConceptRepository;
     private final NamedParameterJdbcTemplate jdbc;
+    private final SecIssuerHistory issuerHistory;
+
+    @Autowired
+    public StockService(
+            StockRepository stockRepository,
+            StockStatusRepository stockStatusRepository,
+            StockIndustryRepository stockClassificationRepository,
+            StockClassificationConverter stockClassificationConverter,
+            StockConceptRepository stockConceptRepository,
+            NamedParameterJdbcTemplate jdbc,
+            SecIssuerHistory issuerHistory) {
+        this.stockRepository = stockRepository;
+        this.stockStatusRepository = stockStatusRepository;
+        this.stockClassificationRepository = stockClassificationRepository;
+        this.stockClassificationConverter = stockClassificationConverter;
+        this.stockConceptRepository = stockConceptRepository;
+        this.jdbc = jdbc;
+        this.issuerHistory = issuerHistory;
+    }
+
+    public StockService(
+            StockRepository stockRepository,
+            StockStatusRepository stockStatusRepository,
+            StockIndustryRepository stockClassificationRepository,
+            StockClassificationConverter stockClassificationConverter,
+            StockConceptRepository stockConceptRepository,
+            NamedParameterJdbcTemplate jdbc) {
+        this(stockRepository, stockStatusRepository, stockClassificationRepository,
+                stockClassificationConverter, stockConceptRepository, jdbc, new SecIssuerHistory(""));
+    }
 
     public record ScreenCriteria(
             String symbol,
@@ -363,7 +392,7 @@ public class StockService {
 
         String sql = """
                 with selected as (
-                  select s.figi, s.symbol, s.long_name, s.stock_type, s.currency as stock_currency,
+                  select s.figi, s.cik, s.symbol, s.long_name, s.stock_type, s.currency as stock_currency,
                          i.code as industry_code, i.industry,
                          v.valuation_date, v.currency as val_currency, v.market_cap, v.market_cap_tier,
                          v.pe, v.pb, v.ps, v.pfcf, v.ev_ebitda,
@@ -382,10 +411,14 @@ public class StockService {
                 + "order by " + orderByOuter + "\n";
 
         List<Item> rows = jdbc.query(sql, params, (rs, row) -> {
+            String figi = rs.getString("figi");
+            String cik = rs.getString("cik");
+            String canonicalCik = issuerHistory.canonicalCik(cik);
+            String issuerKey = canonicalCik != null ? canonicalCik : figi;
             String valCurrency = rs.getString("val_currency");
             String resolvedCurrency = valCurrency != null ? valCurrency : rs.getString("stock_currency");
             return new Item(
-                    rs.getString("figi"),
+                    figi,
                     rs.getString("symbol"),
                     rs.getString("long_name"),
                     rs.getString("stock_type"),
@@ -410,7 +443,8 @@ public class StockService {
                     rs.getString("primary_metric"),
                     rs.getString("verdict"),
                     rs.getString("valuation_status"),
-                    rs.getString("reason_code")
+                    rs.getString("reason_code"),
+                    issuerKey
             );
         });
         if (rows.isEmpty()) return new StockScreenResponse(List.of(), total, page, size);

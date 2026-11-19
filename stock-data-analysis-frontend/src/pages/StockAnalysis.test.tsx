@@ -535,7 +535,7 @@ test("renders L1 executive summary before chart and reference panels, collapses 
   expect(finExpandBtn).toHaveAttribute("aria-expanded", "true");
   expect(within(finSection).getByText("SEC 申報流通股數")).toBeVisible();
 
-  const futuExpandBtn = within(futuSection).getByRole("button", { name: /富途市場觀察與分析師預期/ });
+  const futuExpandBtn = within(futuSection).getByRole("button", { name: /第三方市場觀察與分析師預期/ });
   expect(futuExpandBtn).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(futuExpandBtn);
   expect(futuExpandBtn).toHaveAttribute("aria-expanded", "true");
@@ -640,6 +640,10 @@ test("renders peer tiering scope, full-industry subtitle, peer fundamental media
       revisionObservationDate: "2026-11-05",
       revisionBaseDate30d: "2026-10-06",
       revisionBaseDate90d: "2026-08-08",
+      revenueRevisionBaseDate30d: "2026-10-10",
+      revenueRevisionBaseDate90d: null,
+      epsRevision30dBasis: "LOCAL_HISTORY",
+      epsRevision90dBasis: "LOCAL_HISTORY",
       epsRevision30d: { status: "AVAILABLE", value: -0.045, reasons: [] },
       epsRevision90d: { status: "AVAILABLE", value: -0.135, reasons: [] },
       revenueRevision30d: { status: "AVAILABLE", value: -0.02, reasons: [] },
@@ -658,16 +662,24 @@ test("renders peer tiering scope, full-industry subtitle, peer fundamental media
         data: {
           figi: "AAPL-FIGI", preferredMetric: "PE",
           supportedMetrics: ["PE", "PS", "PFCF", "EV_EBITDA", "PB"],
+          targetMarketCap: 3500000000000,
+          targetCurrency: "USD",
+          targetValuationDate: "2026-11-05",
+          targetPrimaryMetric: "PE",
+          targetIssuerKey: "0000320193",
           peers: [
-            { figi: "MSFT-F", symbol: "MSFT", name: "Microsoft", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 3100000000000, marketCapTier: "MEGA_LARGE" },
-            { figi: "GOOGL-F", symbol: "GOOGL", name: "Alphabet", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 2200000000000, marketCapTier: "MEGA_LARGE" },
+            { figi: "AAPL-SIB", symbol: "AAPLB", name: "Apple Sibling", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 3500000000000, marketCapTier: "MEGA_LARGE", issuerKey: "0000320193", pe: 30, pb: 40, ps: 8, pfcf: 32, evEbitda: 25 },
+            { figi: "GOOG-F", symbol: "GOOG", name: "Alphabet C", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 2200000000000, marketCapTier: "MEGA_LARGE", issuerKey: "0001652044", pe: 22, pb: 6, ps: 6, pfcf: 28, evEbitda: 15 },
+            { figi: "GOOGL-F", symbol: "GOOGL", name: "Alphabet A", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 2220000000000, marketCapTier: "MEGA_LARGE", issuerKey: "0001652044", pe: 22.2, pb: 6.1, ps: 6.1, pfcf: 28.2, evEbitda: 15.1 },
+            { figi: "SMALL-F", symbol: "SMCO", name: "Small Co", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-05", currency: "USD", marketCap: 5000000000, marketCapTier: "MID", issuerKey: "0000009999", pe: 18, pb: 2, ps: 2, pfcf: null, evEbitda: 12 },
+            { figi: "CAD-F", symbol: "CADC", name: "Cad Co", industryCode: "I43", active: true, tracked: true, valuationDate: "2026-11-04", currency: "CAD", marketCap: 100000000, marketCapTier: "SMALL", issuerKey: "0000008888", pe: 14, pb: 2, ps: 2, pfcf: 15, evEbitda: 9 },
           ],
         },
       };
     }
     return {
       data: {
-        items: [{ figi: "AMZN-F", symbol: "AMZN", name: "Amazon", stockType: "CS", industryCode: "I20", industry: "零售", concepts: [], quoteDate: "2026-11-05", closePrice: 210, currency: "USD", valuationDate: "2026-11-05", marketCap: 2100000000000, marketCapTier: "MEGA_LARGE", pe: 35, pb: 8, ps: 3.5, pfcf: 40, evEbitda: 18, status: "AVAILABLE", reasonCode: null }],
+        items: [{ figi: "AMZN-F", symbol: "AMZN", name: "Amazon", stockType: "CS", industryCode: "I20", industry: "零售", concepts: [], quoteDate: "2026-11-05", closePrice: 210, currency: "USD", valuationDate: "2026-11-05", marketCap: 2100000000000, marketCapTier: "MEGA_LARGE", pe: 35, pb: 8, ps: 3.5, pfcf: 40, evEbitda: 18, status: "AVAILABLE", reasonCode: null, issuerKey: "0001018724" }],
         total: 1, page: 0, size: 10,
       },
     };
@@ -695,6 +707,7 @@ test("renders peer tiering scope, full-industry subtitle, peer fundamental media
   expect(within(fundSection).getAllByText("缺少可用的未結束年度預期").length).toBeGreaterThanOrEqual(2);
   expect(within(fundSection).getByText(/2026Q4 · 單季 · USD/)).toBeInTheDocument();
   expect(within(fundSection).getByText(/-4\.50%（對比 2026-10-06）/)).toBeInTheDocument();
+  expect(within(fundSection).getByText(/-2\.00%（對比 2026-10-10）/)).toBeInTheDocument();
   expect(within(fundSection).getByText(/-13\.50%（對比 2026-08-08）/)).toBeInTheDocument();
 
   // 4) 開啟「設定自訂對標」對話框：首次 GET 失敗時必須禁用儲存與清除按鈕，點擊「重試載入」成功後才允許編輯並透過單次 invalidateQueries 刷新
@@ -705,15 +718,45 @@ test("renders peer tiering scope, full-industry subtitle, peer fundamental media
   expect(within(dialog).getByRole("button", { name: "清除並還原預設分層" })).toBeDisabled();
 
   fireEvent.click(within(dialog).getByRole("button", { name: "重試載入" }));
-  expect(await within(dialog).findByText("MSFT")).toBeInTheDocument();
+  expect(await within(dialog).findByText("GOOG")).toBeInTheDocument();
+  // 編輯當下即時防呆提醒：AAPLB 屬同發行人兄弟股類（明確報錯且不計入有效發行人）、GOOG+GOOGL 合併計為 1 家、CADC 非當日排除 -> 僅 2 家有效獨立發行人；
+  // USD 市值 10 倍警示僅列 SMCO，不誤列非 USD／不同日之 CADC
+  const tooFewPattern = /目前僅有 \d+ 家當日有效獨立發行人/;
+  expect(within(dialog).getByText(/所選對手（AAPLB）與本股屬同一發行人/)).toBeInTheDocument();
+  expect(within(dialog).getByText(tooFewPattern)).toBeInTheDocument();
+  expect(within(dialog).getByText(/目前僅有 2 家當日有效獨立發行人（P\/E）（未滿 3 家）/)).toBeInTheDocument();
+  expect(within(dialog).getByText(/所選對手（SMCO）與本股 USD 市值相差逾 10 倍/)).toBeInTheDocument();
+  expect(within(dialog).queryByText(/CADC.*市值相差逾 10 倍/)).not.toBeInTheDocument();
+
+  // 存在同發行人兄弟股 AAPLB 時，「儲存自訂對標」必須禁用（不送無效 PUT），「清除並還原預設分層」維持可用
+  expect(within(dialog).getByRole("button", { name: "儲存自訂對標" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "清除並還原預設分層" })).toBeEnabled();
+
   fireEvent.change(within(dialog).getByLabelText("搜尋對標股票代碼或名稱"), { target: { value: "AMZN" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "搜尋" }));
   fireEvent.click(await within(dialog).findByRole("button", { name: "加入" }));
+  // 加入第 3 家獨立發行人 AMZN 後「未滿 3 家」警示即時消失，但未移除 AAPLB 前仍禁用儲存
+  expect(within(dialog).queryByText(tooFewPattern)).not.toBeInTheDocument();
+  expect(within(dialog).getByText(/所選對手（SMCO）與本股 USD 市值相差逾 10 倍/)).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "儲存自訂對標" })).toBeDisabled();
+
+  // 切換為 P/FCF（SMCO 的 pfcf 為 null）-> 有效獨立發行人降為 2 家，未滿 3 家警示即時重新出現
+  fireEvent.mouseDown(within(dialog).getByLabelText("對標估值指標（選填覆寫）"));
+  fireEvent.click(await screen.findByRole("option", { name: "P/FCF" }));
+  expect(within(dialog).getByText(/目前僅有 2 家當日有效獨立發行人（P\/FCF）（未滿 3 家）/)).toBeInTheDocument();
+  fireEvent.mouseDown(within(dialog).getByLabelText("對標估值指標（選填覆寫）"));
+  fireEvent.click(await screen.findByRole("option", { name: "P/E" }));
+  expect(within(dialog).queryByText(tooFewPattern)).not.toBeInTheDocument();
+
+  // 移除同發行人兄弟股 AAPLB（清單第一筆）後錯誤警示消失、儲存按鈕恢復可用，並只送出合法清單
+  fireEvent.click(within(dialog).getAllByRole("button", { name: "移除" })[0]);
+  expect(within(dialog).queryByText(/所選對手（AAPLB）與本股屬同一發行人/)).not.toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "儲存自訂對標" })).toBeEnabled();
   fireEvent.click(within(dialog).getByRole("button", { name: "儲存自訂對標" }));
 
   await screen.findByRole("region", { name: "同業市場估值參考" });
   expect(apiClient.put).toHaveBeenCalledWith("valuation/AAPL-FIGI/custom-peers", {
-    peerFigis: ["MSFT-F", "GOOGL-F", "AMZN-F"],
+    peerFigis: ["GOOG-F", "GOOGL-F", "SMALL-F", "CAD-F", "AMZN-F"],
     preferredMetric: "PE",
   });
   expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["analysis-report", "AAPL-FIGI"] });

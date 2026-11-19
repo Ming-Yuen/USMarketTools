@@ -4,6 +4,7 @@ import com.ykm.stock.analytics.converter.jpa.StockClassificationConverter;
 import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.enums.ValuationReason;
 import com.ykm.stock.analytics.model.dto.stockInsight.StockScreenResponse;
+import com.ykm.stock.analytics.model.entity.ExternalApiDailyQuota;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
@@ -92,7 +93,7 @@ class ValuationBatchQueryJpaTests {
         MetadataSources metadata = new MetadataSources(registry);
         for (Class<?> type : List.of(Stock.class, StockStatus.class, StockQuote.class, FinancialReport.class,
                 StockFinancialPeriod.class, StockValuationLatest.class, StockCustomPeer.class, StockEarningsForecast.class,
-                StockIndustry.class, StockIndustryHistory.class, IndustryValuationConfig.class,
+                ExternalApiDailyQuota.class, StockIndustry.class, StockIndustryHistory.class, IndustryValuationConfig.class,
                 StockConcept.class, StockShareObservation.class, SecFinancialFact.class, StockSplit.class)) {
             metadata.addAnnotatedClass(type);
         }
@@ -487,13 +488,59 @@ class ValuationBatchQueryJpaTests {
             assertThat(monthEnds).extracting(StockQuote::getQuoteDate)
                     .containsExactlyInAnyOrder(LocalDate.of(2025, 4, 30), DAY);
 
-            // 驗證預期查詢遵守 observed_at <= cutoff（23:00Z 的未來觀察被過濾，返回 05-04 的 1.35）與歷史序列查詢
+            // 驗證預期查詢遵守 observed_at <= cutoff（23:00Z 的未來觀察被過濾，返回 05-04 的 1.35）與同來源歷史序列查詢
             List<StockEarningsForecast> latestForecasts = forecastRepo.findLatestForStock("AMZN_F", DAY, now);
             assertThat(latestForecasts).singleElement()
                     .satisfies(f -> assertThat(f.getEps()).isEqualByComparingTo("1.35"));
             List<StockEarningsForecast> historyForecasts = forecastRepo.findHistoryForPeriod(
-                    "AMZN_F", "2025Q2", "QUARTERLY", LocalDate.of(2025, 1, 1), DAY, now);
+                    "AMZN_F", "FUTU", "2025Q2", "QUARTERLY", LocalDate.of(2025, 1, 1), DAY, now);
             assertThat(historyForecasts).hasSize(2);
+
+            // 驗證同日跨來源主鍵隔離（15:00 ALPHAVANTAGE 與 16:00 FUTU 同 FY2026 ANNUAL 共存）、歷史截點不丟失，且 findLatestForStock 按 source 分別返回最新列
+            Instant avTime = Instant.parse("2025-05-05T15:00:00Z");
+            Instant betweenCutoff = Instant.parse("2025-05-05T15:30:00Z");
+            Instant futuTime = Instant.parse("2025-05-05T16:00:00Z");
+            StockEarningsForecast avAnnual = new StockEarningsForecast();
+            avAnnual.setFigi("AMZN_F");
+            avAnnual.setFiscalPeriod("FY2026");
+            avAnnual.setPeriodType("ANNUAL");
+            avAnnual.setObservationDate(DAY);
+            avAnnual.setPeriodEnd(LocalDate.of(2026, 12, 31));
+            avAnnual.setObservedAt(avTime);
+            avAnnual.setCurrency("USD");
+            avAnnual.setEps(new BigDecimal("7.20"));
+            avAnnual.setEps30dAgo(new BigDecimal("7.00"));
+            avAnnual.setEps90dAgo(new BigDecimal("6.80"));
+            avAnnual.setRevenue(new BigDecimal("750000000000"));
+            avAnnual.setSource("ALPHAVANTAGE");
+            session.persist(avAnnual);
+
+            StockEarningsForecast futuAnnualSameDay = new StockEarningsForecast();
+            futuAnnualSameDay.setFigi("AMZN_F");
+            futuAnnualSameDay.setFiscalPeriod("FY2026");
+            futuAnnualSameDay.setPeriodType("ANNUAL");
+            futuAnnualSameDay.setObservationDate(DAY);
+            futuAnnualSameDay.setPeriodEnd(LocalDate.of(2026, 12, 31));
+            futuAnnualSameDay.setObservedAt(futuTime);
+            futuAnnualSameDay.setCurrency("USD");
+            futuAnnualSameDay.setEps(new BigDecimal("7.50"));
+            futuAnnualSameDay.setRevenue(new BigDecimal("760000000000"));
+            futuAnnualSameDay.setSource("FUTU");
+            session.persist(futuAnnualSameDay);
+            session.flush();
+
+            // 15:30 截點仍可讀到 15:00 的 ALPHAVANTAGE（未被 16:00 FUTU 覆寫抹除）
+            List<StockEarningsForecast> atBetween = forecastRepo.findLatestForStock("AMZN_F", DAY, betweenCutoff);
+            assertThat(atBetween.stream().filter(f -> "FY2026".equals(f.getFiscalPeriod())).toList())
+                    .singleElement()
+                    .satisfies(f -> assertThat(f.getSource()).isEqualTo("ALPHAVANTAGE"));
+            // 20:00 截點同時回傳 ALPHAVANTAGE 與 FUTU 各自的 FY2026 最新列（不互相遮蔽）＋ FUTU 2025Q2
+            List<StockEarningsForecast> atClose = forecastRepo.findLatestForStock("AMZN_F", DAY, now);
+            assertThat(atClose.stream().filter(f -> "FY2026".equals(f.getFiscalPeriod())).toList())
+                    .extracting(StockEarningsForecast::getSource)
+                    .containsExactlyInAnyOrder("ALPHAVANTAGE", "FUTU");
+            assertThat(forecastRepo.existsByFigiAndSourceAndPeriodTypeAndObservationDateGreaterThanEqual(
+                    "AMZN_F", "ALPHAVANTAGE", "ANNUAL", DAY.minusDays(6))).isTrue();
 
             // 驗證輕量財期投影不載入未來公布報期（2025Q2 公布於 8 月 > cutoff，僅返回 2025Q1）
             List<FinancialReportRepository.KnownReportPeriod> knownPeriods = reportRepo.findKnownReportPeriods("AMZN_F", now);
@@ -504,6 +551,56 @@ class ValuationBatchQueryJpaTests {
             session.flush();
             assertThat(customRepo.findByFigiOrderBySortOrderAsc("AMZN_F")).isEmpty();
             session.getTransaction().rollback();
+        }
+
+        // 獨立雙連線從空表同時搶占當日第一筆配額（dailyLimit=1）：原子 ON CONFLICT upsert 僅允許 1 條連線取得發送許可
+        LocalDate raceDay = LocalDate.of(2025, 5, 6);
+        Instant raceNow = Instant.parse("2025-05-06T15:00:00Z");
+        java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.Callable<Integer> worker = () -> {
+                try (Session s = factory.openSession()) {
+                    s.beginTransaction();
+                    JpaRepositoryFactory rf = new JpaRepositoryFactory(s);
+                    ExternalApiDailyQuotaRepository qRepo = rf.getRepository(ExternalApiDailyQuotaRepository.class);
+                    ready.countDown();
+                    start.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    int updated = qRepo.tryIncrementDailyQuota("ALPHAVANTAGE", raceDay, 1, raceNow);
+                    s.getTransaction().commit();
+                    return updated;
+                }
+            };
+            java.util.concurrent.Future<Integer> f1 = pool.submit(worker);
+            java.util.concurrent.Future<Integer> f2 = pool.submit(worker);
+            assertThat(ready.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            int granted = f1.get(10, java.util.concurrent.TimeUnit.SECONDS) + f2.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(granted).isEqualTo(1);
+        } catch (Exception ex) {
+            throw new RuntimeException(ex);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        try (Session s = factory.openSession()) {
+            s.beginTransaction();
+            JpaRepositoryFactory rf = new JpaRepositoryFactory(s);
+            ExternalApiDailyQuotaRepository qRepo = rf.getRepository(ExternalApiDailyQuotaRepository.class);
+            ExternalApiDailyQuota persisted = qRepo.findById(
+                    new com.ykm.stock.analytics.model.entity.key.ExternalApiDailyQuotaId("ALPHAVANTAGE", raceDay)).orElseThrow();
+            assertThat(persisted.getAttemptsUsed()).isEqualTo(1);
+            assertThat(persisted.isQuotaExhausted()).isFalse();
+            assertThat(qRepo.tryIncrementDailyQuota("ALPHAVANTAGE", raceDay, 1, raceNow)).isEqualTo(0);
+            qRepo.markQuotaExhausted("ALPHAVANTAGE", raceDay, 20, raceNow);
+            s.clear();
+            ExternalApiDailyQuota exhausted = qRepo.findById(
+                    new com.ykm.stock.analytics.model.entity.key.ExternalApiDailyQuotaId("ALPHAVANTAGE", raceDay)).orElseThrow();
+            assertThat(exhausted.isQuotaExhausted()).isTrue();
+            assertThat(qRepo.tryIncrementDailyQuota("ALPHAVANTAGE", raceDay, 20, raceNow)).isEqualTo(0);
+            qRepo.deleteAll();
+            s.getTransaction().commit();
         }
     }
 

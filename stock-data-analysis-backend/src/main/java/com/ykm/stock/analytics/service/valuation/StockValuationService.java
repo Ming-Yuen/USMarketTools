@@ -716,9 +716,18 @@ public class StockValuationService {
         IndustryModelContext modelCtx = resolveIndustryModel(target, null, calendar.getSessionCloseAt(modelDate), now);
         List<String> supported = modelCtx != null && modelCtx.financialInstitution() ? FIN_SUPPORTED_METRICS : NON_FIN_SUPPORTED_METRICS;
 
+        StockValuationLatest targetLatest = latestValuations.findById(target.getFigi()).orElse(null);
+        BigDecimal targetMarketCap = targetLatest != null ? targetLatest.getMarketCap() : null;
+        String targetCurrency = targetLatest != null && targetLatest.getCurrency() != null
+                ? targetLatest.getCurrency() : target.getCurrency();
+        LocalDate targetValuationDate = targetLatest != null ? targetLatest.getValuationDate() : null;
+        String targetPrimaryMetric = targetLatest != null ? targetLatest.getPrimaryMetric() : null;
+        String targetIssuerKey = canonicalIssuerKey(target.getCik(), target.getFigi());
+
         List<StockCustomPeer> rows = customPeers.findByFigiOrderBySortOrderAsc(target.getFigi());
         if (rows.isEmpty()) {
-            return new CustomPeerGroupDto(target.getFigi(), null, supported, List.of());
+            return new CustomPeerGroupDto(target.getFigi(), null, supported, List.of(),
+                    targetMarketCap, targetCurrency, targetValuationDate, targetPrimaryMetric, targetIssuerKey);
         }
         String preferredMetric = rows.getFirst().getPreferredMetric();
         List<String> peerFigis = rows.stream().map(StockCustomPeer::getPeerFigi).toList();
@@ -734,6 +743,7 @@ public class StockValuationService {
             String pInd = pv != null && pv.getIndustryCode() != null ? pv.getIndustryCode()
                     : (ps != null && ps.getClassification() != null ? ps.getClassification().getCode() : null);
             String pCur = pv != null && pv.getCurrency() != null ? pv.getCurrency() : (ps != null ? ps.getCurrency() : null);
+            String pIssuerKey = canonicalIssuerKey(ps != null ? ps.getCik() : null, row.getPeerFigi());
             items.add(new CustomPeerGroupDto.PeerItem(
                     row.getPeerFigi(),
                     ps != null ? ps.getSymbol() : row.getPeerFigi(),
@@ -744,10 +754,17 @@ public class StockValuationService {
                     pv != null ? pv.getValuationDate() : null,
                     pCur,
                     pv != null ? pv.getMarketCap() : null,
-                    pv != null ? pv.getMarketCapTier() : null
+                    pv != null ? pv.getMarketCapTier() : null,
+                    pIssuerKey,
+                    pv != null ? pv.getPe() : null,
+                    pv != null ? pv.getPb() : null,
+                    pv != null ? pv.getPs() : null,
+                    pv != null ? pv.getPfcf() : null,
+                    pv != null ? pv.getEvEbitda() : null
             ));
         }
-        return new CustomPeerGroupDto(target.getFigi(), preferredMetric, supported, items);
+        return new CustomPeerGroupDto(target.getFigi(), preferredMetric, supported, items,
+                targetMarketCap, targetCurrency, targetValuationDate, targetPrimaryMetric, targetIssuerKey);
     }
 
     /** Controller 入口：整組原子替換自訂對標清單與選填覆寫指標，並於同一交易鎖內同步更新目標股最新快照之 verdict。 */

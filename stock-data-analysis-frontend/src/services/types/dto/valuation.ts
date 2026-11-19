@@ -51,6 +51,12 @@ export interface CustomPeerItem {
   currency: string | null;
   marketCap: number | null;
   marketCapTier: string | null;
+  issuerKey?: string | null;
+  pe?: number | null;
+  pb?: number | null;
+  ps?: number | null;
+  pfcf?: number | null;
+  evEbitda?: number | null;
 }
 
 export interface CustomPeerGroup {
@@ -58,6 +64,11 @@ export interface CustomPeerGroup {
   preferredMetric: string | null;
   supportedMetrics: string[];
   peers: CustomPeerItem[];
+  targetMarketCap?: number | null;
+  targetCurrency?: string | null;
+  targetValuationDate?: string | null;
+  targetPrimaryMetric?: string | null;
+  targetIssuerKey?: string | null;
 }
 
 export interface ValuationResult {

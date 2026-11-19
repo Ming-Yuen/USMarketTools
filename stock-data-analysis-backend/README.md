@@ -10,7 +10,8 @@
   - `company_tickers.json`：唯一解析發行人十位數 `cik`。
   - `submissions.zip`：同步 4 碼 `stock.sic`、每份 `accession` 的精確 `reportDate`、`acceptanceDateTime` 與近期定期申報日期（供平日財報增量篩選）。
   - `companyfacts.zip`：同步核心 `us-gaap` 與 `dei` 標籤，自 2014 年起按披露唯一鍵整份 CIK JSON 比對新增與修訂。
-- **富途 OpenD**：提供產業、概念、三大財務報表（損益表、資產負債表、現金流量表）、EPS／營收預測、最新流通股數與原生估值快照，以及新股回補／週六全市場拆股對帳（`requestRehab`）。
+- **富途 OpenD**：提供產業、概念、三大財務報表（損益表、資產負債表、現金流量表）、單季 EPS／營收預測、最新流通股數與原生估值快照，以及新股回補／週六全市場拆股對帳（`requestRehab`）。
+- **Alpha Vantage**：提供美股 USD 財報營運公司的年度共識預測（`EARNINGS_ESTIMATES`，含 FY1／FY2 EPS、營收與 30／90 日前 EPS 基準）；採查詢時按需同步、7 日 DB 快取與持久化每日配額熔斷保護。
 
 ## 2. 業務資料表
 
@@ -31,7 +32,8 @@
 | `stock_share_observation` | `(figi, observed_at)` | 富途流通在外股數、已發行股數、對應市值及原生 P/E、P/B 快照觀察（僅在股數變動或當日尚無收市快照時寫入） |
 | `financial_report` | `(figi, statement_type, period_end, period_type)` | 富途原幣三大財報（損益表 `1`、資產負債表 `2`、現金流量表 `3`） |
 | `sec_financial_fact` | `id`（披露唯一鍵 `NULLS NOT DISTINCT`） | SEC 標準 `us-gaap`／`dei` 財務與股數披露事實 |
-| `stock_earnings_forecast` | `(figi, fiscal_period, period_type, observation_date)` | 富途 EPS／營收預測 |
+| `stock_earnings_forecast` | `(figi, fiscal_period, observation_date, period_type, source)` | 多來源分析師 EPS／營收預測（富途單季預測＋Alpha Vantage 按需年度共識與 `eps30d_ago`／`eps90d_ago` 基準） |
+| `external_api_daily_quota` | `(provider, quota_date)` | 低配額外部來源的持久化每日請求配額與熔斷旗標 |
 | `treasury_par_yield_daily` | `observation_date` | 美國財政部國債殖利率資料 |
 | `market_sentiment_daily` | `market_date` | 市場情緒指標、VIX 與觀察時間 |
 | `market_event` | `event_key` | 個股財報日曆與宏觀事件 |

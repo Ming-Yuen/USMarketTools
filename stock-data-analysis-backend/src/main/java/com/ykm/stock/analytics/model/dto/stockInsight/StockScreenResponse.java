@@ -34,13 +34,25 @@ public record StockScreenResponse(List<Item> items, long total, int page, int si
             String primaryMetric,
             String verdict,
             String status,
-            String reasonCode
+            String reasonCode,
+            String issuerKey
     ) {
+        public Item(String figi, String symbol, String name, String stockType, String industryCode, String industry,
+                    List<Concept> concepts, LocalDate quoteDate, BigDecimal closePrice, String currency,
+                    LocalDate valuationDate, BigDecimal marketCap, String marketCapTier,
+                    BigDecimal pe, BigDecimal pb, BigDecimal ps, BigDecimal pfcf, BigDecimal evEbitda,
+                    BigDecimal revenueGrowthYoy, BigDecimal roe, BigDecimal fcfMargin, BigDecimal historicalPercentile,
+                    String primaryMetric, String verdict, String status, String reasonCode) {
+            this(figi, symbol, name, stockType, industryCode, industry, concepts, quoteDate, closePrice, currency,
+                    valuationDate, marketCap, marketCapTier, pe, pb, ps, pfcf, evEbitda,
+                    revenueGrowthYoy, roe, fcfMargin, historicalPercentile, primaryMetric, verdict, status, reasonCode, figi);
+        }
+
         public Item withConcepts(List<Concept> values) {
             return new Item(figi, symbol, name, stockType, industryCode, industry, values,
                     quoteDate, closePrice, currency, valuationDate, marketCap, marketCapTier,
                     pe, pb, ps, pfcf, evEbitda, revenueGrowthYoy, roe, fcfMargin,
-                    historicalPercentile, primaryMetric, verdict, status, reasonCode);
+                    historicalPercentile, primaryMetric, verdict, status, reasonCode, issuerKey);
         }
     }
 }

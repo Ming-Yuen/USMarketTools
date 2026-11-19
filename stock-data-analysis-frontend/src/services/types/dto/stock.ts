@@ -41,6 +41,7 @@ export interface StockScreenItem {
   verdict?: string | null;
   status: string | null;
   reasonCode: string | null;
+  issuerKey?: string | null;
 }
 
 export interface StockScreenResponse {

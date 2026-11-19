@@ -2,6 +2,7 @@ package com.ykm.stock.analytics.repository.jpa;
 
 import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.key.FinancialReportId;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -41,4 +42,11 @@ public interface FinancialReportRepository extends JpaRepository<FinancialReport
             order by f.periodEnd asc, f.periodType asc
             """)
     List<KnownReportPeriod> findKnownReportPeriods(@Param("figi") String figi, @Param("cutoff") Instant cutoff);
+
+    @Query("""
+            select f.currency from FinancialReport f
+            where f.figi = :figi and f.currency is not null and trim(f.currency) <> ''
+            order by f.periodEnd desc, f.periodType desc
+            """)
+    List<String> findLatestReportCurrencies(@Param("figi") String figi, Pageable pageable);
 }

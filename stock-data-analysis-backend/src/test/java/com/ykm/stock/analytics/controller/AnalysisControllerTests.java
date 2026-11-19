@@ -10,6 +10,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StockAnalysisReportDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.service.analysis.StockAnalysisService;
+import com.ykm.stock.analytics.service.stock.AnnualEarningsForecastSyncService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
@@ -98,10 +99,32 @@ class AnalysisControllerTests {
         assertThat(request.getValue().horizon()).isEqualTo(AnalysisHorizon.SWING);
     }
 
+    @Test
+    void triggersOnDemandAnnualForecastSyncOnlyForLatestReportNotHistoricalDate() throws Exception {
+        StockAnalysisService service = mock(StockAnalysisService.class);
+        AnnualEarningsForecastSyncService annualSync = mock(AnnualEarningsForecastSyncService.class);
+        when(service.analyze(any(AnalysisReportRequest.class))).thenReturn(null);
+
+        MockMvc mockMvc = mvc(service, annualSync);
+        mockMvc.perform(post("/analysis/report").contentType(MediaType.APPLICATION_JSON).content("""
+                {"figi":"FIGI-LIVE"}
+                """)).andExpect(status().isOk());
+        verify(annualSync).ensureFreshAnnualForecast("FIGI-LIVE");
+
+        mockMvc.perform(post("/analysis/report").contentType(MediaType.APPLICATION_JSON).content("""
+                {"figi":"FIGI-HIST","valuationDate":"2026-10-15"}
+                """)).andExpect(status().isOk());
+        verify(annualSync, org.mockito.Mockito.never()).ensureFreshAnnualForecast("FIGI-HIST");
+    }
+
     private MockMvc mvc(StockAnalysisService service) {
+        return mvc(service, mock(AnnualEarningsForecastSyncService.class));
+    }
+
+    private MockMvc mvc(StockAnalysisService service, AnnualEarningsForecastSyncService annualSync) {
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return MockMvcBuilders.standaloneSetup(new AnalysisController(service))
+        return MockMvcBuilders.standaloneSetup(new AnalysisController(service, annualSync))
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
                 .setControllerAdvice(new AnalysisExceptionHandler()).build();
     }

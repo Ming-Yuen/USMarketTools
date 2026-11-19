@@ -106,6 +106,24 @@ const formatPctValue = (ratio?: number | null, signed = false) => {
   return (signed && pct > 0 ? "+" : "") + pct.toFixed(2) + "%";
 };
 
+const peerMetricValue = (p: CustomPeerItem, metricCode?: string | null): number | null | undefined => {
+  switch (metricCode?.toUpperCase()) {
+    case "PE": return p.pe;
+    case "PB": return p.pb;
+    case "PS": return p.ps;
+    case "PFCF": return p.pfcf;
+    case "EV_EBITDA": return p.evEbitda;
+    default: return undefined;
+  }
+};
+
+const medianOf = (values: number[]): number | null => {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
 function CustomPeerDialog({ open, onClose, figi, symbol }: {
   open: boolean;
   onClose: () => void;
@@ -122,6 +140,11 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
   const [supportedMetrics, setSupportedMetrics] = useState<string[]>([]);
   const [preferredMetric, setPreferredMetric] = useState<string>("");
   const [peers, setPeers] = useState<CustomPeerItem[]>([]);
+  const [targetMarketCap, setTargetMarketCap] = useState<number | null>(null);
+  const [targetCurrency, setTargetCurrency] = useState<string | null>(null);
+  const [targetValuationDate, setTargetValuationDate] = useState<string | null>(null);
+  const [targetPrimaryMetric, setTargetPrimaryMetric] = useState<string | null>(null);
+  const [targetIssuerKey, setTargetIssuerKey] = useState<string | null>(null);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [searchResults, setSearchResults] = useState<StockScreenItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -136,6 +159,11 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
     setSupportedMetrics([]);
     setPreferredMetric("");
     setPeers([]);
+    setTargetMarketCap(null);
+    setTargetCurrency(null);
+    setTargetValuationDate(null);
+    setTargetPrimaryMetric(null);
+    setTargetIssuerKey(null);
     setSearchKeyword("");
     setSearchResults([]);
     apiClient.get<CustomPeerGroup>(`valuation/${encodeURIComponent(figi)}/custom-peers`)
@@ -144,6 +172,11 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
         setSupportedMetrics(res.data.supportedMetrics ?? []);
         setPreferredMetric(res.data.preferredMetric ?? "");
         setPeers(res.data.peers ?? []);
+        setTargetMarketCap(res.data.targetMarketCap ?? null);
+        setTargetCurrency(res.data.targetCurrency ?? null);
+        setTargetValuationDate(res.data.targetValuationDate ?? null);
+        setTargetPrimaryMetric(res.data.targetPrimaryMetric ?? null);
+        setTargetIssuerKey(res.data.targetIssuerKey ?? figi);
         setLoadedFigi(figi);
       })
       .catch(err => {
@@ -186,9 +219,15 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
       active: true,
       tracked: true,
       valuationDate: item.valuationDate,
-      currency: item.currency ?? "USD",
+      currency: item.currency ?? null,
       marketCap: item.marketCap ?? null,
       marketCapTier: item.marketCapTier ?? null,
+      issuerKey: item.issuerKey ?? item.figi,
+      pe: item.pe,
+      pb: item.pb,
+      ps: item.ps,
+      pfcf: item.pfcf,
+      evEbitda: item.evEbitda,
     }]);
   };
 
@@ -205,9 +244,60 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
   };
 
   const canMutate = !loading && !saving && !loadFailed && loadedFigi === figi;
+  const activeMetricCode = (preferredMetric || targetPrimaryMetric || "").toUpperCase() || null;
+  const resolvedTargetIssuer = targetIssuerKey || figi;
+  const selfOrSiblingPeers = peers.filter(p => p.figi === figi || (p.issuerKey || p.figi) === resolvedTargetIssuer);
+  const canEvaluateDraft = Boolean(targetValuationDate && activeMetricCode);
+
+  // 與後端 StockValuationService 對齊：排除自身／同發行人兄弟股類、按發行人鍵去重、檢查同日快照與目標指標有效正值，並以發行人 USD 中位市值判定 10 倍落差
+  const issuerGroups = new Map<string, CustomPeerItem[]>();
+  if (canEvaluateDraft) {
+    for (const p of peers) {
+      if (!p.active || !p.tracked) continue;
+      if (p.figi === figi || (p.issuerKey || p.figi) === resolvedTargetIssuer) continue;
+      if (p.valuationDate !== targetValuationDate) continue;
+      const key = p.issuerKey || p.figi;
+      const existing = issuerGroups.get(key);
+      if (existing) existing.push(p);
+      else issuerGroups.set(key, [p]);
+    }
+  }
+
+  const validIssuers: Array<{ key: string; label: string; usdCapMedian: number | null }> = [];
+  issuerGroups.forEach((group, key) => {
+    const metricAvailable = group.some(p => {
+      const val = peerMetricValue(p, activeMetricCode);
+      return val != null && Number.isFinite(val) && val > 0;
+    });
+    if (!metricAvailable) return;
+    const usdCaps = group
+      .filter(p => p.currency?.toUpperCase() === "USD" && p.marketCap != null && Number.isFinite(p.marketCap) && p.marketCap > 0)
+      .map(p => p.marketCap as number);
+    validIssuers.push({
+      key,
+      label: group.map(p => p.symbol).join("/"),
+      usdCapMedian: medianOf(usdCaps),
+    });
+  });
+
+  const validIssuerCount = validIssuers.length;
+  const tooFewEffectivePeers = canEvaluateDraft && peers.length > 0 && validIssuerCount < 3;
+  const targetIsUsd = targetCurrency?.toUpperCase() === "USD";
+  const capMismatchLabels = canEvaluateDraft && targetIsUsd && targetMarketCap != null && Number.isFinite(targetMarketCap) && targetMarketCap > 0
+    ? validIssuers
+      .filter(issuer => {
+        if (issuer.usdCapMedian == null || issuer.usdCapMedian <= 0) return false;
+        const larger = Math.max(targetMarketCap, issuer.usdCapMedian);
+        const smaller = Math.min(targetMarketCap, issuer.usdCapMedian);
+        return larger > smaller * 10;
+      })
+      .map(issuer => issuer.label)
+    : [];
+
+  const canSave = canMutate && selfOrSiblingPeers.length === 0;
 
   const handleSave = async () => {
-    if (!canMutate) return;
+    if (!canSave) return;
     setSaving(true);
     setError(null);
     try {
@@ -321,6 +411,27 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
               </Paper>
             )}
 
+            {selfOrSiblingPeers.length > 0 && (
+              <Alert severity="error">
+                所選對手（{selfOrSiblingPeers.map(p => p.symbol).join("、")}）與本股屬同一發行人，無法作為對標儲存，請先移除。
+              </Alert>
+            )}
+            {!canEvaluateDraft && peers.length > 0 && (
+              <Alert severity="info">
+                本股尚無最新收市估值快照或主指標，暫無法預判對標有效發行人家數與市值落差。
+              </Alert>
+            )}
+            {tooFewEffectivePeers && (
+              <Alert severity="warning">
+                目前僅有 {validIssuerCount} 家當日有效獨立發行人（{metricLabel(activeMetricCode)}）（未滿 3 家），儲存後將暫不生效並自動退回預設產業規模分層。
+              </Alert>
+            )}
+            {capMismatchLabels.length > 0 && (
+              <Alert severity="warning">
+                所選對手（{capMismatchLabels.join("、")}）與本股 USD 市值相差逾 10 倍，儲存後仍可計算但請留意跨量級規模溢價差異。
+              </Alert>
+            )}
+
             <Box>
               <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.8 }}>
                 已選對標名單（{peers.length} 檔，需至少 3 家有效發行人）
@@ -355,7 +466,7 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
           清除並還原預設分層
         </Button>
         <Button onClick={onClose} disabled={saving}>取消</Button>
-        <Button variant="contained" onClick={() => void handleSave()} disabled={!canMutate}>
+        <Button variant="contained" onClick={() => void handleSave()} disabled={!canSave}>
           儲存自訂對標
         </Button>
       </DialogActions>

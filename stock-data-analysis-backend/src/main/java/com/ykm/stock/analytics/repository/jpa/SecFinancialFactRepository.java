@@ -43,6 +43,15 @@ public interface SecFinancialFactRepository extends JpaRepository<SecFinancialFa
             """)
     List<Object[]> findLatestFinancialPeriodEnds(Collection<String> ciks);
 
+    @Query("""
+            select distinct f.unit from SecFinancialFact f
+            where f.cik = :cik and f.taxonomy = 'us-gaap'
+              and f.tag in ('Revenues','SalesRevenueNet','RevenueFromContractWithCustomerExcludingAssessedTax',
+                            'RevenuesNetOfInterestExpense','NetIncomeLoss','StockholdersEquity')
+              and f.unit is not null and trim(f.unit) <> ''
+            """)
+    Set<String> findMonetaryReportingUnitsByCik(@Param("cik") String cik);
+
     /** 只通過披露時間門；仍須按單位、完整期間、股份基準與財務口徑選擇，不保證可直接作公式輸入。 */
     @Query("select f from SecFinancialFact f where f.cik = :cik and f.availableFromDate <= :date and f.periodEnd <= :date order by f.periodEnd desc, f.filed desc, f.accession desc")
     List<SecFinancialFact> findDisclosedFacts(String cik, LocalDate date);

@@ -9,11 +9,20 @@ public record CustomPeerGroupDto(
         String figi,
         String preferredMetric,
         List<String> supportedMetrics,
-        List<PeerItem> peers
+        List<PeerItem> peers,
+        BigDecimal targetMarketCap,
+        String targetCurrency,
+        LocalDate targetValuationDate,
+        String targetPrimaryMetric,
+        String targetIssuerKey
 ) {
     public CustomPeerGroupDto {
         supportedMetrics = supportedMetrics == null ? List.of() : List.copyOf(supportedMetrics);
         peers = peers == null ? List.of() : List.copyOf(peers);
+    }
+
+    public CustomPeerGroupDto(String figi, String preferredMetric, List<String> supportedMetrics, List<PeerItem> peers) {
+        this(figi, preferredMetric, supportedMetrics, peers, null, null, null, null, figi);
     }
 
     public record PeerItem(
@@ -26,6 +35,18 @@ public record CustomPeerGroupDto(
             LocalDate valuationDate,
             String currency,
             BigDecimal marketCap,
-            String marketCapTier
-    ) {}
+            String marketCapTier,
+            String issuerKey,
+            BigDecimal pe,
+            BigDecimal pb,
+            BigDecimal ps,
+            BigDecimal pfcf,
+            BigDecimal evEbitda
+    ) {
+        public PeerItem(String figi, String symbol, String name, String industryCode, boolean active, boolean tracked,
+                        LocalDate valuationDate, String currency, BigDecimal marketCap, String marketCapTier) {
+            this(figi, symbol, name, industryCode, active, tracked, valuationDate, currency, marketCap, marketCapTier,
+                    figi, null, null, null, null, null);
+        }
+    }
 }

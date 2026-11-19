@@ -184,7 +184,7 @@ export function FundamentalsPanel({ fundamentals, summary, forward }: {
           <Typography variant="caption" color="text.secondary">
             估值日：{forward.valuationDate}
             {forward.targetFiscalPeriod ? ` · 年度預期財期：${forward.targetFiscalPeriod}` : ""}
-            {forward.forecastObservationDate ? `（觀察日 ${forward.forecastObservationDate}）` : ""}
+            {forward.forecastObservationDate ? `（觀察日 ${forward.forecastObservationDate}${forward.forecastSource ? ` · ${forward.forecastSource}` : ""}）` : ""}
             {(forward.forecastCurrency || forward.revisionCurrency) ? ` · 預期幣別：${forward.forecastCurrency ?? forward.revisionCurrency}` : ""}
           </Typography>
         </Stack>
@@ -201,28 +201,34 @@ export function FundamentalsPanel({ fundamentals, summary, forward }: {
           <Grid size={{ xs: 12, md: 6 }}>
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.8 }}>
               同財期預期上修／下修幅度
-              {forward.revisionFiscalPeriod ? `（${forward.revisionFiscalPeriod}${revTypeText ? ` · ${revTypeText}` : ""}${forward.revisionCurrency ? ` · ${forward.revisionCurrency}` : ""}，觀察日 ${forward.revisionObservationDate ?? "—"}）` : ""}
+              {forward.revisionFiscalPeriod ? `（${forward.revisionFiscalPeriod}${revTypeText ? ` · ${revTypeText}` : ""}${forward.revisionCurrency ? ` · ${forward.revisionCurrency}` : ""}${forward.revisionSource ? ` · ${forward.revisionSource}` : ""}，觀察日 ${forward.revisionObservationDate ?? "—"}）` : ""}
             </Typography>
             <Stack spacing={0.8}>
               <MetricRow
                 label="近 30 日預期 EPS 修正"
                 metric={forward.epsRevision30d}
-                suffixNote={forward.revisionBaseDate30d ? `對比 ${forward.revisionBaseDate30d}` : null}
+                suffixNote={forward.epsRevision30dBasis === "PROVIDER_TRAILING"
+                  ? "來源 30 日前回溯基準"
+                  : (forward.revisionBaseDate30d ? `對比 ${forward.revisionBaseDate30d}` : null)}
               />
               <MetricRow
                 label="近 90 日預期 EPS 修正"
                 metric={forward.epsRevision90d}
-                suffixNote={forward.revisionBaseDate90d ? `對比 ${forward.revisionBaseDate90d}` : null}
+                suffixNote={forward.epsRevision90dBasis === "PROVIDER_TRAILING"
+                  ? "來源 90 日前回溯基準"
+                  : (forward.revisionBaseDate90d ? `對比 ${forward.revisionBaseDate90d}` : null)}
               />
               <MetricRow
                 label="近 30 日預期營收修正"
                 metric={forward.revenueRevision30d}
-                suffixNote={forward.revisionBaseDate30d ? `對比 ${forward.revisionBaseDate30d}` : null}
+                suffixNote={(forward.revenueRevisionBaseDate30d ?? (forward.epsRevision30dBasis !== "PROVIDER_TRAILING" ? forward.revisionBaseDate30d : null))
+                  ? `對比 ${forward.revenueRevisionBaseDate30d ?? forward.revisionBaseDate30d}` : null}
               />
               <MetricRow
                 label="近 90 日預期營收修正"
                 metric={forward.revenueRevision90d}
-                suffixNote={forward.revisionBaseDate90d ? `對比 ${forward.revisionBaseDate90d}` : null}
+                suffixNote={(forward.revenueRevisionBaseDate90d ?? (forward.epsRevision90dBasis !== "PROVIDER_TRAILING" ? forward.revisionBaseDate90d : null))
+                  ? `對比 ${forward.revenueRevisionBaseDate90d ?? forward.revisionBaseDate90d}` : null}
               />
             </Stack>
           </Grid>

@@ -312,6 +312,144 @@ class ForwardValuationCalculatorTests {
         assertThat(q4Tracked.epsRevision90d().status()).isEqualTo(MetricStatus.INSUFFICIENT_DATA);
     }
 
+    @Test
+    void supportsAlphaVantageAnnualEstimatesProviderRevisionsAndSameSourceIsolation() {
+        LocalDate obs = LocalDate.of(2026, 11, 17);
+        StockEarningsForecast avFy1 = forecast("FY2027", "ANNUAL", LocalDate.of(2027, 9, 30), obs, "USD", "9.50", "500000000000");
+        avFy1.setSource("ALPHAVANTAGE");
+        avFy1.setEps30dAgo(new BigDecimal("10.00"));
+        avFy1.setEps90dAgo(new BigDecimal("10.50"));
+
+        StockEarningsForecast avFy2 = forecast("FY2028", "ANNUAL", LocalDate.of(2028, 9, 30), obs, "USD", "11.40", "560000000000");
+        avFy2.setSource("ALPHAVANTAGE");
+
+        // 1) 首日同步尚無本地 30D/90D 歷史列時，自動採 AlphaVantage 內建 eps30dAgo / eps90dAgo 計算修正率，並正確計算 Forward P/E、P/S、PEG
+        ForwardValuationCalculator.Inputs avInputs = new ForwardValuationCalculator.Inputs(
+                VAL_DAY, CUTOFF, "USD", new BigDecimal("190.00"), new BigDecimal("3000000000000"), null,
+                new BigDecimal("8.00"), null, List.of(), null, List.of(avFy1, avFy2), List.of(), List.of());
+
+        ForwardValuationCalculator.SelectedRevisionTarget target = calculator.selectRevisionTarget(avInputs);
+        assertThat(target).isNotNull();
+        assertThat(target.source()).isEqualTo("ALPHAVANTAGE");
+        assertThat(target.fiscalPeriod()).isEqualTo("FY2027");
+
+        ForwardMetrics dayOne = calculator.calculate(avInputs, List.of());
+        assertThat(dayOne.forecastSource()).isEqualTo("ALPHAVANTAGE");
+        assertThat(dayOne.revisionSource()).isEqualTo("ALPHAVANTAGE");
+        assertThat(dayOne.epsRevision30dBasis()).isEqualTo(ForwardValuationCalculator.REV_BASIS_PROVIDER_TRAILING);
+        assertThat(dayOne.epsRevision90dBasis()).isEqualTo(ForwardValuationCalculator.REV_BASIS_PROVIDER_TRAILING);
+        assertThat(dayOne.forwardPe().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(dayOne.forwardPe().value()).isEqualByComparingTo("20.0000");
+        assertThat(dayOne.forwardPs().value()).isEqualByComparingTo("6.0000");
+        assertThat(dayOne.forwardPeg().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(dayOne.epsRevision30d().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(dayOne.epsRevision30d().value()).isEqualByComparingTo("-0.050000");
+        assertThat(dayOne.epsRevision90d().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(dayOne.epsRevision90d().value()).isEqualByComparingTo("-0.095238");
+        assertThat(dayOne.revisionBaseDate30d()).isEqualTo(obs.minusDays(30));
+        assertThat(dayOne.revisionBaseDate90d()).isEqualTo(obs.minusDays(90));
+
+        // 2) 近 90 日內發生 1 拆 10 且本地無歷史列時，來源回溯 eps90dAgo 不得製造 -90% 假價值陷阱，必須回 UNVERIFIED
+        StockEarningsForecast splitAv = forecast("FY2027", "ANNUAL", LocalDate.of(2027, 9, 30), obs, "USD", "1.00", "500000000000");
+        splitAv.setSource("ALPHAVANTAGE");
+        splitAv.setEps90dAgo(new BigDecimal("10.00"));
+        StockSplit tenForOne = new StockSplit();
+        tenForOne.setFigi("FIGI");
+        tenForOne.setSourceEventId("SPL-10-1");
+        tenForOne.setExecutionDate(obs.minusDays(40));
+        tenForOne.setSplitFrom(BigDecimal.ONE);
+        tenForOne.setSplitTo(BigDecimal.TEN);
+        ForwardValuationCalculator.Inputs splitTrapInputs = new ForwardValuationCalculator.Inputs(
+                VAL_DAY, CUTOFF, "USD", new BigDecimal("20.00"), new BigDecimal("3000000000000"), null,
+                new BigDecimal("0.80"), null, List.of(tenForOne), null, List.of(splitAv), List.of(), List.of());
+        ForwardMetrics splitProtected = calculator.calculate(splitTrapInputs, List.of());
+        assertThat(splitProtected.epsRevision90d().status()).isEqualTo(MetricStatus.UNVERIFIED);
+        assertThat(splitProtected.epsRevision90d().reasons().getFirst().code()).isEqualTo("EPS_SPLIT_BASIS_UNCONFIRMED");
+
+        // 3) 本地 30D 歷史僅有營收（10-23，EPS 為 NULL）時，不應遮蔽來源內建 eps30dAgo（10-18），且 EPS 與營收各自保留正確基準日
+        StockEarningsForecast revOnlyHist30 = forecast("FY2027", "ANNUAL", LocalDate.of(2027, 9, 30), LocalDate.of(2026, 10, 23), "USD", null, "400000000000");
+        revOnlyHist30.setSource("ALPHAVANTAGE");
+        ForwardMetrics mixedMetricBases = calculator.calculate(avInputs, List.of(revOnlyHist30));
+        assertThat(mixedMetricBases.revenueRevision30d().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(mixedMetricBases.revenueRevision30d().value()).isEqualByComparingTo("0.250000");
+        assertThat(mixedMetricBases.revenueRevisionBaseDate30d()).isEqualTo(LocalDate.of(2026, 10, 23));
+        assertThat(mixedMetricBases.epsRevision30d().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(mixedMetricBases.epsRevision30d().value()).isEqualByComparingTo("-0.050000");
+        assertThat(mixedMetricBases.revisionBaseDate30d()).isEqualTo(obs.minusDays(30));
+        assertThat(mixedMetricBases.epsRevision30dBasis()).isEqualTo(ForwardValuationCalculator.REV_BASIS_PROVIDER_TRAILING);
+
+        // 4) 本地已累積滿 30D 同來源 EPS 歷史列時，優先使用本地歷史列而非 provider 欄位，且自動忽略不同來源（FUTU）歷史列
+        StockEarningsForecast avHist30 = forecast("FY2027", "ANNUAL", LocalDate.of(2027, 9, 30), obs.minusDays(30), "USD", "8.00", "480000000000");
+        avHist30.setSource("ALPHAVANTAGE");
+        StockEarningsForecast wrongSourceHist = forecast("FY2027", "ANNUAL", LocalDate.of(2027, 9, 30), obs.minusDays(29), "USD", "1.00", "100000000000");
+        wrongSourceHist.setSource("FUTU");
+
+        ForwardMetrics withLocalHist = calculator.calculate(avInputs, List.of(avHist30, wrongSourceHist));
+        assertThat(withLocalHist.epsRevision30d().value()).isEqualByComparingTo("0.187500");
+        assertThat(withLocalHist.epsRevision30dBasis()).isEqualTo(ForwardValuationCalculator.REV_BASIS_LOCAL_HISTORY);
+
+        // 5) 虧損轉盈時不混用不同來源的 FY2（FY1=ALPHAVANTAGE、FY2=FUTU -> 不算 FY2/FY1 PEG）
+        StockEarningsForecast futuFy2Only = forecast("FY2028", "ANNUAL", LocalDate.of(2028, 9, 30), obs, "USD", "11.40", "560000000000");
+        futuFy2Only.setSource("FUTU");
+        ForwardValuationCalculator.Inputs mixedSourceTurnaround = new ForwardValuationCalculator.Inputs(
+                VAL_DAY, CUTOFF, "USD", new BigDecimal("190.00"), new BigDecimal("3000000000000"), null,
+                new BigDecimal("-1.00"), null, List.of(), null, List.of(avFy1, futuFy2Only), List.of(), List.of());
+        ForwardMetrics noMixedPeg = calculator.calculate(mixedSourceTurnaround, List.of());
+        assertThat(noMixedPeg.forwardPeg().status()).isEqualTo(MetricStatus.NOT_APPLICABLE);
+
+        // 6) Apple 52 週財年（年報 periodType=7，錨點 2026-09-26，AlphaVantage FY2027 保留 periodEnd=null）：
+        //    帶外 2027-08-15 正常 AVAILABLE；帶內 2027-09-27（±7 日邊界）回 FORECAST_FISCAL_PERIOD_UNVERIFIED
+        KnownReportPeriod aaplFy26 = new KnownReportPeriod(
+                LocalDate.of(2026, 9, 26), 7, 2026, "FY2026", Instant.parse("2026-11-01T21:00:00Z"));
+        StockEarningsForecast aaplFy27Mid = forecast("FY2027", "ANNUAL", null, LocalDate.of(2027, 8, 15), "USD", "9.50", "500000000000");
+        aaplFy27Mid.setSource("ALPHAVANTAGE");
+        ForwardValuationCalculator.Inputs midYearOk = new ForwardValuationCalculator.Inputs(
+                LocalDate.of(2027, 8, 15), Instant.parse("2027-08-15T20:00:00Z"),
+                "USD", new BigDecimal("190.00"), new BigDecimal("3000000000000"), null,
+                new BigDecimal("8.50"), null, List.of(), null, List.of(aaplFy27Mid), List.of(aaplFy26), List.of());
+        ForwardMetrics midYearRes = calculator.calculate(midYearOk, List.of());
+        assertThat(midYearRes.forwardPe().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(midYearRes.forwardPe().value()).isEqualByComparingTo("20.0000");
+
+        StockEarningsForecast aaplFy27NullEnd = forecast("FY2027", "ANNUAL", null, LocalDate.of(2027, 9, 27), "USD", "9.50", "500000000000");
+        aaplFy27NullEnd.setSource("ALPHAVANTAGE");
+        ForwardValuationCalculator.Inputs nearYearEnd = new ForwardValuationCalculator.Inputs(
+                LocalDate.of(2027, 9, 27), Instant.parse("2027-09-27T20:00:00Z"),
+                "USD", new BigDecimal("250.00"), new BigDecimal("3800000000000"), null,
+                new BigDecimal("8.50"), null, List.of(), null, List.of(aaplFy27NullEnd), List.of(aaplFy26), List.of());
+        ForwardMetrics boundaryUnverified = calculator.calculate(nearYearEnd, List.of());
+        assertThat(boundaryUnverified.forwardPe().status()).isEqualTo(MetricStatus.UNVERIFIED);
+        assertThat(boundaryUnverified.forwardPe().reasons().getFirst().code()).isEqualTo("FORECAST_FISCAL_PERIOD_UNVERIFIED");
+
+        // 7) 同 FY1（53 週 FY2026）陳舊 FUTU（2026-08-01 推估 12-28）不得遮蔽新鮮 ALPHAVANTAGE（2026-11-17 明示 2027-01-03）
+        KnownReportPeriod fy25Dec28 = new KnownReportPeriod(
+                LocalDate.of(2025, 12, 28), 7, 2025, "FY2025", Instant.parse("2026-02-20T21:00:00Z"));
+        StockEarningsForecast staleFutuFy26 = forecast("FY2026", "ANNUAL", null, LocalDate.of(2026, 8, 1), "USD", "4.00", "5000000000");
+        staleFutuFy26.setSource("FUTU");
+        StockEarningsForecast freshAvFy26 = forecast("FY2026", "ANNUAL", LocalDate.of(2027, 1, 3), VAL_DAY, "USD", "5.00", "6000000000");
+        freshAvFy26.setSource("ALPHAVANTAGE");
+        ForwardValuationCalculator.Inputs staleVsFreshInputs = new ForwardValuationCalculator.Inputs(
+                VAL_DAY, CUTOFF, "USD", new BigDecimal("100.00"), new BigDecimal("60000000000"), null,
+                new BigDecimal("4.20"), null, List.of(), null, List.of(staleFutuFy26, freshAvFy26), List.of(fy25Dec28), List.of());
+        ForwardMetrics freshWins = calculator.calculate(staleVsFreshInputs, List.of());
+        assertThat(freshWins.forecastSource()).isEqualTo("ALPHAVANTAGE");
+        assertThat(freshWins.forwardPe().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(freshWins.forwardPe().value()).isEqualByComparingTo("20.0000");
+
+        // 8) 週末／盤前最新報告（valuationDate=週五 11/20、cutoff=週六 11/21、observationDate=週六 11/21）立即可見新同步列
+        LocalDate friday = LocalDate.of(2026, 11, 20);
+        LocalDate saturday = LocalDate.of(2026, 11, 21);
+        StockEarningsForecast satAv = forecast("FY2026", "ANNUAL", LocalDate.of(2026, 12, 31), saturday, "USD", "10.00", "100000000000");
+        satAv.setSource("ALPHAVANTAGE");
+        ForwardValuationCalculator.Inputs weekendLive = new ForwardValuationCalculator.Inputs(
+                friday, Instant.parse("2026-11-21T15:00:00Z"),
+                "USD", new BigDecimal("200.00"), new BigDecimal("1000000000000"), null,
+                new BigDecimal("8.00"), null, List.of(), null, List.of(satAv), List.of(), List.of());
+        ForwardMetrics weekendResult = calculator.calculate(weekendLive, List.of());
+        assertThat(weekendResult.forwardPe().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(weekendResult.forwardPe().value()).isEqualByComparingTo("20.0000");
+    }
+
     private StockEarningsForecast forecast(String period, String type, LocalDate periodEnd, LocalDate obsDate,
                                            String currency, String eps, String revenue) {
         StockEarningsForecast f = new StockEarningsForecast();

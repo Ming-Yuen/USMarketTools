@@ -187,6 +187,7 @@ export interface ForwardMetrics {
   targetFiscalPeriod: string | null;
   forecastObservationDate: string | null;
   forecastCurrency: string | null;
+  forecastSource?: string | null;
   forwardPe: MetricResult<number>;
   forwardPs: MetricResult<number>;
   forwardPeg: MetricResult<number>;
@@ -195,9 +196,14 @@ export interface ForwardMetrics {
   revisionFiscalPeriod: string | null;
   revisionPeriodType: string | null;
   revisionCurrency?: string | null;
+  revisionSource?: string | null;
   revisionObservationDate: string | null;
   revisionBaseDate30d: string | null;
   revisionBaseDate90d: string | null;
+  revenueRevisionBaseDate30d?: string | null;
+  revenueRevisionBaseDate90d?: string | null;
+  epsRevision30dBasis?: string | null;
+  epsRevision90dBasis?: string | null;
   epsRevision30d: MetricResult<number>;
   epsRevision90d: MetricResult<number>;
   revenueRevision30d: MetricResult<number>;

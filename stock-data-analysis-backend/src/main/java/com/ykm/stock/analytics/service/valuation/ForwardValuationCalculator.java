@@ -10,6 +10,7 @@ import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository.KnownReportPeriod;
 import com.ykm.stock.analytics.service.analysis.calculator.StockSplitCalculator;
+import com.ykm.stock.analytics.service.market.MarketStatusService;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -25,11 +26,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 基於已入庫市場共識預期（stock_earnings_forecast, source='FUTU'）的純記憶體前瞻倍數與預期修正計算器。
+ * 基於已入庫市場共識預期（stock_earnings_forecast，支援多來源如 ALPHAVANTAGE 與 FUTU）的純記憶體前瞻倍數與預期修正計算器。
  * 嚴格遵守分軌隔離原則：不寫入財季分母表，不將單季預期乘數放大冒充年度，超過 45 天未更新標為 STALE。
  */
 public class ForwardValuationCalculator {
@@ -69,6 +71,7 @@ public class ForwardValuationCalculator {
 
     public record SelectedRevisionTarget(
             StockEarningsForecast latest,
+            String source,
             String fiscalPeriod,
             String periodType
     ) {}
@@ -101,18 +104,24 @@ public class ForwardValuationCalculator {
             AnnualAnchor latestAnnualAnchor
     ) {}
 
+    public static final String REV_BASIS_LOCAL_HISTORY = "LOCAL_HISTORY";
+    public static final String REV_BASIS_PROVIDER_TRAILING = "PROVIDER_TRAILING";
+
     private record AlignedEpsResult(BigDecimal value, MetricStatus failStatus, String failCode, String failMessage) {}
+
+    private record EpsRevisionOutcome(MetricResult<BigDecimal> result, LocalDate baseDate, String basis) {}
 
     /** 第一步：挑出需要載入歷史序列的單一未公布修正追蹤目標（優先未陳舊之未結束 FY1，次選未陳舊單季，僅剩陳舊列時回傳供標記 STALE）。 */
     public SelectedRevisionTarget selectRevisionTarget(Inputs in) {
         if (in == null || in.valuationDate() == null || in.latestForecasts() == null || in.latestForecasts().isEmpty()) {
             return null;
         }
+        LocalDate maxObsDay = resolveMaxObservationDate(in.valuationDate(), in.cutoff());
         ReportedHistoryContext historyCtx = buildReportedContext(in.valuationDate(), in.cutoff(), in.knownFutuReports(), in.storedPeriods());
-        AnnualSelection annualSel = selectAnnualForecasts(in.valuationDate(), in.latestForecasts(), historyCtx);
-        StockEarningsForecast chosen = chooseRevisionForecast(in.valuationDate(), annualSel, in.latestForecasts(), historyCtx);
+        AnnualSelection annualSel = selectAnnualForecasts(in.valuationDate(), maxObsDay, in.latestForecasts(), historyCtx);
+        StockEarningsForecast chosen = chooseRevisionForecast(in.valuationDate(), maxObsDay, annualSel, in.latestForecasts(), historyCtx);
         if (chosen != null) {
-            return new SelectedRevisionTarget(chosen, chosen.getFiscalPeriod(), chosen.getPeriodType());
+            return new SelectedRevisionTarget(chosen, chosen.getSource(), chosen.getFiscalPeriod(), chosen.getPeriodType());
         }
         return null;
     }
@@ -123,24 +132,26 @@ public class ForwardValuationCalculator {
             return null;
         }
         LocalDate day = in.valuationDate();
+        LocalDate maxObsDay = resolveMaxObservationDate(day, in.cutoff());
         List<StockEarningsForecast> latestList = in.latestForecasts() == null ? List.of() : in.latestForecasts();
         List<StockSplit> splits = in.splits() == null ? List.of() : in.splits();
 
         if (latestList.isEmpty()) {
             MetricResult<BigDecimal> missing = unavailable(MetricStatus.INSUFFICIENT_DATA,
                     "EARNINGS_FORECAST_MISSING", "尚無已入庫的市場盈利預期紀錄。");
-            return new ForwardMetrics(day, null, null, null,
+            return new ForwardMetrics(day, null, null, null, null,
                     missing, missing, missing, null, missing,
-                    null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null,
                     missing, missing, missing, missing);
         }
 
         ReportedHistoryContext historyCtx = buildReportedContext(day, in.cutoff(), in.knownFutuReports(), in.storedPeriods());
-        AnnualSelection annualSel = selectAnnualForecasts(day, latestList, historyCtx);
+        AnnualSelection annualSel = selectAnnualForecasts(day, maxObsDay, latestList, historyCtx);
 
         String targetFiscalPeriod = null;
         LocalDate forecastObsDate = null;
         String forecastCurrency = null;
+        String forecastSource = null;
         MetricResult<BigDecimal> forwardPe;
         MetricResult<BigDecimal> forwardPs;
         MetricResult<BigDecimal> forwardPeg;
@@ -164,6 +175,7 @@ public class ForwardValuationCalculator {
             targetFiscalPeriod = fy1.getFiscalPeriod();
             forecastObsDate = fy1.getObservationDate();
             forecastCurrency = fy1.getCurrency();
+            forecastSource = fy1.getSource();
             long ageDays = ChronoUnit.DAYS.between(fy1.getObservationDate(), day);
 
             if (ageDays > MAX_FORECAST_STALE_DAYS) {
@@ -195,44 +207,60 @@ public class ForwardValuationCalculator {
         }
 
         // 計算 30D / 90D 同財期預期修正（優先未陳舊之未結束 FY1，否則取最近未陳舊單季）
-        StockEarningsForecast revTarget = chooseRevisionForecast(day, annualSel, latestList, historyCtx);
+        StockEarningsForecast revTarget = chooseRevisionForecast(day, maxObsDay, annualSel, latestList, historyCtx);
 
         if (revTarget == null) {
             MetricResult<BigDecimal> noUnreported = unavailable(MetricStatus.INSUFFICIENT_DATA,
                     "NO_UNREPORTED_FORECAST_PERIOD", "目前無合資格未公布財期可供修正比較。");
-            return new ForwardMetrics(day, targetFiscalPeriod, forecastObsDate, forecastCurrency,
+            return new ForwardMetrics(day, targetFiscalPeriod, forecastObsDate, forecastCurrency, forecastSource,
                     forwardPe, forwardPs, forwardPeg, forwardPegBasis, impliedEpsGrowth,
-                    null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null,
                     noUnreported, noUnreported, noUnreported, noUnreported);
         }
 
         LocalDate revObsDate = revTarget.getObservationDate();
         String revCurrency = revTarget.getCurrency();
+        String revSource = revTarget.getSource();
         long revAgeDays = ChronoUnit.DAYS.between(revObsDate, day);
         if (revAgeDays > MAX_FORECAST_STALE_DAYS) {
             MetricResult<BigDecimal> staleRev = unavailable(MetricStatus.STALE,
                     "EARNINGS_FORECAST_STALE", "該財期最新預期觀察距估值日已逾 45 天，暫不計算近期預期修正。");
-            return new ForwardMetrics(day, targetFiscalPeriod, forecastObsDate, forecastCurrency,
+            return new ForwardMetrics(day, targetFiscalPeriod, forecastObsDate, forecastCurrency, forecastSource,
                     forwardPe, forwardPs, forwardPeg, forwardPegBasis, impliedEpsGrowth,
-                    revTarget.getFiscalPeriod(), revTarget.getPeriodType(), revCurrency, revObsDate, null, null,
+                    revTarget.getFiscalPeriod(), revTarget.getPeriodType(), revCurrency, revSource, revObsDate,
+                    null, null, null, null, null, null,
                     staleRev, staleRev, staleRev, staleRev);
         }
 
         List<StockEarningsForecast> dedupHistory = deduplicateDailyHistory(
-                revisionHistory, revTarget.getFiscalPeriod(), revTarget.getPeriodType(), revCurrency, revObsDate);
-        StockEarningsForecast base30 = findClosestBaseline(dedupHistory, revObsDate, REV_30D_MIN_DAYS, REV_30D_MAX_DAYS, REV_30D_TARGET_DAYS);
-        StockEarningsForecast base90 = findClosestBaseline(dedupHistory, revObsDate, REV_90D_MIN_DAYS, REV_90D_MAX_DAYS, REV_90D_TARGET_DAYS);
+                revisionHistory, revSource, revTarget.getFiscalPeriod(), revTarget.getPeriodType(), revCurrency, revObsDate);
+        StockEarningsForecast base30Eps = findClosestBaseline(
+                dedupHistory, revObsDate, REV_30D_MIN_DAYS, REV_30D_MAX_DAYS, REV_30D_TARGET_DAYS, row -> row.getEps() != null);
+        StockEarningsForecast base90Eps = findClosestBaseline(
+                dedupHistory, revObsDate, REV_90D_MIN_DAYS, REV_90D_MAX_DAYS, REV_90D_TARGET_DAYS, row -> row.getEps() != null);
+        StockEarningsForecast base30Rev = findClosestBaseline(
+                dedupHistory, revObsDate, REV_30D_MIN_DAYS, REV_30D_MAX_DAYS, REV_30D_TARGET_DAYS, row -> row.getRevenue() != null);
+        StockEarningsForecast base90Rev = findClosestBaseline(
+                dedupHistory, revObsDate, REV_90D_MIN_DAYS, REV_90D_MAX_DAYS, REV_90D_TARGET_DAYS, row -> row.getRevenue() != null);
 
-        MetricResult<BigDecimal> epsRev30 = computeEpsRevision(revTarget, base30, splits, in.splitSyncError(), "30");
-        MetricResult<BigDecimal> epsRev90 = computeEpsRevision(revTarget, base90, splits, in.splitSyncError(), "90");
-        MetricResult<BigDecimal> revRev30 = computeRevenueRevision(revTarget, base30, "30");
-        MetricResult<BigDecimal> revRev90 = computeRevenueRevision(revTarget, base90, "90");
+        EpsRevisionOutcome epsRev30 = computeEpsRevision(
+                revTarget, base30Eps, revTarget.getEps30dAgo(), REV_30D_TARGET_DAYS, splits, in.splitSyncError(), "30");
+        EpsRevisionOutcome epsRev90 = computeEpsRevision(
+                revTarget, base90Eps, revTarget.getEps90dAgo(), REV_90D_TARGET_DAYS, splits, in.splitSyncError(), "90");
+        MetricResult<BigDecimal> revRev30 = computeRevenueRevision(revTarget, base30Rev, "30");
+        MetricResult<BigDecimal> revRev90 = computeRevenueRevision(revTarget, base90Rev, "90");
+
+        LocalDate epsBaseDate30 = epsRev30.baseDate();
+        LocalDate epsBaseDate90 = epsRev90.baseDate();
+        LocalDate revBaseDate30 = base30Rev != null ? base30Rev.getObservationDate() : null;
+        LocalDate revBaseDate90 = base90Rev != null ? base90Rev.getObservationDate() : null;
 
         return new ForwardMetrics(
                 day,
                 targetFiscalPeriod,
                 forecastObsDate,
                 forecastCurrency,
+                forecastSource,
                 forwardPe,
                 forwardPs,
                 forwardPeg,
@@ -241,11 +269,16 @@ public class ForwardValuationCalculator {
                 revTarget.getFiscalPeriod(),
                 revTarget.getPeriodType(),
                 revCurrency,
+                revSource,
                 revObsDate,
-                base30 == null ? null : base30.getObservationDate(),
-                base90 == null ? null : base90.getObservationDate(),
-                epsRev30,
-                epsRev90,
+                epsBaseDate30,
+                epsBaseDate90,
+                revBaseDate30,
+                revBaseDate90,
+                epsRev30.basis(),
+                epsRev90.basis(),
+                epsRev30.result(),
+                epsRev90.result(),
                 revRev30,
                 revRev90
         );
@@ -353,28 +386,66 @@ public class ForwardValuationCalculator {
         return new PegOutcome(MetricResult.available(peg), chosenBasis);
     }
 
-    private MetricResult<BigDecimal> computeEpsRevision(
-            StockEarningsForecast latest, StockEarningsForecast baseline,
-            List<StockSplit> splits, String splitSyncError, String windowLabel) {
+    private EpsRevisionOutcome computeEpsRevision(
+            StockEarningsForecast latest, StockEarningsForecast baseline, BigDecimal providerBaselineEps,
+            long windowDays, List<StockSplit> splits, String splitSyncError, String windowLabel) {
         if (baseline == null) {
-            return unavailable(MetricStatus.INSUFFICIENT_DATA, "FORECAST_REVISION_BASE_MISSING",
-                    "此財期尚無滿 " + windowLabel + " 日區間之可比歷史觀察基準。");
+            if (providerBaselineEps == null) {
+                return new EpsRevisionOutcome(unavailable(MetricStatus.INSUFFICIENT_DATA, "FORECAST_REVISION_BASE_MISSING",
+                        "此財期尚無滿 " + windowLabel + " 日區間之可比歷史觀察基準。"), null, null);
+            }
+            if (latest.getEps() == null) {
+                return new EpsRevisionOutcome(unavailable(MetricStatus.INSUFFICIENT_DATA, "FORWARD_EPS_MISSING",
+                        "最新觀察缺少預期 EPS 數值。"), null, null);
+            }
+            LocalDate approxBaseDate = latest.getObservationDate().minusDays(windowDays);
+            if (splitSyncError != null) {
+                return new EpsRevisionOutcome(unavailable(statusOfCode(splitSyncError), splitSyncError,
+                        "拆股紀錄同步異常，無法核實來源 " + windowLabel + " 日前預期 EPS 拆股口徑。"), null, null);
+            }
+            if (hasSplitInWindow(splits, approxBaseDate, latest.getObservationDate())) {
+                return new EpsRevisionOutcome(unavailable(MetricStatus.UNVERIFIED, "EPS_SPLIT_BASIS_UNCONFIRMED",
+                        "近 " + windowLabel + " 日內發生拆股且來源回溯預期 EPS 之拆股口徑未核實，暫不計算修正率。"), null, null);
+            }
+            if (providerBaselineEps.signum() <= 0) {
+                return new EpsRevisionOutcome(unavailable(MetricStatus.NOT_APPLICABLE, "NON_POSITIVE_PRIOR_FORECAST_EPS",
+                        "基期預期 EPS 為虧損或零，不適用百分比修正率。"), approxBaseDate, REV_BASIS_PROVIDER_TRAILING);
+            }
+            BigDecimal rev = latest.getEps().subtract(providerBaselineEps, MC)
+                    .divide(providerBaselineEps, 6, RoundingMode.HALF_UP);
+            return new EpsRevisionOutcome(MetricResult.available(rev), approxBaseDate, REV_BASIS_PROVIDER_TRAILING);
         }
         if (latest.getEps() == null || baseline.getEps() == null) {
-            return unavailable(MetricStatus.INSUFFICIENT_DATA, "FORWARD_EPS_MISSING", "最新或基期觀察缺少預期 EPS 數值。");
+            return new EpsRevisionOutcome(unavailable(MetricStatus.INSUFFICIENT_DATA, "FORWARD_EPS_MISSING",
+                    "最新或基期觀察缺少預期 EPS 數值。"), baseline.getObservationDate(), REV_BASIS_LOCAL_HISTORY);
         }
         AlignedEpsResult alignedBase = alignForecastEps(
                 baseline.getEps(), baseline.getObservationDate(), latest.getObservationDate(), splits, splitSyncError);
         if (alignedBase.value() == null) {
-            return unavailable(alignedBase.failStatus(), alignedBase.failCode(), alignedBase.failMessage());
+            return new EpsRevisionOutcome(unavailable(alignedBase.failStatus(), alignedBase.failCode(), alignedBase.failMessage()),
+                    baseline.getObservationDate(), REV_BASIS_LOCAL_HISTORY);
         }
         if (alignedBase.value().signum() <= 0) {
-            return unavailable(MetricStatus.NOT_APPLICABLE, "NON_POSITIVE_PRIOR_FORECAST_EPS",
-                    "基期預期 EPS 為虧損或零，不適用百分比修正率。");
+            return new EpsRevisionOutcome(unavailable(MetricStatus.NOT_APPLICABLE, "NON_POSITIVE_PRIOR_FORECAST_EPS",
+                    "基期預期 EPS 為虧損或零，不適用百分比修正率。"), baseline.getObservationDate(), REV_BASIS_LOCAL_HISTORY);
         }
         BigDecimal rev = latest.getEps().subtract(alignedBase.value(), MC)
                 .divide(alignedBase.value(), 6, RoundingMode.HALF_UP);
-        return MetricResult.available(rev);
+        return new EpsRevisionOutcome(MetricResult.available(rev), baseline.getObservationDate(), REV_BASIS_LOCAL_HISTORY);
+    }
+
+    private boolean hasSplitInWindow(List<StockSplit> splits, LocalDate fromExclusive, LocalDate toInclusive) {
+        if (splits == null || splits.isEmpty() || fromExclusive == null || toInclusive == null) {
+            return false;
+        }
+        for (StockSplit split : splits) {
+            if (split != null && split.getExecutionDate() != null
+                    && split.getExecutionDate().isAfter(fromExclusive)
+                    && !split.getExecutionDate().isAfter(toInclusive)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private MetricResult<BigDecimal> computeRevenueRevision(
@@ -416,14 +487,15 @@ public class ForwardValuationCalculator {
     }
 
     private List<StockEarningsForecast> deduplicateDailyHistory(
-            List<StockEarningsForecast> history, String fiscalPeriod, String periodType, String currency, LocalDate latestObsDate) {
+            List<StockEarningsForecast> history, String source, String fiscalPeriod, String periodType,
+            String currency, LocalDate latestObsDate) {
         if (history == null || history.isEmpty()) return List.of();
         Map<LocalDate, StockEarningsForecast> byDate = new LinkedHashMap<>();
         for (StockEarningsForecast row : history) {
             if (row == null || row.getObservationDate() == null || !row.getObservationDate().isBefore(latestObsDate)) {
                 continue;
             }
-            if (!"FUTU".equalsIgnoreCase(row.getSource())
+            if (!sameSource(source, row.getSource())
                     || !Objects.equals(fiscalPeriod, row.getFiscalPeriod())
                     || !Objects.equals(periodType, row.getPeriodType())
                     || !sameCurrency(currency, row.getCurrency())) {
@@ -440,10 +512,11 @@ public class ForwardValuationCalculator {
 
     private StockEarningsForecast findClosestBaseline(
             List<StockEarningsForecast> candidates, LocalDate anchorDate,
-            long minDays, long maxDays, long targetDays) {
+            long minDays, long maxDays, long targetDays, Predicate<StockEarningsForecast> filter) {
         StockEarningsForecast best = null;
         long bestDiff = Long.MAX_VALUE;
         for (StockEarningsForecast row : candidates) {
+            if (!filter.test(row)) continue;
             long gap = ChronoUnit.DAYS.between(row.getObservationDate(), anchorDate);
             if (gap < minDays || gap > maxDays) continue;
             long diff = Math.abs(gap - targetDays);
@@ -560,15 +633,52 @@ public class ForwardValuationCalculator {
         return source == null || !source.contains("SEC");
     }
 
+    private LocalDate resolveMaxObservationDate(LocalDate valuationDate, Instant cutoff) {
+        return cutoff == null ? valuationDate : cutoff.atZone(MarketStatusService.NY_ZONE).toLocalDate();
+    }
+
+    private QualifiedAnnual pickBestForTargetFiscalYear(List<QualifiedAnnual> candidates, LocalDate valuationDate, Integer expectedFy) {
+        int targetFy = expectedFy != null ? expectedFy
+                : candidates.stream().min(annualCandidateComparator()).orElseThrow().fiscalYear();
+        List<QualifiedAnnual> sameFy = candidates.stream()
+                .filter(q -> q.fiscalYear() == targetFy)
+                .toList();
+        List<QualifiedAnnual> pool = sameFy.isEmpty() ? candidates : sameFy;
+        Comparator<QualifiedAnnual> freshnessFirst = Comparator
+                .comparing((QualifiedAnnual q) -> q.forecast().getObservationDate() != null
+                        && ChronoUnit.DAYS.between(q.forecast().getObservationDate(), valuationDate) <= MAX_FORECAST_STALE_DAYS,
+                        Comparator.reverseOrder())
+                .thenComparing(q -> q.forecast().getObservationDate(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(q -> q.forecast().getObservedAt(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(QualifiedAnnual::effectiveEnd)
+                .thenComparing(q -> q.forecast().getSource(), Comparator.nullsLast(String::compareToIgnoreCase));
+        return pool.stream().min(freshnessFirst).orElseThrow();
+    }
+
+    private Comparator<QualifiedAnnual> annualCandidateComparator() {
+        return Comparator.comparing(QualifiedAnnual::effectiveEnd)
+                .thenComparingInt(QualifiedAnnual::fiscalYear)
+                .thenComparing(q -> q.forecast().getObservationDate(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(q -> q.forecast().getObservedAt(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(q -> q.forecast().getSource(), Comparator.nullsLast(String::compareToIgnoreCase));
+    }
+
+    private Comparator<QualifiedQuarter> quarterCandidateComparator() {
+        return Comparator.comparing(QualifiedQuarter::key)
+                .thenComparing(q -> q.forecast().getObservationDate(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(q -> q.forecast().getObservedAt(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(q -> q.forecast().getSource(), Comparator.nullsLast(String::compareToIgnoreCase));
+    }
+
     private StockEarningsForecast chooseRevisionForecast(
-            LocalDate valuationDate, AnnualSelection annualSel,
+            LocalDate valuationDate, LocalDate maxObsDay, AnnualSelection annualSel,
             List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
         StockEarningsForecast fy1 = annualSel.fy1() != null ? annualSel.fy1().forecast() : null;
         if (fy1 != null && fy1.getObservationDate() != null
                 && ChronoUnit.DAYS.between(fy1.getObservationDate(), valuationDate) <= MAX_FORECAST_STALE_DAYS) {
             return fy1;
         }
-        QualifiedQuarter nextQ = selectNextUnreportedQuarter(valuationDate, latestList, ctx);
+        QualifiedQuarter nextQ = selectNextUnreportedQuarter(valuationDate, maxObsDay, latestList, ctx);
         if (nextQ != null && nextQ.forecast().getObservationDate() != null
                 && ChronoUnit.DAYS.between(nextQ.forecast().getObservationDate(), valuationDate) <= MAX_FORECAST_STALE_DAYS) {
             return nextQ.forecast();
@@ -580,13 +690,13 @@ public class ForwardValuationCalculator {
     }
 
     private AnnualSelection selectAnnualForecasts(
-            LocalDate valuationDate, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
+            LocalDate valuationDate, LocalDate maxObsDay, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
         boolean hasAnyAnnual = false;
         List<QualifiedAnnual> explicitSpanning = new ArrayList<>();
         Map<Integer, StockEarningsForecast> explicitAnnualByFy = new LinkedHashMap<>();
         for (StockEarningsForecast f : latestList) {
             if (f == null || !"ANNUAL".equalsIgnoreCase(f.getPeriodType())) continue;
-            if (f.getObservationDate() == null || f.getObservationDate().isAfter(valuationDate)) continue;
+            if (f.getObservationDate() == null || f.getObservationDate().isAfter(maxObsDay)) continue;
             hasAnyAnnual = true;
             Integer fy = parsePureAnnualYear(f.getFiscalPeriod());
             if (f.getPeriodEnd() != null) {
@@ -607,12 +717,10 @@ public class ForwardValuationCalculator {
             return new AnnualSelection(null, null, "ANNUAL_EARNINGS_FORECAST_MISSING");
         }
 
-        // 若存在明示起迄涵蓋當日之合格年度預期，優先選為當前 FY1（避免改年結日公司被舊財年錨點推估列搶走 FY1），再獨立選取 FY2
+        // 若存在明示起迄涵蓋當日之合格年度預期，優先選為當前 FY1（避免改年結日公司被舊財年錨點推估列搶走 FY1），同財年優先選新鮮來源
         if (!explicitSpanning.isEmpty()) {
-            explicitSpanning.sort(Comparator.comparing(QualifiedAnnual::effectiveEnd)
-                    .thenComparingInt(QualifiedAnnual::fiscalYear));
-            QualifiedAnnual first = explicitSpanning.getFirst();
-            QualifiedAnnual second = selectFollowUpFy2(valuationDate, first, latestList, ctx);
+            QualifiedAnnual first = pickBestForTargetFiscalYear(explicitSpanning, valuationDate, null);
+            QualifiedAnnual second = selectFollowUpFy2(maxObsDay, first, latestList, ctx);
             return new AnnualSelection(first, second, null);
         }
 
@@ -656,7 +764,7 @@ public class ForwardValuationCalculator {
 
         for (StockEarningsForecast f : latestList) {
             if (f == null || !"ANNUAL".equalsIgnoreCase(f.getPeriodType())) continue;
-            if (f.getObservationDate() == null || f.getObservationDate().isAfter(valuationDate)) continue;
+            if (f.getObservationDate() == null || f.getObservationDate().isAfter(maxObsDay)) continue;
 
             Integer parsedFy = parsePureAnnualYear(f.getFiscalPeriod());
             LocalDate explicitStart = f.getPeriodStart();
@@ -701,9 +809,8 @@ public class ForwardValuationCalculator {
                     sawUnverifiedAnnual ? "FORECAST_FISCAL_PERIOD_UNVERIFIED" : "ANNUAL_EARNINGS_FORECAST_MISSING");
         }
 
-        qualified.sort(Comparator.comparing(QualifiedAnnual::effectiveEnd)
-                .thenComparingInt(QualifiedAnnual::fiscalYear));
-        QualifiedAnnual first = qualified.getFirst();
+        // 先定目標財年，再於該財年內優先選取未陳舊的新鮮來源（防止舊來源的推估期末早數日而遮蔽新鮮來源）
+        QualifiedAnnual first = pickBestForTargetFiscalYear(qualified, valuationDate, expectedCurrentFy);
         LocalDate firstStart = first.forecast().getPeriodStart();
 
         // 若明示財年起始日晚於估值日，代表該財年尚未開始（屬於遠期 FY2 而非當期 FY1）
@@ -726,16 +833,17 @@ public class ForwardValuationCalculator {
             }
         }
 
-        QualifiedAnnual second = selectFollowUpFy2(valuationDate, first, latestList, ctx);
+        QualifiedAnnual second = selectFollowUpFy2(maxObsDay, first, latestList, ctx);
         return new AnnualSelection(first, second, null);
     }
 
     private QualifiedAnnual selectFollowUpFy2(
-            LocalDate valuationDate, QualifiedAnnual first, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
+            LocalDate maxObsDay, QualifiedAnnual first, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
         List<QualifiedAnnual> candidates = new ArrayList<>();
         for (StockEarningsForecast f : latestList) {
             if (f == null || f == first.forecast() || !"ANNUAL".equalsIgnoreCase(f.getPeriodType())) continue;
-            if (f.getObservationDate() == null || f.getObservationDate().isAfter(valuationDate)) continue;
+            if (!sameSource(first.forecast().getSource(), f.getSource())) continue;
+            if (f.getObservationDate() == null || f.getObservationDate().isAfter(maxObsDay)) continue;
 
             Integer parsedFy = parsePureAnnualYear(f.getFiscalPeriod());
             LocalDate explicitStart = f.getPeriodStart();
@@ -756,18 +864,17 @@ public class ForwardValuationCalculator {
             }
         }
         if (candidates.isEmpty()) return null;
-        candidates.sort(Comparator.comparing(QualifiedAnnual::effectiveEnd)
-                .thenComparingInt(QualifiedAnnual::fiscalYear));
+        candidates.sort(annualCandidateComparator());
         return candidates.getFirst();
     }
 
     private QualifiedQuarter selectNextUnreportedQuarter(
-            LocalDate valuationDate, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
+            LocalDate valuationDate, LocalDate maxObsDay, List<StockEarningsForecast> latestList, ReportedHistoryContext ctx) {
         List<QualifiedQuarter> freshCandidates = new ArrayList<>();
         List<QualifiedQuarter> staleCandidates = new ArrayList<>();
         for (StockEarningsForecast f : latestList) {
             if (f == null || !"QUARTERLY".equalsIgnoreCase(f.getPeriodType())) continue;
-            if (f.getObservationDate() == null || f.getObservationDate().isAfter(valuationDate)) continue;
+            if (f.getObservationDate() == null || f.getObservationDate().isAfter(maxObsDay)) continue;
             if (f.getPeriodEnd() != null && !f.getPeriodEnd().isAfter(valuationDate)
                     && isAlreadyReportedEnd(f.getPeriodEnd(), ctx.reportedAnnualEnds())) {
                 continue;
@@ -787,11 +894,11 @@ public class ForwardValuationCalculator {
             }
         }
         if (!freshCandidates.isEmpty()) {
-            freshCandidates.sort(Comparator.comparing(QualifiedQuarter::key));
+            freshCandidates.sort(quarterCandidateComparator());
             return freshCandidates.getFirst();
         }
         if (!staleCandidates.isEmpty()) {
-            staleCandidates.sort(Comparator.comparing(QualifiedQuarter::key));
+            staleCandidates.sort(quarterCandidateComparator());
             return staleCandidates.getFirst();
         }
         return null;
@@ -831,6 +938,10 @@ public class ForwardValuationCalculator {
     }
 
     private boolean sameCurrency(String first, String second) {
+        return first != null && !first.isBlank() && second != null && first.trim().equalsIgnoreCase(second.trim());
+    }
+
+    private boolean sameSource(String first, String second) {
         return first != null && !first.isBlank() && second != null && first.trim().equalsIgnoreCase(second.trim());
     }
 

@@ -50,13 +50,16 @@ public class StockObservationService {
     public FutuObservationsDto readWithForward(ForwardObservationContext ctx) {
         LocalDate effectiveDay = ctx.valuationDate() != null ? ctx.valuationDate()
                 : ctx.asOf().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+        LocalDate maxObservationDate = ctx.asOf() != null
+                ? ctx.asOf().atZone(MarketStatusService.NY_ZONE).toLocalDate()
+                : effectiveDay;
         FutuObservationsDto.Valuation valuation = shareObservations
                 .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(ctx.figi(), "FUTU", ctx.asOf())
                 .filter(obs -> obs.getPeTtmRate() != null || obs.getPbRate() != null)
                 .map(this::toValuationObservation)
                 .orElse(null);
 
-        List<StockEarningsForecast> latestForecasts = forecasts.findLatestForStock(ctx.figi(), effectiveDay, ctx.asOf());
+        List<StockEarningsForecast> latestForecasts = forecasts.findLatestForStock(ctx.figi(), maxObservationDate, ctx.asOf());
         List<FutuObservationsDto.Earnings> earnings = latestForecasts.stream()
                 .map(forecast -> new FutuObservationsDto.Earnings(forecast.getFiscalPeriod(), forecast.getPeriodType(),
                         forecast.getPeriodStart(), forecast.getPeriodEnd(), forecast.getCurrency(), forecast.getEps(),
@@ -86,6 +89,7 @@ public class StockObservationService {
             LocalDate anchor = revTarget.latest().getObservationDate();
             revHistory = forecasts.findHistoryForPeriod(
                     ctx.figi(),
+                    revTarget.source(),
                     revTarget.fiscalPeriod(),
                     revTarget.periodType(),
                     anchor.minusDays(ForwardValuationCalculator.REV_90D_MAX_DAYS + 5L),

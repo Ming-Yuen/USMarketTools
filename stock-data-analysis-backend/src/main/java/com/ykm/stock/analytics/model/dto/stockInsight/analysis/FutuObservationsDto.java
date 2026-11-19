@@ -28,6 +28,7 @@ public record FutuObservationsDto(Valuation valuation, List<Earnings> earnings, 
             String targetFiscalPeriod,
             LocalDate forecastObservationDate,
             String forecastCurrency,
+            String forecastSource,
             MetricResult<BigDecimal> forwardPe,
             MetricResult<BigDecimal> forwardPs,
             MetricResult<BigDecimal> forwardPeg,
@@ -36,14 +37,46 @@ public record FutuObservationsDto(Valuation valuation, List<Earnings> earnings, 
             String revisionFiscalPeriod,
             String revisionPeriodType,
             String revisionCurrency,
+            String revisionSource,
             LocalDate revisionObservationDate,
             LocalDate revisionBaseDate30d,
             LocalDate revisionBaseDate90d,
+            LocalDate revenueRevisionBaseDate30d,
+            LocalDate revenueRevisionBaseDate90d,
+            String epsRevision30dBasis,
+            String epsRevision90dBasis,
             MetricResult<BigDecimal> epsRevision30d,
             MetricResult<BigDecimal> epsRevision90d,
             MetricResult<BigDecimal> revenueRevision30d,
             MetricResult<BigDecimal> revenueRevision90d
     ) {
+        public ForwardMetrics(
+                LocalDate valuationDate,
+                String targetFiscalPeriod,
+                LocalDate forecastObservationDate,
+                String forecastCurrency,
+                MetricResult<BigDecimal> forwardPe,
+                MetricResult<BigDecimal> forwardPs,
+                MetricResult<BigDecimal> forwardPeg,
+                String forwardPegBasis,
+                MetricResult<BigDecimal> impliedEpsGrowth,
+                String revisionFiscalPeriod,
+                String revisionPeriodType,
+                String revisionCurrency,
+                LocalDate revisionObservationDate,
+                LocalDate revisionBaseDate30d,
+                LocalDate revisionBaseDate90d,
+                MetricResult<BigDecimal> epsRevision30d,
+                MetricResult<BigDecimal> epsRevision90d,
+                MetricResult<BigDecimal> revenueRevision30d,
+                MetricResult<BigDecimal> revenueRevision90d) {
+            this(valuationDate, targetFiscalPeriod, forecastObservationDate, forecastCurrency, null,
+                    forwardPe, forwardPs, forwardPeg, forwardPegBasis, impliedEpsGrowth,
+                    revisionFiscalPeriod, revisionPeriodType, revisionCurrency, null, revisionObservationDate,
+                    revisionBaseDate30d, revisionBaseDate90d, revisionBaseDate30d, revisionBaseDate90d, null, null,
+                    epsRevision30d, epsRevision90d, revenueRevision30d, revenueRevision90d);
+        }
+
         public ForwardMetrics(
                 LocalDate valuationDate,
                 String targetFiscalPeriod,
@@ -63,10 +96,11 @@ public record FutuObservationsDto(Valuation valuation, List<Earnings> earnings, 
                 MetricResult<BigDecimal> epsRevision90d,
                 MetricResult<BigDecimal> revenueRevision30d,
                 MetricResult<BigDecimal> revenueRevision90d) {
-            this(valuationDate, targetFiscalPeriod, forecastObservationDate, forecastCurrency,
+            this(valuationDate, targetFiscalPeriod, forecastObservationDate, forecastCurrency, null,
                     forwardPe, forwardPs, forwardPeg, forwardPegBasis, impliedEpsGrowth,
-                    revisionFiscalPeriod, revisionPeriodType, forecastCurrency, revisionObservationDate,
-                    revisionBaseDate30d, revisionBaseDate90d, epsRevision30d, epsRevision90d, revenueRevision30d, revenueRevision90d);
+                    revisionFiscalPeriod, revisionPeriodType, forecastCurrency, null, revisionObservationDate,
+                    revisionBaseDate30d, revisionBaseDate90d, revisionBaseDate30d, revisionBaseDate90d, null, null,
+                    epsRevision30d, epsRevision90d, revenueRevision30d, revenueRevision90d);
         }
     }
 }

@@ -54,8 +54,15 @@ public class StockEarningsForecast {
     @Comment("來源報告的每股盈餘預期值，不得混作已公布實績。")
     private BigDecimal eps;
     @Column(columnDefinition = "numeric")
+    @Comment("來源直接提供的 30 日前同財期 EPS 共識預期值（已與當日同拆股基準），未知為 NULL。")
+    private BigDecimal eps30dAgo;
+    @Column(columnDefinition = "numeric")
+    @Comment("來源直接提供的 90 日前同財期 EPS 共識預期值（已與當日同拆股基準），未知為 NULL。")
+    private BigDecimal eps90dAgo;
+    @Column(columnDefinition = "numeric")
     @Comment("來源報告的營收預期值，不得混作已公布實績。")
     private BigDecimal revenue;
+    @Id
     @Column(length = 32, nullable = false)
     @Comment("本份預測的外部資料供應商。")
     private String source;
@@ -68,5 +75,6 @@ public class StockEarningsForecast {
         private String fiscalPeriod;
         private String periodType;
         private LocalDate observationDate;
+        private String source;
     }
 }

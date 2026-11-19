@@ -28,9 +28,9 @@ export function FutuObservationPanels({ observations }: { observations: FutuObse
     <Accordion disableGutters elevation={0} defaultExpanded={false} sx={{ "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<ExpandMore />} sx={{ px: 2.5, py: 0.5 }}>
         <Box>
-          <Typography fontWeight={700}>富途市場觀察與分析師預期（點擊展開）</Typography>
+          <Typography fontWeight={700}>第三方市場觀察與分析師預期（點擊展開）</Typography>
           <Typography variant="caption" color="text.secondary">
-            供應商原生快照倍數、衍生前瞻指標與盈利預期分開呈現，不替代 SEC／Futu 已公布財報分母
+            供應商原生快照倍數、衍生前瞻指標與多來源盈利預期分開呈現，不替代 SEC／Futu 已公布財報分母
           </Typography>
         </Box>
       </AccordionSummary>
@@ -47,7 +47,10 @@ export function FutuObservationPanels({ observations }: { observations: FutuObse
         {forward && <>
           <Divider sx={{ my: 1.8 }} />
           <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
-            衍生前瞻觀察摘要（估值日 {forward.valuationDate} · 來源 FUTU 預期）
+            衍生前瞻觀察摘要（估值日 {forward.valuationDate}
+            {forward.forecastSource ? ` · 前瞻來源 ${forward.forecastSource}` : ""}
+            {forward.revisionSource && forward.revisionSource !== forward.forecastSource ? ` · 修正來源 ${forward.revisionSource}` : ""}
+            {!forward.forecastSource && !forward.revisionSource ? " · 市場共識預期" : ""}）
           </Typography>
           <Stack direction="row" spacing={3} useFlexGap flexWrap="wrap" sx={{ mb: 0.5 }}>
             <Typography variant="body2">Forward P/E：{renderDerivedMetric(t, forward.forwardPe)}</Typography>

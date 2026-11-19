@@ -107,10 +107,19 @@ public class StockService {
             String sortBy,
             String sortDir,
             int page,
-            int size
+            int size,
+            String assetType
     ) {
+        public ScreenCriteria(String symbol, String industry, String conceptCode, String marketCapTier, String verdict,
+                              BigDecimal minRevenueGrowthYoy, BigDecimal minRoe, BigDecimal minFcfMargin,
+                              BigDecimal minHistoricalPercentile, BigDecimal maxHistoricalPercentile,
+                              String sortBy, String sortDir, int page, int size) {
+            this(symbol, industry, conceptCode, marketCapTier, verdict, minRevenueGrowthYoy, minRoe, minFcfMargin,
+                    minHistoricalPercentile, maxHistoricalPercentile, sortBy, sortDir, page, size, null);
+        }
+
         public static ScreenCriteria basic(String symbol, String industry, String conceptCode, int page, int size) {
-            return new ScreenCriteria(symbol, industry, conceptCode, null, null, null, null, null, null, null, null, null, page, size);
+            return new ScreenCriteria(symbol, industry, conceptCode, null, null, null, null, null, null, null, null, null, page, size, null);
         }
     }
 
@@ -225,6 +234,7 @@ public class StockService {
         response.setMarketCapTiers(SCREEN_MARKET_CAP_TIERS.toArray(new String[0]));
         response.setVerdicts(SCREEN_VERDICTS.toArray(new String[0]));
         response.setSortFields(SORT_SQL_COLUMNS.keySet().toArray(new String[0]));
+        response.setAssetTypes(new String[]{"STOCK", "ETF", "ALL"});
         return response;
     }
 
@@ -326,13 +336,16 @@ public class StockService {
 
         String normalizedTier = normalizeEnumFilter(criteria.marketCapTier(), SCREEN_MARKET_CAP_TIERS, "INVALID_MARKET_CAP_TIER");
         String normalizedVerdict = normalizeEnumFilter(criteria.verdict(), SCREEN_VERDICTS, "INVALID_VERDICT");
+        String normalizedAssetType = normalizeAssetType(criteria.assetType());
+        List<String> targetStockTypes = resolveAssetStockTypes(normalizedAssetType);
         validatePercentileBounds(criteria.minHistoricalPercentile(), criteria.maxHistoricalPercentile());
         String orderByInner = buildOrderByClause(criteria.sortBy(), criteria.sortDir(), "match_rank", "s.symbol", "s.figi");
         String orderByOuter = buildOrderByClause(criteria.sortBy(), criteria.sortDir(), "s.match_rank", "s.symbol", "s.figi");
 
         MapSqlParameterSource params = new MapSqlParameterSource("limit", size)
                 .addValue("offset", (long) page * size)
-                .addValue("stockTypes", SecurityTypePolicy.OPERATING_STOCK_TYPES);
+                .addValue("stockTypes", targetStockTypes)
+                .addValue("etfTypes", SecurityTypePolicy.ETF_STOCK_TYPES);
         StringBuilder where = new StringBuilder(" where s.active_status = 'ACTIVE' and s.tracked = true and s.stock_type in (:stockTypes) ");
         String rankSelect = "0 as match_rank";
 
@@ -398,8 +411,16 @@ public class StockService {
                          v.pe, v.pb, v.ps, v.pfcf, v.ev_ebitda,
                          v.revenue_growth_yoy, v.roe, v.fcf_margin, v.historical_percentile,
                          v.primary_metric, v.verdict,
-                         case when v.figi is null then 'NOT_CALCULATED' else v.status end as valuation_status,
-                         case when v.figi is null then 'VALUATION_NOT_CALCULATED' else v.reason_code end as reason_code,"""
+                         case
+                           when s.stock_type in (:etfTypes) then 'NOT_APPLICABLE'
+                           when v.figi is null then 'NOT_CALCULATED'
+                           else v.status
+                         end as valuation_status,
+                         case
+                           when s.stock_type in (:etfTypes) then 'NOT_APPLICABLE_FOR_ETF'
+                           when v.figi is null then 'VALUATION_NOT_CALCULATED'
+                           else v.reason_code
+                         end as reason_code,"""
                 + " " + rankSelect + "\n" + FROM + where
                 + "  order by " + orderByInner + "\n  limit :limit offset :offset\n)\n"
                 + """
@@ -559,5 +580,28 @@ public class StockService {
     private LocalDate date(ResultSet row, String name) throws SQLException {
         java.sql.Date value = row.getDate(name);
         return value == null ? null : value.toLocalDate();
+    }
+
+    private String normalizeAssetType(String raw) {
+        if (StringUtils.isBlank(raw)) {
+            return "STOCK";
+        }
+        String upper = raw.trim().toUpperCase();
+        if ("STOCK".equals(upper) || "ETF".equals(upper) || "ALL".equals(upper)) {
+            return upper;
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_ASSET_TYPE");
+    }
+
+    private List<String> resolveAssetStockTypes(String assetType) {
+        if ("ETF".equals(assetType)) {
+            return SecurityTypePolicy.ETF_STOCK_TYPES;
+        }
+        if ("ALL".equals(assetType)) {
+            List<String> combined = new ArrayList<>(SecurityTypePolicy.VALUATION_STOCK_TYPES);
+            combined.addAll(SecurityTypePolicy.ETF_STOCK_TYPES);
+            return List.copyOf(combined);
+        }
+        return SecurityTypePolicy.VALUATION_STOCK_TYPES;
     }
 }

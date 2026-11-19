@@ -65,6 +65,11 @@ public interface StockRepository extends JpaRepository<Stock, String>, JpaSpecif
     }
 
     default List<ActiveStockWithStatus> findValuationStocks(ActiveStatus status) {
+        return findTrackedStocksByTypes(status, SecurityTypePolicy.VALUATION_STOCK_TYPES);
+    }
+
+    /** 僅含一般營運普通股（不含 ADR／ETF），供板塊資金流維持既定全市場統計母體。 */
+    default List<ActiveStockWithStatus> findOperatingValuationStocks(ActiveStatus status) {
         return findTrackedStocksByTypes(status, SecurityTypePolicy.OPERATING_STOCK_TYPES);
     }
 
@@ -79,7 +84,7 @@ public interface StockRepository extends JpaRepository<Stock, String>, JpaSpecif
                                                            @Param("day") LocalDate day);
 
     default List<ActiveStockWithStatus> findValuationStocksForDate(ActiveStatus status, LocalDate day) {
-        return findValuationStocksForDate(status, SecurityTypePolicy.OPERATING_STOCK_TYPES, day);
+        return findValuationStocksForDate(status, SecurityTypePolicy.VALUATION_STOCK_TYPES, day);
     }
 
     /** 直接使用已成功保存的行情日期判斷是否需要同步；納入同 CIK 兄弟股與大盤基準 ETF。 */

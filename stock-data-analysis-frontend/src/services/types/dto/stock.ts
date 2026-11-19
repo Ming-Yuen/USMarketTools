@@ -9,6 +9,7 @@ export interface StockClassification {
 export interface StockClassificationResponse {
   classifications: StockClassification[];
   concepts: StockConcept[];
+  assetTypes?: string[];
   marketCapTiers?: string[];
   verdicts?: string[];
   sortFields?: string[];

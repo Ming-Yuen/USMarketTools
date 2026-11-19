@@ -54,7 +54,7 @@ public class StockFinancialPeriod {
     private Integer fiscalQuarter;
 
     @Column(name = "reporting_currency", length = 16)
-    @Comment("財報原幣代碼（如 USD、CAD、CNY），與股價幣別不同時不自動匯兌。")
+    @Comment("財報原幣代碼（如 USD、CAD、CNY、TWD）；非美元財報於估值計算邊界按官方匯率換算為 USD。")
     private String reportingCurrency;
 
     @Column(name = "accounting_standards", length = 32)
@@ -510,6 +510,137 @@ public class StockFinancialPeriod {
     @Column(name = "ev_adjustment_source", length = 32)
     @Comment("EV 非市值調整項來源（FUTU、SEC 或 FUTU_AND_SEC）。")
     private String evAdjustmentSource;
+
+    // 15. 財務品質深化擴充（原幣 TTM 流量與期末資產負債原料，供毛利率／ROIC／SBC／TBV／償債覆蓋計算）
+    @Column(name = "gross_profit_ttm", precision = 24, scale = 4)
+    @Comment("TTM 毛利金額（原幣）。")
+    private BigDecimal grossProfitTtm;
+
+    @Column(name = "gross_profit_ttm_source", length = 32)
+    @Comment("TTM 毛利來源（FUTU、SEC 或 FUTU_AND_SEC）。")
+    private String grossProfitTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "gross_profit_ttm_reason", length = 64)
+    @Comment("TTM 毛利不可用原因碼；可用時為 NULL。")
+    private ValuationReason grossProfitTtmReason;
+
+    @Column(name = "operating_profit_ttm", precision = 24, scale = 4)
+    @Comment("TTM 營業利益金額（原幣，保留負值）。")
+    private BigDecimal operatingProfitTtm;
+
+    @Column(name = "operating_profit_ttm_source", length = 32)
+    @Comment("TTM 營業利益來源（FUTU、SEC 或 FUTU_AND_SEC）。")
+    private String operatingProfitTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "operating_profit_ttm_reason", length = 64)
+    @Comment("TTM 營業利益不可用原因碼；可用時為 NULL。")
+    private ValuationReason operatingProfitTtmReason;
+
+    @Column(name = "pretax_profit_ttm", precision = 24, scale = 4)
+    @Comment("TTM 稅前盈利金額（原幣，保留負值，供計算有效稅率與 NOPAT）。")
+    private BigDecimal pretaxProfitTtm;
+
+    @Column(name = "pretax_profit_ttm_source", length = 32)
+    @Comment("TTM 稅前盈利來源。")
+    private String pretaxProfitTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pretax_profit_ttm_reason", length = 64)
+    @Comment("TTM 稅前盈利不可用原因碼；可用時為 NULL。")
+    private ValuationReason pretaxProfitTtmReason;
+
+    @Column(name = "income_tax_expense_ttm", precision = 24, scale = 4)
+    @Comment("TTM 所得稅費用金額（原幣，正數為稅費、負數為稅益）。")
+    private BigDecimal incomeTaxExpenseTtm;
+
+    @Column(name = "income_tax_expense_ttm_source", length = 32)
+    @Comment("TTM 所得稅費用來源。")
+    private String incomeTaxExpenseTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "income_tax_expense_ttm_reason", length = 64)
+    @Comment("TTM 所得稅費用不可用原因碼；可用時為 NULL。")
+    private ValuationReason incomeTaxExpenseTtmReason;
+
+    @Column(name = "interest_expense_ttm", precision = 24, scale = 4)
+    @Comment("TTM 利息費用金額（原幣，正規化為正數規模，供計算利息保障倍數）。")
+    private BigDecimal interestExpenseTtm;
+
+    @Column(name = "interest_expense_ttm_source", length = 32)
+    @Comment("TTM 利息費用來源。")
+    private String interestExpenseTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "interest_expense_ttm_reason", length = 64)
+    @Comment("TTM 利息費用不可用原因碼；可用時為 NULL。")
+    private ValuationReason interestExpenseTtmReason;
+
+    @Column(name = "sbc_ttm", precision = 24, scale = 4)
+    @Comment("TTM 股票薪酬費用 SBC（原幣，取自 SEC 標準標籤 ShareBasedCompensation／AllocatedShareBasedCompensationExpense）。")
+    private BigDecimal sbcTtm;
+
+    @Column(name = "sbc_ttm_source", length = 32)
+    @Comment("TTM 股票薪酬費用來源。")
+    private String sbcTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sbc_ttm_reason", length = 64)
+    @Comment("TTM 股票薪酬費用不可用原因碼；可用時為 NULL。")
+    private ValuationReason sbcTtmReason;
+
+    @Column(name = "cash_dividends_paid_ttm", precision = 24, scale = 4)
+    @Comment("TTM 普通股現金股息流出（原幣，正規化為非負流出規模）。")
+    private BigDecimal cashDividendsPaidTtm;
+
+    @Column(name = "cash_dividends_paid_ttm_source", length = 32)
+    @Comment("TTM 現金股息來源。")
+    private String cashDividendsPaidTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cash_dividends_paid_ttm_reason", length = 64)
+    @Comment("TTM 現金股息不可用原因碼；可用時為 NULL。")
+    private ValuationReason cashDividendsPaidTtmReason;
+
+    @Column(name = "net_common_stock_issuance_ttm", precision = 24, scale = 4)
+    @Comment("TTM 普通股淨發行現金流（原幣；正數表淨發行稀釋、負數表淨回購回饋股東，保留正負號不套用 abs）。")
+    private BigDecimal netCommonStockIssuanceTtm;
+
+    @Column(name = "net_common_stock_issuance_ttm_source", length = 32)
+    @Comment("TTM 普通股淨發行來源（Futu Net Common Stock Issuance）。")
+    private String netCommonStockIssuanceTtmSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "net_common_stock_issuance_ttm_reason", length = 64)
+    @Comment("TTM 普通股淨發行不可用原因碼；可用時為 NULL。")
+    private ValuationReason netCommonStockIssuanceTtmReason;
+
+    @Column(name = "goodwill_and_intangibles", precision = 24, scale = 4)
+    @Comment("期末商譽及無形資產合計（原幣，優先採權威合計項，缺合計時以商譽加不含商譽無形資產合成，供計算 P/TBV）。")
+    private BigDecimal goodwillAndIntangibles;
+
+    @Column(name = "goodwill_and_intangibles_source", length = 32)
+    @Comment("期末商譽及無形資產來源。")
+    private String goodwillAndIntangiblesSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "goodwill_and_intangibles_reason", length = 64)
+    @Comment("期末商譽及無形資產不可用原因碼；可用時為 NULL。")
+    private ValuationReason goodwillAndIntangiblesReason;
+
+    @Column(name = "current_debt", precision = 24, scale = 4)
+    @Comment("期末一年內到期計息債務（原幣；明示為零表無短債，缺披露時為 NULL 不預設補零）。")
+    private BigDecimal currentDebt;
+
+    @Column(name = "current_debt_source", length = 32)
+    @Comment("期末短期有息債務來源。")
+    private String currentDebtSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "current_debt_reason", length = 64)
+    @Comment("期末短期有息債務不可用原因碼；可用時為 NULL。")
+    private ValuationReason currentDebtReason;
 
     @Column(name = "updated_at", nullable = false)
     @Comment("本列財季分母最近重建時間（UTC）。")

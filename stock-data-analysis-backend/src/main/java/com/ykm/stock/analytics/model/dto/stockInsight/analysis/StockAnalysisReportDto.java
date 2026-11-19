@@ -20,8 +20,24 @@ public record StockAnalysisReportDto(
         FundamentalSnapshotDto fundamentals,
         MetricResult<InvestmentSummaryDto> summary,
         PeerRelativeStrengthDto peerRelativeStrength,
-        PositionSizingDto starterPositionSizing
+        PositionSizingDto starterPositionSizing,
+        String stockType,
+        DcfValuationDto dcf
 ) {
+    public StockAnalysisReportDto(String figi, String symbol, String name, LocalDate valuationDate,
+                                  ValuationResultDto valuation, FinancialsDto financials, List<ValuationResultDto> history,
+                                  MetricResult<PriceStructureDto> priceStructure,
+                                  MetricResult<SupportResistanceDto> supportResistance,
+                                  MetricResult<TradePlanResultDto> tradePlans,
+                                  MetricResult<MarketContextDto> marketContext,
+                                  FutuObservationsDto futuObservations, List<AnalysisReasonDto> reasons,
+                                  FundamentalSnapshotDto fundamentals, MetricResult<InvestmentSummaryDto> summary,
+                                  PeerRelativeStrengthDto peerRelativeStrength, PositionSizingDto starterPositionSizing) {
+        this(figi, symbol, name, valuationDate, valuation, financials, history,
+                priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons,
+                fundamentals, summary, peerRelativeStrength, starterPositionSizing, null, null);
+    }
+
     public StockAnalysisReportDto(String figi, String symbol, String name, LocalDate valuationDate,
                                   ValuationResultDto valuation, FinancialsDto financials, List<ValuationResultDto> history,
                                   MetricResult<PriceStructureDto> priceStructure,
@@ -33,7 +49,7 @@ public record StockAnalysisReportDto(
                                   PeerRelativeStrengthDto peerRelativeStrength) {
         this(figi, symbol, name, valuationDate, valuation, financials, history,
                 priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons,
-                fundamentals, summary, peerRelativeStrength, null);
+                fundamentals, summary, peerRelativeStrength, null, null, null);
     }
 
     public StockAnalysisReportDto(String figi, String symbol, String name, LocalDate valuationDate,
@@ -46,7 +62,7 @@ public record StockAnalysisReportDto(
                                   FundamentalSnapshotDto fundamentals, MetricResult<InvestmentSummaryDto> summary) {
         this(figi, symbol, name, valuationDate, valuation, financials, history,
                 priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons,
-                fundamentals, summary, null, null);
+                fundamentals, summary, null, null, null, null);
     }
 
     public StockAnalysisReportDto(String figi, String symbol, String name, LocalDate valuationDate,
@@ -57,7 +73,8 @@ public record StockAnalysisReportDto(
                                   MetricResult<MarketContextDto> marketContext,
                                   FutuObservationsDto futuObservations, List<AnalysisReasonDto> reasons) {
         this(figi, symbol, name, valuationDate, valuation, financials, history,
-                priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons, null, null, null, null);
+                priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons,
+                null, null, null, null, null, null);
     }
 
     public StockAnalysisReportDto(String figi, String symbol, String name, LocalDate valuationDate,
@@ -68,6 +85,7 @@ public record StockAnalysisReportDto(
                                   MetricResult<MarketContextDto> marketContext,
                                   FutuObservationsDto futuObservations, List<AnalysisReasonDto> reasons) {
         this(figi, symbol, name, valuationDate, valuation, null, history,
-                priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons, null, null, null, null);
+                priceStructure, supportResistance, tradePlans, marketContext, futuObservations, reasons,
+                null, null, null, null, null, null);
     }
 }

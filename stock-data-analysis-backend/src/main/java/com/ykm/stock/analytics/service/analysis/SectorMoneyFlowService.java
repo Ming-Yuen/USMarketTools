@@ -203,7 +203,7 @@ public class SectorMoneyFlowService {
         Set<LocalDate> ret60Window = date60RetBase == null ? Set.of()
                 : new HashSet<>(sessions.subList(totalSessions - 1 - RETURN_60D, totalSessions));
 
-        List<ActiveStockWithStatus> universe = stocks.findValuationStocks(ActiveStatus.ACTIVE).stream()
+        List<ActiveStockWithStatus> universe = stocks.findOperatingValuationStocks(ActiveStatus.ACTIVE).stream()
                 .filter(row -> row.stock() != null && "USD".equalsIgnoreCase(row.stock().getCurrency()))
                 .toList();
         if (universe.isEmpty()) {

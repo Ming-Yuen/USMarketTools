@@ -220,6 +220,81 @@ export interface FundamentalSnapshot {
   fcfYield: MetricResult<number>;
   earningsYield: MetricResult<number>;
   netShareChangeYoy: MetricResult<number>;
+  // Batch 05 財務品質深化擴充
+  fcfCagr3y?: MetricResult<number> | null;
+  sbcTtm?: MetricResult<number> | null;
+  sbcToRevenue?: MetricResult<number> | null;
+  adjFcfTtm?: MetricResult<number> | null;
+  pToAdjFcf?: MetricResult<number> | null;
+  totalShareholderYield?: MetricResult<number> | null;
+  grossMargin?: MetricResult<number> | null;
+  grossMarginYoyPpt?: MetricResult<number> | null;
+  grossMarginQoqPpt?: MetricResult<number> | null;
+  operatingMargin?: MetricResult<number> | null;
+  operatingMarginYoyPpt?: MetricResult<number> | null;
+  operatingMarginQoqPpt?: MetricResult<number> | null;
+  marginCompressionConsecutive?: boolean;
+  evToSales?: MetricResult<number> | null;
+  evToGrossProfit?: MetricResult<number> | null;
+  ruleOf40?: MetricResult<number> | null;
+  nopat?: MetricResult<number> | null;
+  investedCapital?: MetricResult<number> | null;
+  roic?: MetricResult<number> | null;
+  tangibleBookValue?: MetricResult<number> | null;
+  pToTbv?: MetricResult<number> | null;
+  interestCoverage?: MetricResult<number> | null;
+  shortTermLiquidityCoverage?: MetricResult<number> | null;
+}
+
+export interface DcfScenario {
+  stage1GrowthRate: number | null;
+  intrinsicEquityValue: number | null;
+  intrinsicPricePerShare: number | null;
+  upsideDownsidePct: number | null;
+}
+
+export interface ReverseDcf {
+  status: string;
+  reasonCode: string | null;
+  impliedStage1GrowthRate: number | null;
+  benchmarkGrowthRate: number | null;
+  benchmarkGrowthSource: string | null;
+  expectationGapPpt: number | null;
+  expectationStretched: boolean;
+}
+
+export interface DcfBranch {
+  basis: "STANDARD_FCF" | "SBC_ADJUSTED_FCF" | string;
+  status: string;
+  reasonCode: string | null;
+  baseFcfUsd: number | null;
+  baseStage1GrowthRate: number | null;
+  conservative: DcfScenario | null;
+  base: DcfScenario | null;
+  optimistic: DcfScenario | null;
+  reverseDcf: ReverseDcf | null;
+}
+
+export interface DcfValuation {
+  status: string;
+  reasonCode: string | null;
+  methodologyNote: string | null;
+  valuationDate: string | null;
+  currency: string | null;
+  currentPrice: number | null;
+  marketCapUsd: number | null;
+  sharesAtDay: number | null;
+  riskFreeRate: number | null;
+  riskFreeRateDate: string | null;
+  equityRiskPremium: number | null;
+  discountRate: number | null;
+  terminalGrowthRate: number | null;
+  historicalRevenueCagr3y: number | null;
+  historicalFcfCagr3y: number | null;
+  forwardExpectedGrowth: number | null;
+  growthBasisNote: string | null;
+  standardFcf: DcfBranch | null;
+  sbcAdjustedFcf: DcfBranch | null;
 }
 
 export interface FairValueBand {
@@ -375,6 +450,7 @@ export interface StockAnalysisReport {
   figi: string;
   symbol: string;
   name: string;
+  stockType?: string | null;
   valuationDate: string;
   valuation: ValuationResult | null;
   financials: Financials | null;
@@ -389,4 +465,5 @@ export interface StockAnalysisReport {
   summary?: MetricResult<InvestmentSummary> | null;
   peerRelativeStrength?: PeerRelativeStrength | null;
   starterPositionSizing?: PositionSizing | null;
+  dcf?: DcfValuation | null;
 }

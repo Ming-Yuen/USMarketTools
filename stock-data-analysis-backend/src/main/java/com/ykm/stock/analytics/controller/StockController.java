@@ -51,13 +51,14 @@ public class StockController {
                                       @RequestParam(required = false) BigDecimal maxHistoricalPercentile,
                                       @RequestParam(required = false) String sortBy,
                                       @RequestParam(required = false) String sortDir,
+                                      @RequestParam(required = false) String assetType,
                                       @RequestParam(defaultValue = "0") int page,
                                       @RequestParam(defaultValue = "50") int size) {
         return stockService.screen(new ScreenCriteria(
                 symbol, industry, conceptCode, marketCapTier, verdict,
                 minRevenueGrowthYoy, minRoe, minFcfMargin,
                 minHistoricalPercentile, maxHistoricalPercentile,
-                sortBy, sortDir, page, size));
+                sortBy, sortDir, page, size, assetType));
     }
 
     @Transactional

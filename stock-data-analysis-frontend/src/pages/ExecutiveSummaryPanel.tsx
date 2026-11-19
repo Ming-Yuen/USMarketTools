@@ -14,6 +14,7 @@ const VERDICT_DEFAULTS: Record<string, string> = {
   MODERATELY_OVERVALUED: "高於市場參考上緣（估值偏貴）",
   OVERVALUED_RISK: "顯著高於市場參考帶（高估風險）",
   INSUFFICIENT_EVIDENCE: "估值參考帶證據不足",
+  NOT_APPLICABLE_FOR_ETF: "ETF／ETP 技術與資金分析模式（不適用財報估值）",
 };
 
 const BACKING_DEFAULTS: Record<string, string> = {
@@ -21,6 +22,7 @@ const BACKING_DEFAULTS: Record<string, string> = {
   MIXED: "基本面表現分化",
   WEAKENING: "基本面轉弱警戒",
   INSUFFICIENT_DATA: "基本面比較待補",
+  NOT_APPLICABLE: "不適用單一公司財報",
 };
 
 const STANCE_DEFAULTS: Record<string, string> = {
@@ -33,12 +35,15 @@ const STANCE_DEFAULTS: Record<string, string> = {
   WAIT_FOR_MARKET_STABILIZATION: "大盤處於逆風環境 · 暫緩左側接刀，等待大盤止穩或右側確認",
   WAIT_FOR_STABILIZATION: "技術破位待收復、低於年線或事件受限 · 等待止穩與條件明朗",
   INSUFFICIENT_EVIDENCE: "核心錨點不足 · 僅展示單項可用指標",
+  ETF_TECHNICAL_BULLISH_SUPPORT: "ETF 處於週線多頭且站穩年線 · 可沿關鍵技術支撐與資金流分批觀察",
+  ETF_TECHNICAL_NEUTRAL: "ETF 技術結構偏中性 · 建議結合支撐阻力、量能與大盤環境觀察",
 };
 
 const ANCHOR_DEFAULTS: Record<string, string> = {
   HISTORICAL_AND_PEER: "自身 5 年歷史 ＋ 同業市場（50/50 客觀合成）",
   HISTORICAL_ONLY: "單源：自身 5 年歷史分位（同業不足或不適用）",
   PEER_ONLY: "單源：同日同業市場分位（歷史有效樣本不足）",
+  ETF_TECHNICAL_ONLY: "ETF 純技術結構與資金流模式",
   NONE: "尚無可換算之客觀市場價格錨點",
 };
 
@@ -56,6 +61,8 @@ const RISK_DEFAULTS: Record<string, string> = {
   HIGH_LEVERAGE_DEBT_EBITDA: "淨負債／EBITDA 偏高，財務槓桿壓力較大",
   REVENUE_CONTRACTION: "TTM 營業收入較去年同期衰退",
   SHARE_DILUTION_YOY: "流通股數較去年同期淨增稀釋逾 3%",
+  MARGIN_COMPRESSION_CONSECUTIVE: "毛利率或營業利潤率連續兩季環比下滑（定價權或成本結構承壓）",
+  LOW_INTEREST_COVERAGE: "利息保障倍數低於 3x，短期償債覆蓋安全邊際偏低",
   VALUATION_ABOVE_UPPER_BAND: "現價高於客觀市場參考帶上緣",
   BELOW_SMA200_DOWNTREND: "週線處於下降趨勢且日線收盤低於 SMA200 年線",
   ANCHOR_DIVERGENCE: "自身歷史中位價與同業中位價差距較大，請一併對照下方分項",
@@ -128,7 +135,7 @@ const formatSignedRatioPct = (ratio?: number | null): string => {
 
 function verdictChipColor(verdict?: string | null): "success" | "info" | "warning" | "error" | "default" {
   if (verdict === "DEEP_UNDERVALUED" || verdict === "MODERATELY_UNDERVALUED") return "success";
-  if (verdict === "FAIR_LOWER" || verdict === "FAIR_UPPER") return "info";
+  if (verdict === "FAIR_LOWER" || verdict === "FAIR_UPPER" || verdict === "NOT_APPLICABLE_FOR_ETF") return "info";
   if (verdict === "MODERATELY_OVERVALUED") return "warning";
   if (verdict === "OVERVALUED_RISK") return "error";
   return "default";
@@ -521,37 +528,55 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
       </Alert>
     )}
 
-    {/* 當日股價與核心估值倍數列（僅收起銀行／保險不適用的 P/FCF 與 EV/EBITDA，保留虧損或負 FCF 提示） */}
-    <Grid container spacing={2} sx={{ mt: 0.5 }}>
-      <Grid size={{ xs: 6, md: visibleMetrics.length <= 3 ? 3 : 2 }}>
-        <Paper variant="outlined" sx={{ p: 1.8, height: "100%" }}>
-          <Typography variant="caption" color="text.secondary">估值使用股價</Typography>
-          <Typography variant="h6">{formatNumber(valuation?.price)} {valuation?.currency ?? ""}</Typography>
-        </Paper>
+    {/* 當日股價與核心估值倍數列（ETF 模式僅顯示參考收盤價，隱藏單一公司倍數卡） */}
+    {summary?.verdict === "NOT_APPLICABLE_FOR_ETF" ? (
+      <Grid container spacing={2} sx={{ mt: 0.5 }}>
+        <Grid size={{ xs: 12, sm: 4 }}>
+          <Paper variant="outlined" sx={{ p: 1.8, height: "100%" }}>
+            <Typography variant="caption" color="text.secondary">{t("analysisReport.etf.referenceCloseLabel")}</Typography>
+            <Typography variant="h6">{formatNumber(valuation?.price)} {valuation?.currency ?? ""}</Typography>
+          </Paper>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 8 }}>
+          <Paper variant="outlined" sx={{ p: 1.8, height: "100%", display: "flex", alignItems: "center" }}>
+            <Typography variant="body2" color="text.secondary">
+              {t("analysisReport.etf.valuationNotApplicableNote")}
+            </Typography>
+          </Paper>
+        </Grid>
       </Grid>
-      {visibleMetrics.map(([code, result]) => {
-        const isPrimary = isPrimaryCodeMatch(code, valuation?.primaryMetric);
-        return (
-          <Grid key={code} size={{ xs: 6, md: visibleMetrics.length <= 3 ? 3 : 2 }}>
-            <Paper variant="outlined" sx={{ p: 1.8, height: "100%", borderColor: isPrimary ? "primary.main" : undefined }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="caption" color="text.secondary">{metricLabel(code)}</Typography>
-                {isPrimary && <Chip size="small" label="主指標" color="primary" variant="outlined" sx={{ height: 18, fontSize: "0.68rem" }} />}
-              </Stack>
-              <Typography variant="h6">{result.status === "AVAILABLE" ? formatNumber(result.value) : "—"}</Typography>
-              {result.financialSource === "SEC" && (
-                <Typography variant="caption" color="text.secondary">
-                  SEC 財務{result.periodEnd && ` · ${result.periodStart ? `${result.periodStart}～` : ""}${result.periodEnd}`}
-                </Typography>
-              )}
-              {result.status !== "AVAILABLE" && (
-                <Typography variant="caption" color="text.secondary">{statusLabel(result.status)} · {reasonLabel(t, result.reasonCode)}</Typography>
-              )}
-            </Paper>
-          </Grid>
-        );
-      })}
-    </Grid>
+    ) : (
+      <Grid container spacing={2} sx={{ mt: 0.5 }}>
+        <Grid size={{ xs: 6, md: visibleMetrics.length <= 3 ? 3 : 2 }}>
+          <Paper variant="outlined" sx={{ p: 1.8, height: "100%" }}>
+            <Typography variant="caption" color="text.secondary">估值使用股價</Typography>
+            <Typography variant="h6">{formatNumber(valuation?.price)} {valuation?.currency ?? ""}</Typography>
+          </Paper>
+        </Grid>
+        {visibleMetrics.map(([code, result]) => {
+          const isPrimary = isPrimaryCodeMatch(code, valuation?.primaryMetric);
+          return (
+            <Grid key={code} size={{ xs: 6, md: visibleMetrics.length <= 3 ? 3 : 2 }}>
+              <Paper variant="outlined" sx={{ p: 1.8, height: "100%", borderColor: isPrimary ? "primary.main" : undefined }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Typography variant="caption" color="text.secondary">{metricLabel(code)}</Typography>
+                  {isPrimary && <Chip size="small" label="主指標" color="primary" variant="outlined" sx={{ height: 18, fontSize: "0.68rem" }} />}
+                </Stack>
+                <Typography variant="h6">{result.status === "AVAILABLE" ? formatNumber(result.value) : "—"}</Typography>
+                {result.financialSource === "SEC" && (
+                  <Typography variant="caption" color="text.secondary">
+                    SEC 財務{result.periodEnd && ` · ${result.periodStart ? `${result.periodStart}～` : ""}${result.periodEnd}`}
+                  </Typography>
+                )}
+                {result.status !== "AVAILABLE" && (
+                  <Typography variant="caption" color="text.secondary">{statusLabel(result.status)} · {reasonLabel(t, result.reasonCode)}</Typography>
+                )}
+              </Paper>
+            </Grid>
+          );
+        })}
+      </Grid>
+    )}
 
     {collapsedIndustryNa.length > 0 && (
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>

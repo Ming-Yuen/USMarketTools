@@ -27,20 +27,51 @@ public record ValuationResultDto(
         LocalDate secFinancialAvailableFromDate,
         ValuationReferenceDto historicalReference,
         ValuationReferenceDto peerReference,
-        ValuationReferenceDto industryAssumption
+        ValuationReferenceDto industryAssumption,
+        FxConversionDto fxConversion
 ) {
+    public ValuationResultDto(String figi, LocalDate valuationDate, Instant analysisAsOf, String source, String industryCode,
+                              String modelCode, String primaryMetric, String status, String reasonCode, Metrics metrics,
+                              BigDecimal price, String currency, Instant calculatedAt, Instant financialObservedAt,
+                              Instant sharesObservedAt, String marketCapSource, LocalDate secFinancialAvailableFromDate,
+                              ValuationReferenceDto historicalReference, ValuationReferenceDto peerReference,
+                              ValuationReferenceDto industryAssumption) {
+        this(figi, valuationDate, analysisAsOf, source, industryCode, modelCode, primaryMetric, status, reasonCode, metrics,
+                price, currency, calculatedAt, financialObservedAt, sharesObservedAt, marketCapSource,
+                secFinancialAvailableFromDate, historicalReference, peerReference, industryAssumption, null);
+    }
+
     public ValuationResultDto(String figi, LocalDate valuationDate, Instant analysisAsOf, String source, String industryCode,
                               String status, String reasonCode, Metrics metrics, BigDecimal price, String currency, Instant calculatedAt,
                               Instant financialObservedAt, Instant sharesObservedAt, String marketCapSource, LocalDate secFinancialAvailableFromDate) {
         this(figi, valuationDate, analysisAsOf, source, industryCode, null, null, status, reasonCode, metrics, price, currency,
-                calculatedAt, financialObservedAt, sharesObservedAt, marketCapSource, secFinancialAvailableFromDate, null, null, null);
+                calculatedAt, financialObservedAt, sharesObservedAt, marketCapSource, secFinancialAvailableFromDate, null, null, null, null);
     }
 
     public ValuationResultDto withReferences(String resolvedModelCode, String resolvedPrimaryMetric,
                                              ValuationReferenceDto historical, ValuationReferenceDto peer, ValuationReferenceDto assumption) {
         return new ValuationResultDto(figi, valuationDate, analysisAsOf, source, industryCode, resolvedModelCode, resolvedPrimaryMetric,
                 status, reasonCode, metrics, price, currency, calculatedAt, financialObservedAt, sharesObservedAt,
-                marketCapSource, secFinancialAvailableFromDate, historical, peer, assumption);
+                marketCapSource, secFinancialAvailableFromDate, historical, peer, assumption, fxConversion);
+    }
+
+    public ValuationResultDto withFxConversion(FxConversionDto resolvedFx) {
+        return new ValuationResultDto(figi, valuationDate, analysisAsOf, source, industryCode, modelCode, primaryMetric,
+                status, reasonCode, metrics, price, currency, calculatedAt, financialObservedAt, sharesObservedAt,
+                marketCapSource, secFinancialAvailableFromDate, historicalReference, peerReference, industryAssumption, resolvedFx);
+    }
+
+    /** 專供 ETF／ETP 回傳乾淨的 NOT_APPLICABLE_FOR_ETF 估值占位，不產生缺財報報錯。 */
+    public static ValuationResultDto forEtf(String figi, LocalDate valuationDate, Instant analysisAsOf,
+                                            BigDecimal price, String currency, Instant calculatedAt) {
+        Value na = new Value(null, MetricStatus.NOT_APPLICABLE.name(), "NOT_APPLICABLE_FOR_ETF", "ETF", null, null);
+        return new ValuationResultDto(
+                figi, valuationDate, analysisAsOf, "ETF_TECHNICAL_ONLY", null, "ETF", null,
+                MetricStatus.NOT_APPLICABLE.name(), "NOT_APPLICABLE_FOR_ETF",
+                new Metrics(na, na, na, na, na),
+                price, currency, calculatedAt, null, null, null, null,
+                null, null, null, null
+        );
     }
 
     public record Value(BigDecimal value, String status, String reasonCode, String financialSource, LocalDate periodStart, LocalDate periodEnd) {

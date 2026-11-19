@@ -155,6 +155,121 @@ class FundamentalSnapshotCalculatorTests {
         assertThat(evUnverified.netDebtToEbitda().reasons().getFirst().code()).isEqualTo("EV_ACCOUNTING_STANDARD_UNCONFIRMED");
     }
 
+    @Test
+    void computesHighSbcQualityMetricsRuleOf40AndShareholderYield() {
+        StockFinancialPeriod p2025 = basePeriod(LocalDate.of(2025, 9, 30), "800", "50", "0.50", "160", "180", "1000", "100");
+        p2025.setGrossProfitTtm(new BigDecimal("600"));
+        p2025.setOperatingProfitTtm(new BigDecimal("120"));
+
+        StockFinancialPeriod p2026 = basePeriod(LocalDate.of(2026, 9, 30), "1000", "80", "0.80", "200", "240", "1200", "100");
+        p2026.setGrossProfitTtm(new BigDecimal("780"));
+        p2026.setOperatingProfitTtm(new BigDecimal("180"));
+        p2026.setSbcTtm(new BigDecimal("120"));
+        p2026.setCashDividendsPaidTtm(new BigDecimal("20"));
+        p2026.setNetCommonStockIssuanceTtm(new BigDecimal("-80")); // net repurchase 80
+        p2026.setInterestExpenseTtm(new BigDecimal("30"));
+        p2026.setOperatingCashFlowTtm(new BigDecimal("200"));
+        p2026.setOperatingCashFlowTtmStatus(MetricStatus.AVAILABLE.name());
+        p2026.setCurrentDebt(new BigDecimal("100"));
+        p2026.setGoodwillAndIntangibles(new BigDecimal("200"));
+
+        // Market cap = 4000, EV adjustment = -100 -> EV = 3900
+        FundamentalSnapshotDto dto = calculator.calculate(new FundamentalSnapshotCalculator.Inputs(
+                List.of(p2025, p2026), p2026, List.of(), DAY, "USD",
+                new BigDecimal("40"), new BigDecimal("4000"), null,
+                new BigDecimal("0.80"), null, new BigDecimal("50.00"), false, null));
+
+        // SBC% Revenue = 120 / 1000 = 12%, Adj. FCF = 200 - 120 = 80, P/Adj. FCF = 4000 / 80 = 50x
+        assertThat(dto.sbcToRevenue().value()).isEqualByComparingTo("0.120000");
+        assertThat(dto.adjFcfTtm().value()).isEqualByComparingTo("80.0000");
+        assertThat(dto.pToAdjFcf().value()).isEqualByComparingTo("50.0000");
+        // Total Shareholder Yield = (20 + 80) / 4000 = 2.5%
+        assertThat(dto.totalShareholderYield().value()).isEqualByComparingTo("0.025000");
+        // Gross margin = 78% vs 75% (+0.030000 = +3.00 ppt); Operating margin = 18% vs 15% (+0.030000 = +3.00 ppt)
+        assertThat(dto.grossMargin().value()).isEqualByComparingTo("0.780000");
+        assertThat(dto.grossMarginYoyPpt().value()).isEqualByComparingTo("0.030000");
+        assertThat(dto.operatingMargin().value()).isEqualByComparingTo("0.180000");
+        assertThat(dto.operatingMarginYoyPpt().value()).isEqualByComparingTo("0.030000");
+        assertThat(dto.marginCompressionConsecutive()).isFalse();
+        // EV/Sales = 3900 / 1000 = 3.9000, EV/Gross Profit = 3900 / 780 = 5.0000
+        assertThat(dto.evToSales().value()).isEqualByComparingTo("3.9000");
+        assertThat(dto.evToGrossProfit().value()).isEqualByComparingTo("5.0000");
+        // Rule of 40 = Rev Growth (0.25) + FCF Margin (0.20) = 0.450000 (45%)
+        assertThat(dto.ruleOf40().value()).isEqualByComparingTo("0.450000");
+        // TBV = 1200 - 200 = 1000 -> P/TBV = 4000 / 1000 = 4.0000
+        assertThat(dto.tangibleBookValue().value()).isEqualByComparingTo("1000.0000");
+        assertThat(dto.pToTbv().value()).isEqualByComparingTo("4.0000");
+        // Interest Coverage = 180 / 30 = 6.0000x; Short-term liquidity = (300 + 200) / 100 = 5.0000x
+        assertThat(dto.interestCoverage().value()).isEqualByComparingTo("6.0000");
+        assertThat(dto.shortTermLiquidityCoverage().value()).isEqualByComparingTo("5.0000");
+    }
+
+    @Test
+    void computesRoicOnNegativeEquityBlueChipAndDetectsConsecutiveMarginCompressionAndFxAdrYield() {
+        // Negative-equity blue chip (like MCD/SBUX): Equity = -500, Debt = 2000, Cash = 300 -> Invested Capital = 1200 > 0
+        StockFinancialPeriod p2025Q2 = basePeriod(LocalDate.of(2025, 6, 30), "1000", "200", "2.00", "220", "320", "-400", "100");
+        p2025Q2.setGrossProfitTtm(new BigDecimal("600"));
+        p2025Q2.setOperatingProfitTtm(new BigDecimal("300"));
+
+        StockFinancialPeriod p2025Q3 = basePeriod(LocalDate.of(2025, 9, 30), "1000", "200", "2.00", "220", "320", "-450", "100");
+        p2025Q3.setGrossProfitTtm(new BigDecimal("600"));
+        p2025Q3.setOperatingProfitTtm(new BigDecimal("300"));
+
+        p2025Q3.setTotalDebt(new BigDecimal("2000"));
+        p2025Q3.setCashLikeAssets(new BigDecimal("350"));
+        p2025Q3.setEvAdjustment(new BigDecimal("1650")); // prior IC = -450 + 1650 = 1200
+
+        StockFinancialPeriod p2026Q1 = basePeriod(LocalDate.of(2026, 3, 31), "1000", "190", "1.90", "210", "310", "-460", "100");
+        p2026Q1.setGrossProfitTtm(new BigDecimal("590")); // 59%
+        p2026Q1.setOperatingProfitTtm(new BigDecimal("280")); // 28%
+
+        StockFinancialPeriod p2026Q2 = basePeriod(LocalDate.of(2026, 6, 30), "1000", "180", "1.80", "200", "300", "-480", "100");
+        p2026Q2.setGrossProfitTtm(new BigDecimal("570")); // 57% (-2 ppt QoQ)
+        p2026Q2.setOperatingProfitTtm(new BigDecimal("260")); // 26% (-2 ppt QoQ)
+
+        StockFinancialPeriod p2026Q3 = basePeriod(LocalDate.of(2026, 9, 30), "1000", "170", "1.70", "190", "290", "-500", "100");
+        p2026Q3.setGrossProfitTtm(new BigDecimal("550")); // 55% (-2 ppt QoQ, 2nd consecutive quarter!)
+        p2026Q3.setOperatingProfitTtm(new BigDecimal("240")); // 24% (-2 ppt QoQ)
+        p2026Q3.setPretaxProfitTtm(new BigDecimal("200"));
+        p2026Q3.setIncomeTaxExpenseTtm(new BigDecimal("40")); // 20% effective tax rate
+        p2026Q3.setTotalDebt(new BigDecimal("2000"));
+        p2026Q3.setCashLikeAssets(new BigDecimal("300"));
+        p2026Q3.setEvAdjustment(new BigDecimal("1700")); // current IC = -500 + 1700 = 1200
+        p2026Q3.setInterestExpenseTtm(new BigDecimal("100")); // coverage = 2.4x < 3x
+        p2026Q3.setGoodwillAndIntangibles(new BigDecimal("100"));
+
+        FundamentalSnapshotDto dto = calculator.calculate(new FundamentalSnapshotCalculator.Inputs(
+                List.of(p2025Q2, p2025Q3, p2026Q1, p2026Q2, p2026Q3), p2026Q3, List.of(), DAY, "USD",
+                new BigDecimal("50"), new BigDecimal("5000"), null,
+                new BigDecimal("1.70"), null, new BigDecimal("29.41"), false, null));
+
+        // Negative equity -> ROE N.M., P/TBV N.M., but ROIC is AVAILABLE!
+        // NOPAT = 240 * (1 - 0.20) = 192; Invested Capital = 2000 + (-500) - 300 = 1200 -> ROIC = 192 / 1200 = 16%
+        assertThat(dto.roe().status()).isEqualTo(MetricStatus.NOT_APPLICABLE);
+        assertThat(dto.pToTbv().status()).isEqualTo(MetricStatus.NOT_APPLICABLE);
+        assertThat(dto.nopat().value()).isEqualByComparingTo("192.0000");
+        assertThat(dto.investedCapital().value()).isEqualByComparingTo("1200.0000");
+        assertThat(dto.roic().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(dto.roic().value()).isEqualByComparingTo("0.160000");
+        assertThat(dto.marginCompressionConsecutive()).isTrue();
+        assertThat(dto.interestCoverage().value()).isEqualByComparingTo("2.4000");
+
+        // FX-converted verified ADR uses company-level earningsYield = NetIncome_USD / MarketCap_USD
+        StockFinancialPeriod twdPeriod = basePeriod(LocalDate.of(2026, 9, 30), "320000", "128000", "12.80", "96000", "160000", "640000", "10000");
+        twdPeriod.setReportingCurrency("TWD");
+        FundamentalSnapshotDto adrDto = calculator.calculate(new FundamentalSnapshotCalculator.Inputs(
+                List.of(twdPeriod), twdPeriod, List.of(), DAY, "USD",
+                new BigDecimal("200"), new BigDecimal("80000"), null,
+                null, null, new BigDecimal("20.00"), false, null,
+                new BigDecimal("0.03125"), null, true));
+        // NetIncome_USD = 128000 * 0.03125 = 4000; MarketCap_USD = 80000 -> earningsYield = 4000 / 80000 = 5%
+        // FCF_USD = 96000 * 0.03125 = 3000 -> fcfYield = 3000 / 80000 = 3.75%
+        assertThat(adrDto.earningsYield().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(adrDto.earningsYield().value()).isEqualByComparingTo("0.050000");
+        assertThat(adrDto.fcfYield().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(adrDto.fcfYield().value()).isEqualByComparingTo("0.037500");
+    }
+
     private StockFinancialPeriod basePeriod(LocalDate end, String rev, String ni, String eps, String fcf, String ebitda, String equity, String shares) {
         StockFinancialPeriod p = new StockFinancialPeriod();
         p.setFigi(FIGI);

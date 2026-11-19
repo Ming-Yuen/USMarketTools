@@ -1,13 +1,49 @@
 {
   "industryProposal": {
     "publishedDate": "Source published",
-    "title": "AI industry valuation proposal", "description": "Review the industry assumptions and their sources. A draft takes effect only after your approval. Approval applies to the whole industry; this screen recalculates the current stock.",
-    "current": "Active settings", "proposal": "Latest proposal", "model": "Business valuation model", "metric": "Fixed primary metric", "range": "Proposed multiple range", "asOf": "Assessment date", "createdAt": "Created (Hong Kong time)", "noRationale": "No rationale supplied.", "noProposal": "No proposal has been generated.", "industryMissing": "The backend has not provided an industry for this stock.",
-    "approvalNotice": "Approving saves these assumptions as the industry's active settings and starts recalculation for this stock.", "refresh": "Refresh status", "propose": "Generate AI draft", "approve": "Approve and recalculate this stock",
-    "jobUnavailable": "The valuation job is unavailable. The assumptions may be approved, but recalculation has not been confirmed.", "jobFailed": "The valuation job failed. Approved settings remain saved.", "reportMismatch": "The report does not yet match the approved assumptions. Recalculation is not confirmed.",
-    "status": { "PENDING": "Queued", "PROCESSING": "Generating", "DRAFT": "Draft — awaiting your approval", "FAILED": "Generation failed", "APPROVED": "Approved" },
-    "recalculation": { "QUEUED": "Approved. Recalculation is queued or running; checking the resulting report.", "CONFIRMED": "The refreshed report matches the approved assumptions.", "UNCONFIRMED": "Approved settings are saved, but this stock's report has not been verified against them.", "FAILED": "Approved settings are saved. Recalculation or verification failed; check the reason before retrying." },
-    "codes": { "NON_FINANCIAL_OPERATING": "Non-financial operating business", "BANK": "Bank", "INSURANCE": "Insurance", "REIT": "REIT", "UNKNOWN": "Unclassified", "PE": "P/E", "PB": "P/B", "PS": "P/S", "EV_EBITDA": "EV/EBITDA" }
+    "title": "AI industry valuation proposal",
+    "description": "Review the industry assumptions and their sources. A draft takes effect only after your approval. Approval applies to the whole industry; this screen recalculates the current stock.",
+    "current": "Active settings",
+    "proposal": "Latest proposal",
+    "model": "Business valuation model",
+    "metric": "Fixed primary metric",
+    "range": "Proposed multiple range",
+    "asOf": "Assessment date",
+    "createdAt": "Created (Hong Kong time)",
+    "noRationale": "No rationale supplied.",
+    "noProposal": "No proposal has been generated.",
+    "industryMissing": "The backend has not provided an industry for this stock.",
+    "approvalNotice": "Approving saves these assumptions as the industry's active settings and starts recalculation for this stock.",
+    "refresh": "Refresh status",
+    "propose": "Generate AI draft",
+    "approve": "Approve and recalculate this stock",
+    "jobUnavailable": "The valuation job is unavailable. The assumptions may be approved, but recalculation has not been confirmed.",
+    "jobFailed": "The valuation job failed. Approved settings remain saved.",
+    "reportMismatch": "The report does not yet match the approved assumptions. Recalculation is not confirmed.",
+    "status": {
+      "PENDING": "Queued",
+      "PROCESSING": "Generating",
+      "DRAFT": "Draft — awaiting your approval",
+      "FAILED": "Generation failed",
+      "APPROVED": "Approved"
+    },
+    "recalculation": {
+      "QUEUED": "Approved. Recalculation is queued or running; checking the resulting report.",
+      "CONFIRMED": "The refreshed report matches the approved assumptions.",
+      "UNCONFIRMED": "Approved settings are saved, but this stock's report has not been verified against them.",
+      "FAILED": "Approved settings are saved. Recalculation or verification failed; check the reason before retrying."
+    },
+    "codes": {
+      "NON_FINANCIAL_OPERATING": "Non-financial operating business",
+      "BANK": "Bank",
+      "INSURANCE": "Insurance",
+      "REIT": "REIT",
+      "UNKNOWN": "Unclassified",
+      "PE": "P/E",
+      "PB": "P/B",
+      "PS": "P/S",
+      "EV_EBITDA": "EV/EBITDA"
+    }
   },
   "stockAnalysisExtra": {
     "debtPerShare": "Debt per share (carrying value)",
@@ -24,39 +60,414 @@
     "financialPeriodEnd": "Financial period end"
   },
   "stockMomentum": {
-    "horizon": {"shortTerm":"Short-term","standard":"Primary","mediumTerm":"Medium-term"},
-    "level": {"oversold":"Oversold","weak":"Weak","neutral":"Neutral","strong":"Strong","overbought":"Overbought"},
-    "summary": {"insufficient":"Insufficient RSI history for a combined assessment.","shortOversoldTrendHealthy":"Short-term momentum is oversold while the medium-term trend remains healthy.","shortOverboughtTrendHealthy":"The short-term rise is overheated while the medium-term trend remains healthy.","broadlyOversold":"Short- and medium-term momentum are broadly oversold; watch for stabilization rather than relying on RSI alone.","broadlyOverbought":"Momentum is broadly overbought; short-term chasing risk is elevated.","weakening":"Short-term momentum is weaker than the medium-term trend; the overall reading is neutral to weak.","strengthening":"Short-term momentum is stronger than the medium-term trend; the overall reading is neutral to strong.","neutral":"Momentum is mixed or neutral across the three time windows."}
+    "horizon": {
+      "shortTerm": "Short-term",
+      "standard": "Primary",
+      "mediumTerm": "Medium-term"
+    },
+    "level": {
+      "oversold": "Oversold",
+      "weak": "Weak",
+      "neutral": "Neutral",
+      "strong": "Strong",
+      "overbought": "Overbought"
+    },
+    "summary": {
+      "insufficient": "Insufficient RSI history for a combined assessment.",
+      "shortOversoldTrendHealthy": "Short-term momentum is oversold while the medium-term trend remains healthy.",
+      "shortOverboughtTrendHealthy": "The short-term rise is overheated while the medium-term trend remains healthy.",
+      "broadlyOversold": "Short- and medium-term momentum are broadly oversold; watch for stabilization rather than relying on RSI alone.",
+      "broadlyOverbought": "Momentum is broadly overbought; short-term chasing risk is elevated.",
+      "weakening": "Short-term momentum is weaker than the medium-term trend; the overall reading is neutral to weak.",
+      "strengthening": "Short-term momentum is stronger than the medium-term trend; the overall reading is neutral to strong.",
+      "neutral": "Momentum is mixed or neutral across the three time windows."
+    }
   },
-  "shell":{"productName":"MarketScope","productSubtitle":"Analytics Console","navigation":"NAVIGATION","workspace":"Workspace","usMarket":"U.S. Equities","overview":"Market Overview","marketIntelligence":"Market intelligence workspace"},
-  "table":{"workspaceSubtitle":"Search, filter and manage records","searchFieldSettings":"Search field settings","hiddenFieldHint":"Selected search fields will be hidden.","addRow":"Add row"},
-  "common":{"clear":"Clear","search":"Search","error":"Error","cancel":"Cancel","save":"Save","saving":"Saving..."},
-  "stockAnalysisDates":{"tradingDate":"Trading date","secFilingDate":"SEC filing date","snapshotAsOfDate":"Valuation snapshot date","nextEarningsDate":"Expected earnings date","reportPeriod":{"Q1":"{{year}} Q1 report","Q2":"{{year}} Q2 report","Q3":"{{year}} Q3 report","Q4":"{{year}} Q4 report","FY":"{{year}} annual report","unknown":"{{year}} {{period}} report","latest":"Latest financial report"}},
-  "watchlist":{"columns":{"watched":"Watched","symbol":"Symbol","stockType":"Stock type","conceptCode":"Concepts","industry":"Industry","quoteDate":"Quote date","closePrice":"Close price","pe":"P/E","rsi":"RSI","cashPerShare":"Cash per share"}},
-  "stockAnalysisValue":{"lossMaking":"Loss"},
-  "stockAnalysis":{"title":"{{symbol}} Stock Analysis","tradingDate":"Trading date","secFilingDate":"SEC filing date","snapshotAsOfDate":"Valuation snapshot date","nextEarningsDate":"Expected earnings date","reportPeriod":{"Q1":"{{year}} Q1 report","Q2":"{{year}} Q2 report","Q3":"{{year}} Q3 report","Q4":"{{year}} Q4 report","FY":"{{year}} annual report","unknown":"{{year}} {{period}} report","latest":"Latest financial report"},"backToWatchlist":"Back to watch list","metrics":{"closePrice":"Close price","cashPerShare":"Cash per share","cashLikeAssetsPerShare":"Cash and short-term investments per share","debtPerShare":"Debt per share","netCashPerShare":"Cash minus debt per share","netCashForValuationPerShare":"Valuation net cash per share","ttmEps":"TTM earnings per share"},"valuationSection":"Valuation and watch range","buyRange":"Watch-to-buy range (including margin of safety)","cashAdjustedFairValue":"Net-cash-adjusted fair-value scenario","calculationDescription":"Calculation: use TTM earnings per share with a target P/E of {{low}}–{{high}}, then add valuation net cash per share of {{netCash}} (negative when the company has net debt). The watch range applies a 20% margin of safety to the lower end of fair value.","lossMakingDescription":"Current TTM earnings per share is {{eps}}. Earnings are negative, so a target P/E cannot produce a meaningful fair value. Consider P/S, EV/Sales, cash levels and the path to profitability instead.","pegWarning":"PEG is unavailable because no reliable EPS growth rate is available, and it is not used to adjust the target multiple.","supportingAssessment":"Supporting assessment","rsiMomentum":"RSI momentum","cashBuffer":"Cash-like assets and debt","cashBufferDescription":"Cash and short-term investments per share are {{cash}}, debt per share is {{debt}}, and valuation net cash per share is {{netCash}}, approximately {{percentage}} of the current share price.","classification":"Classification","disclaimer":"This range is produced by a rule-based model using available snapshot data. It is neither a real-time quote nor investment advice. Decisions should also consider earnings growth, debt, cash flow, the industry cycle and the latest announcements.","value":{"unavailable":"Unavailable","insufficientData":"Insufficient data","notMeaningful":"N/M","peNotApplicable":"P/E not applicable"},"valuation":{"buyZone":"In watch-to-buy range","fairValue":"Fair-value range","overvalued":"Valuation is high","lossMaking":"Negative earnings; P/E not applicable"},"momentum":{"oversold":"Oversold; monitor rebound potential and fundamental risk","overbought":"Overbought; short-term chasing risk is elevated","neutral":"Neutral momentum"}},
-  "job":{"columns":{"taskCode":"Task code","description":"Description","taskGroup":"Task group","active":"Active","scheduleTime":"Execution schedule","startDate":"Start time","executionTime":"Execution time","lastExecStartTime":"Last run start","lastExecEndTime":"Last run end","executionResult":"Execution result","run":"Run"},"actions":{"create":"Create","run":"Run job"},"status":{"active":"Active","inactive":"Inactive"},"executionStatus":{"COMPLETED":"Completed","PARTIAL":"Partially successful","FAILED":"Failed","RUNNING":"Running"},"form":{"createTitle":"Create job","editTitle":"Edit job","saveFailed":"Save failed. Please try again later.","saveSuccess":"Job saved successfully!","selectOrEnter":"Please select or enter","jobPath":"Job path","jobPathPlaceholder":"e.g. com.example.jobs.MyJobClass","status":"Status","jobParams":"Job parameters","jsonHint":"Enter parameters in JSON format","frequency":"Frequency","scheduleTime":"Schedule time","startDate":"Start date","endDateOptional":"End date (optional)","selectDays":"Select days","taskCodePlaceholder":"e.g. SEC_FINANCIAL_FACT_DAILY"},"validation":{"taskGroupRequired":"Please select or enter a task group","jobPathRequired":"Job class path cannot be empty","validJson":"Please enter valid JSON","frequencyRequired":"Please select an execution frequency","scheduleTimeRequired":"Please select a schedule time","startDateRequired":"Please select a start date","taskCodeRequired":"Task code cannot be empty","taskCodeFormat":"Use uppercase letters, numbers and underscores only (for example, SEC_FINANCIAL_FACT_DAILY)"},"frequency":{"daily":"Daily","weekly":"Weekly","monthly":"Monthly"},"weekday":{"sun":"Sun","mon":"Mon","tue":"Tue","wed":"Wed","thu":"Thu","fri":"Fri","sat":"Sat"},"description":{"PRICE_BASIS_EVENT_DAILY_SYNC":"Synchronizes and verifies Massive stock split and reverse split events to support price and share basis conversions.","MASSIVE_HISTORICAL_IDENTITY_DAILY":"Retrieves and stores Massive historical security identities for required dates to support point-in-time financial and valuation analysis.","STOCK_DAILY":"Updates the stock symbol universe and instrument metadata for configured exchanges.","STOCK_QUOTE_DAILY":"Updates daily stock quote data for configured exchanges.","MARKET_SENTIMENT_DAILY":"Fetches and saves the daily market sentiment snapshot.","SEC_ETF_HOLDING_SYNC":"Synchronizes SEC ETF holdings data.","TREASURY_DAILY_SYNC":"Synchronizes U.S. Treasury yield curve data.","MARKET_EVENT_DAILY_SYNC":"Synchronizes BLS, Federal Reserve and earnings calendar events.","SEC_FINANCIAL_FACT_DAILY":"Synchronizes SEC company facts and calculates fundamental snapshots.","STOCK_VALUATION_SNAPSHOT_DAILY":"Calculates daily stock valuation snapshots using the latest quote and fundamental data.","STOCK_INDUSTRY_CLASSIFICATION_EXPORT":"Exports all active stocks for AI industry classification review.","STOCK_INDUSTRY_CLASSIFICATION_IMPORT":"Imports AI-completed industry classifications and updates stock industry profiles."}},
-  "jobSchedule":{"dayOfMonth":"Day of month","dayOfMonthRequired":"Please enter a day of month","dayOfMonthRange":"Enter a day from 1 to 31","dailySummary":"Daily at {{time}}","weeklySummary":"Every {{days}} at {{time}}","monthlySummary":"Monthly on day {{day}} at {{time}}","hourlyAtMinute":"Every hour at minute {{minute}}","everyMinutes":"Every {{count}} minutes","everyHoursAtMinute":"Every {{count}} hours at minute {{minute}}","weekdayRange":"{{from}}–{{to}}","listSeparator":", "},
-  "languageSwitcher": {"label":"Language","english":"English","traditionalChinese":"Traditional Chinese","simplifiedChinese":"Simplified Chinese"},
-  "menu": {"user":"User","stockAnalysis":"Stock Screener","dataManagement":"Data Management","jobConfiguration":"Job Configuration","watchList":"Watch List","unknown":"Menu"},
+  "shell": {
+    "productName": "MarketScope",
+    "productSubtitle": "Analytics Console",
+    "navigation": "NAVIGATION",
+    "workspace": "Workspace",
+    "usMarket": "U.S. Equities",
+    "overview": "Market Overview",
+    "marketIntelligence": "Market intelligence workspace"
+  },
+  "table": {
+    "workspaceSubtitle": "Search, filter and manage records",
+    "searchFieldSettings": "Search field settings",
+    "hiddenFieldHint": "Selected search fields will be hidden.",
+    "addRow": "Add row"
+  },
+  "common": {
+    "clear": "Clear",
+    "search": "Search",
+    "error": "Error",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving..."
+  },
+  "stockAnalysisDates": {
+    "tradingDate": "Trading date",
+    "secFilingDate": "SEC filing date",
+    "snapshotAsOfDate": "Valuation snapshot date",
+    "nextEarningsDate": "Expected earnings date",
+    "reportPeriod": {
+      "Q1": "{{year}} Q1 report",
+      "Q2": "{{year}} Q2 report",
+      "Q3": "{{year}} Q3 report",
+      "Q4": "{{year}} Q4 report",
+      "FY": "{{year}} annual report",
+      "unknown": "{{year}} {{period}} report",
+      "latest": "Latest financial report"
+    }
+  },
+  "watchlist": {
+    "columns": {
+      "watched": "Watched",
+      "symbol": "Symbol",
+      "stockType": "Stock type",
+      "conceptCode": "Concepts",
+      "industry": "Industry",
+      "quoteDate": "Quote date",
+      "closePrice": "Close price",
+      "pe": "P/E",
+      "rsi": "RSI",
+      "cashPerShare": "Cash per share"
+    }
+  },
+  "stockAnalysisValue": {
+    "lossMaking": "Loss"
+  },
+  "stockAnalysis": {
+    "title": "{{symbol}} Stock Analysis",
+    "tradingDate": "Trading date",
+    "secFilingDate": "SEC filing date",
+    "snapshotAsOfDate": "Valuation snapshot date",
+    "nextEarningsDate": "Expected earnings date",
+    "reportPeriod": {
+      "Q1": "{{year}} Q1 report",
+      "Q2": "{{year}} Q2 report",
+      "Q3": "{{year}} Q3 report",
+      "Q4": "{{year}} Q4 report",
+      "FY": "{{year}} annual report",
+      "unknown": "{{year}} {{period}} report",
+      "latest": "Latest financial report"
+    },
+    "backToWatchlist": "Back to watch list",
+    "metrics": {
+      "closePrice": "Close price",
+      "cashPerShare": "Cash per share",
+      "cashLikeAssetsPerShare": "Cash and short-term investments per share",
+      "debtPerShare": "Debt per share",
+      "netCashPerShare": "Cash minus debt per share",
+      "netCashForValuationPerShare": "Valuation net cash per share",
+      "ttmEps": "TTM earnings per share"
+    },
+    "valuationSection": "Valuation and watch range",
+    "buyRange": "Watch-to-buy range (including margin of safety)",
+    "cashAdjustedFairValue": "Net-cash-adjusted fair-value scenario",
+    "calculationDescription": "Calculation: use TTM earnings per share with a target P/E of {{low}}–{{high}}, then add valuation net cash per share of {{netCash}} (negative when the company has net debt). The watch range applies a 20% margin of safety to the lower end of fair value.",
+    "lossMakingDescription": "Current TTM earnings per share is {{eps}}. Earnings are negative, so a target P/E cannot produce a meaningful fair value. Consider P/S, EV/Sales, cash levels and the path to profitability instead.",
+    "pegWarning": "PEG is unavailable because no reliable EPS growth rate is available, and it is not used to adjust the target multiple.",
+    "supportingAssessment": "Supporting assessment",
+    "rsiMomentum": "RSI momentum",
+    "cashBuffer": "Cash-like assets and debt",
+    "cashBufferDescription": "Cash and short-term investments per share are {{cash}}, debt per share is {{debt}}, and valuation net cash per share is {{netCash}}, approximately {{percentage}} of the current share price.",
+    "classification": "Classification",
+    "disclaimer": "This range is produced by a rule-based model using available snapshot data. It is neither a real-time quote nor investment advice. Decisions should also consider earnings growth, debt, cash flow, the industry cycle and the latest announcements.",
+    "value": {
+      "unavailable": "Unavailable",
+      "insufficientData": "Insufficient data",
+      "notMeaningful": "N/M",
+      "peNotApplicable": "P/E not applicable"
+    },
+    "valuation": {
+      "buyZone": "In watch-to-buy range",
+      "fairValue": "Fair-value range",
+      "overvalued": "Valuation is high",
+      "lossMaking": "Negative earnings; P/E not applicable"
+    },
+    "momentum": {
+      "oversold": "Oversold; monitor rebound potential and fundamental risk",
+      "overbought": "Overbought; short-term chasing risk is elevated",
+      "neutral": "Neutral momentum"
+    }
+  },
+  "job": {
+    "columns": {
+      "taskCode": "Task code",
+      "description": "Description",
+      "taskGroup": "Task group",
+      "active": "Active",
+      "scheduleTime": "Execution schedule",
+      "startDate": "Start time",
+      "executionTime": "Execution time",
+      "lastExecStartTime": "Last run start",
+      "lastExecEndTime": "Last run end",
+      "executionResult": "Execution result",
+      "run": "Run"
+    },
+    "actions": {
+      "create": "Create",
+      "run": "Run job"
+    },
+    "status": {
+      "active": "Active",
+      "inactive": "Inactive"
+    },
+    "executionStatus": {
+      "COMPLETED": "Completed",
+      "PARTIAL": "Partially successful",
+      "FAILED": "Failed",
+      "RUNNING": "Running"
+    },
+    "form": {
+      "createTitle": "Create job",
+      "editTitle": "Edit job",
+      "saveFailed": "Save failed. Please try again later.",
+      "saveSuccess": "Job saved successfully!",
+      "selectOrEnter": "Please select or enter",
+      "jobPath": "Job path",
+      "jobPathPlaceholder": "e.g. com.example.jobs.MyJobClass",
+      "status": "Status",
+      "jobParams": "Job parameters",
+      "jsonHint": "Enter parameters in JSON format",
+      "frequency": "Frequency",
+      "scheduleTime": "Schedule time",
+      "startDate": "Start date",
+      "endDateOptional": "End date (optional)",
+      "selectDays": "Select days",
+      "taskCodePlaceholder": "e.g. SEC_FINANCIAL_FACT_DAILY"
+    },
+    "validation": {
+      "taskGroupRequired": "Please select or enter a task group",
+      "jobPathRequired": "Job class path cannot be empty",
+      "validJson": "Please enter valid JSON",
+      "frequencyRequired": "Please select an execution frequency",
+      "scheduleTimeRequired": "Please select a schedule time",
+      "startDateRequired": "Please select a start date",
+      "taskCodeRequired": "Task code cannot be empty",
+      "taskCodeFormat": "Use uppercase letters, numbers and underscores only (for example, SEC_FINANCIAL_FACT_DAILY)"
+    },
+    "frequency": {
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly"
+    },
+    "weekday": {
+      "sun": "Sun",
+      "mon": "Mon",
+      "tue": "Tue",
+      "wed": "Wed",
+      "thu": "Thu",
+      "fri": "Fri",
+      "sat": "Sat"
+    },
+    "description": {
+      "PRICE_BASIS_EVENT_DAILY_SYNC": "Synchronizes and verifies Massive stock split and reverse split events to support price and share basis conversions.",
+      "MASSIVE_HISTORICAL_IDENTITY_DAILY": "Retrieves and stores Massive historical security identities for required dates to support point-in-time financial and valuation analysis.",
+      "STOCK_DAILY": "Updates the stock symbol universe and instrument metadata for configured exchanges.",
+      "STOCK_QUOTE_DAILY": "Updates daily stock quote data for configured exchanges.",
+      "MARKET_SENTIMENT_DAILY": "Fetches and saves the daily market sentiment snapshot.",
+      "SEC_ETF_HOLDING_SYNC": "Synchronizes SEC ETF holdings data.",
+      "TREASURY_DAILY_SYNC": "Synchronizes U.S. Treasury yield curve data.",
+      "MARKET_EVENT_DAILY_SYNC": "Synchronizes BLS, Federal Reserve and earnings calendar events.",
+      "SEC_FINANCIAL_FACT_DAILY": "Synchronizes SEC company facts and calculates fundamental snapshots.",
+      "STOCK_VALUATION_SNAPSHOT_DAILY": "Calculates daily stock valuation snapshots using the latest quote and fundamental data.",
+      "STOCK_INDUSTRY_CLASSIFICATION_EXPORT": "Exports all active stocks for AI industry classification review.",
+      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "Imports AI-completed industry classifications and updates stock industry profiles."
+    }
+  },
+  "jobSchedule": {
+    "dayOfMonth": "Day of month",
+    "dayOfMonthRequired": "Please enter a day of month",
+    "dayOfMonthRange": "Enter a day from 1 to 31",
+    "dailySummary": "Daily at {{time}}",
+    "weeklySummary": "Every {{days}} at {{time}}",
+    "monthlySummary": "Monthly on day {{day}} at {{time}}",
+    "hourlyAtMinute": "Every hour at minute {{minute}}",
+    "everyMinutes": "Every {{count}} minutes",
+    "everyHoursAtMinute": "Every {{count}} hours at minute {{minute}}",
+    "weekdayRange": "{{from}}–{{to}}",
+    "listSeparator": ", "
+  },
+  "languageSwitcher": {
+    "label": "Language",
+    "english": "English",
+    "traditionalChinese": "Traditional Chinese",
+    "simplifiedChinese": "Simplified Chinese"
+  },
+  "menu": {
+    "user": "User",
+    "stockAnalysis": "Stock Screener",
+    "dataManagement": "Data Management",
+    "jobConfiguration": "Job Configuration",
+    "watchList": "Watch List",
+    "unknown": "Menu"
+  },
   "dashboard": {
-    "loading": "Loading dashboard...", "loadError": "Failed to load dashboard", "updatedAt": "Updated", "marketDate": "Market date", "dataSource": "Data sources", "sourceLabel": "Source", "currentAssessment": "Current assessment", "indexValue": "Index value: {{value}}", "etfSubtitle": "Includes moving-average distance and volume confirmation",
-    "section": {"marketStatus":"Market status","indexObservation":"Index observation","fearGreedFactors":"Fear & Greed seven factors","etfObservation":"ETF watchlist","priceVolumeRules":"Price-volume rules","signalMatrix":"Signal matrix","riskAlerts":"Risk alerts","upcoming":"Upcoming"},
-    "source": {"INTERNAL_MARKET_SNAPSHOT":"Internal market snapshot","CNN_FEAR_GREED":"CNN Fear & Greed","US_TREASURY":"U.S. Treasury","CNN":"CNN","CNN_SENTIMENT_FACTOR":"CNN sentiment factor"},
-    "signal": {"FEAR_GREED":"Fear & Greed Index","CNN_VIX_SCORE":"CNN VIX sentiment score","CNN_PUT_CALL_SCORE":"CNN Put/Call sentiment score","CNN_MARKET_BREADTH_SCORE":"CNN market breadth sentiment score"},
-    "sentiment": {"INSUFFICIENT_DATA":"Insufficient data","EXTREME_FEAR":"Extreme fear","FEAR":"Fear","NEUTRAL":"Neutral","GREED":"Greed","EXTREME_GREED":"Extreme greed"},
-    "index": {"SP500":"S&P 500","NASDAQ100":"Nasdaq 100","PHLX_SEMICONDUCTOR":"PHLX Semiconductor","RUSSELL2000":"Russell 2000"},
-    "indexNote": {"UP":"Up today","DOWN":"Down today","FLAT":"Flat today"},
-    "factor": {"MARKET_MOMENTUM":"Market momentum","STOCK_PRICE_STRENGTH":"Stock price strength","STOCK_PRICE_BREADTH":"Stock price breadth","PUT_CALL_OPTIONS":"Put/Call options","MARKET_VOLATILITY":"Market volatility","SAFE_HAVEN_DEMAND":"Safe-haven demand","JUNK_BOND_DEMAND":"Junk-bond demand"},
-    "bias": {"INSUFFICIENT_DATA":"Insufficient data","HOT":"Hot","WEAK":"Weak","STRONG":"Strong","NEUTRAL_WEAK":"Neutral to weak"},
-    "etfNote": {"RSI_HOT":"RSI is in the overheated range","MA20_EXTENDED":"Price is materially away from the 20-day average","HIGH_VOLUME":"Volume is above the recent five-day average","NORMAL":"Indicators are within their normal ranges"},
-    "table": {"symbol":"Symbol","price":"Price","dailyChange":"Daily change","assessment":"Assessment","ma20Distance":"Distance to MA20","volumeRatio5d":"Volume ratio (5D)","note":"Note","source":"Source","time":"Time"},
-    "rules": {"maTitle":"Moving-average distance","maDescription":"A larger distance from MA20 means price is farther from its short-to-medium-term balance. Combined with a high RSI, it can indicate overheating.","volumeTitle":"Volume confirmation","volumeDescription":"Volume ratio = current volume / five-day average volume. A ratio above 1.2 with a price rise indicates stronger participation.","combinationTitle":"Combined interpretation","combinationDescription":"The strongest combination is usually rising price, expanding volume and increasing distance; high distance with weak volume warrants caution."},
-    "messages": {"ETF_OVERHEATED":"{{ticker}}: RSI is {{rsi}} and price is {{deviation}} above MA20; short-term conditions are overheated.","ETF_OVERSOLD":"{{ticker}}: RSI is {{rsi}}; momentum is weak and in the oversold watch zone.","ETF_VOLUME_CONFIRMED":"{{ticker}}: price rose with a {{volumeRatio}} volume ratio, confirming the move.","ETF_LOW_VOLUME_EXTENSION":"{{ticker}}: price is {{deviation}} above MA20 but volume ratio is only {{volumeRatio}}; beware of low-volume chasing.","EXTREME_GREED":"CNN Fear & Greed is {{score}}; sentiment is in extreme greed.","EXTREME_FEAR":"CNN Fear & Greed is {{score}}; sentiment is in extreme fear.","NO_ALERTS":"No overheating, oversold, volume-confirmed rise or low-volume extension alert is active.","SUMMARY_WITH_SENTIMENT":"CNN Fear & Greed is {{score}}; among observed ETFs, {{up}} rose and {{down}} fell.","SUMMARY_WITHOUT_SENTIMENT":"CNN sentiment data is unavailable; among observed ETFs, {{up}} rose and {{down}} fell.","DATE_UNAVAILABLE":"Date unavailable","MARKET_CLOSE":"{{date}} close"},
-    "marketSummary": {"STRONG_BUT_OVERHEATED":"Risk appetite is strong, but sentiment is overheated","HOT_BUT_DIVERGING":"Sentiment is hot while price momentum diverges","FEAR_WITH_RECOVERY":"Prices are recovering amid fearful sentiment","WEAK_AND_FEARFUL":"Risk appetite is weak and sentiment is fearful","BULLISH_NON_EXTREME":"Momentum is bullish without extreme sentiment","BEARISH":"Momentum is bearish; manage downside risk","DIVERGING":"Market direction is mixed; await a clearer signal"},
-    "execution": {"EXECUTION_BIAS":"Execution bias","HIGH_RISK":"Multiple risk conditions are active. Reduce chasing and high-volatility exposure until RSI, MA distance or volume normalizes.","SELECTIVE":"Some risk conditions are active. Stay selective and confirm volume and MA distance before adding exposure.","BULLISH":"ETF momentum is broadly bullish with no major risk trigger. A bullish bias is reasonable with defined risk limits.","DEFENSIVE":"ETF momentum is broadly weak without a confirmed reversal. Keep exposure conservative and await a volume-backed recovery.","NEUTRAL":"Data is limited or direction is mixed. Maintain neutral exposure until price-volume signals become clearer."},
-    "hongKongTime":"Hong Kong time","noUpcomingEvents":"No confirmed market-moving events in the next 14 days.","eventCategory":{"MACRO":"Macro","FED":"Fed","EARNINGS":"Earnings","TREASURY":"Treasury","DERIVATIVES":"Derivatives","INDEX_REBALANCE":"Index changes","POLICY":"Policy","OTHER":"Other"},
-    "eventLevel": {"HIGH":"High","MEDIUM":"Medium","LOW":"Low"}, "event": {"CPI":"Consumer Price Index (CPI)","CORE_CPI":"Core Consumer Price Index","PCE":"PCE Price Index","CORE_PCE":"Core PCE Price Index","EMPLOYMENT_SITUATION":"Employment situation (payrolls and unemployment)","NONFARM_PAYROLLS":"Nonfarm payrolls","NFP":"Nonfarm payrolls","UNEMPLOYMENT_RATE":"Unemployment rate","INITIAL_JOBLESS_CLAIMS":"Initial jobless claims","JOBLESS_CLAIMS":"Initial jobless claims","FACTORY_ORDERS":"Factory orders","JOLTS":"JOLTS job openings","ISM_MANUFACTURING":"ISM Manufacturing PMI","ISM_SERVICES":"ISM Services PMI","GDP":"Gross domestic product (GDP)","RETAIL_SALES":"Retail sales","PPI":"Producer Price Index (PPI)","FOMC":"FOMC interest-rate decision","EARNINGS_REPORT":"{{symbol}} earnings release","MONTHLY_OPEX":"Monthly options expiration","QUARTERLY_OPEX":"Quarterly options expiration (triple witching)"},
+    "loading": "Loading dashboard...",
+    "loadError": "Failed to load dashboard",
+    "updatedAt": "Updated",
+    "marketDate": "Market date",
+    "dataSource": "Data sources",
+    "sourceLabel": "Source",
+    "currentAssessment": "Current assessment",
+    "indexValue": "Index value: {{value}}",
+    "etfSubtitle": "Includes moving-average distance and volume confirmation",
+    "section": {
+      "marketStatus": "Market status",
+      "indexObservation": "Index observation",
+      "fearGreedFactors": "Fear & Greed seven factors",
+      "etfObservation": "ETF watchlist",
+      "priceVolumeRules": "Price-volume rules",
+      "signalMatrix": "Signal matrix",
+      "riskAlerts": "Risk alerts",
+      "upcoming": "Upcoming"
+    },
+    "source": {
+      "INTERNAL_MARKET_SNAPSHOT": "Internal market snapshot",
+      "CNN_FEAR_GREED": "CNN Fear & Greed",
+      "US_TREASURY": "U.S. Treasury",
+      "CNN": "CNN",
+      "CNN_SENTIMENT_FACTOR": "CNN sentiment factor"
+    },
+    "signal": {
+      "FEAR_GREED": "Fear & Greed Index",
+      "CNN_VIX_SCORE": "CNN VIX sentiment score",
+      "CNN_PUT_CALL_SCORE": "CNN Put/Call sentiment score",
+      "CNN_MARKET_BREADTH_SCORE": "CNN market breadth sentiment score"
+    },
+    "sentiment": {
+      "INSUFFICIENT_DATA": "Insufficient data",
+      "EXTREME_FEAR": "Extreme fear",
+      "FEAR": "Fear",
+      "NEUTRAL": "Neutral",
+      "GREED": "Greed",
+      "EXTREME_GREED": "Extreme greed"
+    },
+    "index": {
+      "SP500": "S&P 500",
+      "NASDAQ100": "Nasdaq 100",
+      "PHLX_SEMICONDUCTOR": "PHLX Semiconductor",
+      "RUSSELL2000": "Russell 2000"
+    },
+    "indexNote": {
+      "UP": "Up today",
+      "DOWN": "Down today",
+      "FLAT": "Flat today"
+    },
+    "factor": {
+      "MARKET_MOMENTUM": "Market momentum",
+      "STOCK_PRICE_STRENGTH": "Stock price strength",
+      "STOCK_PRICE_BREADTH": "Stock price breadth",
+      "PUT_CALL_OPTIONS": "Put/Call options",
+      "MARKET_VOLATILITY": "Market volatility",
+      "SAFE_HAVEN_DEMAND": "Safe-haven demand",
+      "JUNK_BOND_DEMAND": "Junk-bond demand"
+    },
+    "bias": {
+      "INSUFFICIENT_DATA": "Insufficient data",
+      "HOT": "Hot",
+      "WEAK": "Weak",
+      "STRONG": "Strong",
+      "NEUTRAL_WEAK": "Neutral to weak"
+    },
+    "etfNote": {
+      "RSI_HOT": "RSI is in the overheated range",
+      "MA20_EXTENDED": "Price is materially away from the 20-day average",
+      "HIGH_VOLUME": "Volume is above the recent five-day average",
+      "NORMAL": "Indicators are within their normal ranges"
+    },
+    "table": {
+      "symbol": "Symbol",
+      "price": "Price",
+      "dailyChange": "Daily change",
+      "assessment": "Assessment",
+      "ma20Distance": "Distance to MA20",
+      "volumeRatio5d": "Volume ratio (5D)",
+      "note": "Note",
+      "source": "Source",
+      "time": "Time"
+    },
+    "rules": {
+      "maTitle": "Moving-average distance",
+      "maDescription": "A larger distance from MA20 means price is farther from its short-to-medium-term balance. Combined with a high RSI, it can indicate overheating.",
+      "volumeTitle": "Volume confirmation",
+      "volumeDescription": "Volume ratio = current volume / five-day average volume. A ratio above 1.2 with a price rise indicates stronger participation.",
+      "combinationTitle": "Combined interpretation",
+      "combinationDescription": "The strongest combination is usually rising price, expanding volume and increasing distance; high distance with weak volume warrants caution."
+    },
+    "messages": {
+      "ETF_OVERHEATED": "{{ticker}}: RSI is {{rsi}} and price is {{deviation}} above MA20; short-term conditions are overheated.",
+      "ETF_OVERSOLD": "{{ticker}}: RSI is {{rsi}}; momentum is weak and in the oversold watch zone.",
+      "ETF_VOLUME_CONFIRMED": "{{ticker}}: price rose with a {{volumeRatio}} volume ratio, confirming the move.",
+      "ETF_LOW_VOLUME_EXTENSION": "{{ticker}}: price is {{deviation}} above MA20 but volume ratio is only {{volumeRatio}}; beware of low-volume chasing.",
+      "EXTREME_GREED": "CNN Fear & Greed is {{score}}; sentiment is in extreme greed.",
+      "EXTREME_FEAR": "CNN Fear & Greed is {{score}}; sentiment is in extreme fear.",
+      "NO_ALERTS": "No overheating, oversold, volume-confirmed rise or low-volume extension alert is active.",
+      "SUMMARY_WITH_SENTIMENT": "CNN Fear & Greed is {{score}}; among observed ETFs, {{up}} rose and {{down}} fell.",
+      "SUMMARY_WITHOUT_SENTIMENT": "CNN sentiment data is unavailable; among observed ETFs, {{up}} rose and {{down}} fell.",
+      "DATE_UNAVAILABLE": "Date unavailable",
+      "MARKET_CLOSE": "{{date}} close"
+    },
+    "marketSummary": {
+      "STRONG_BUT_OVERHEATED": "Risk appetite is strong, but sentiment is overheated",
+      "HOT_BUT_DIVERGING": "Sentiment is hot while price momentum diverges",
+      "FEAR_WITH_RECOVERY": "Prices are recovering amid fearful sentiment",
+      "WEAK_AND_FEARFUL": "Risk appetite is weak and sentiment is fearful",
+      "BULLISH_NON_EXTREME": "Momentum is bullish without extreme sentiment",
+      "BEARISH": "Momentum is bearish; manage downside risk",
+      "DIVERGING": "Market direction is mixed; await a clearer signal"
+    },
+    "execution": {
+      "EXECUTION_BIAS": "Execution bias",
+      "HIGH_RISK": "Multiple risk conditions are active. Reduce chasing and high-volatility exposure until RSI, MA distance or volume normalizes.",
+      "SELECTIVE": "Some risk conditions are active. Stay selective and confirm volume and MA distance before adding exposure.",
+      "BULLISH": "ETF momentum is broadly bullish with no major risk trigger. A bullish bias is reasonable with defined risk limits.",
+      "DEFENSIVE": "ETF momentum is broadly weak without a confirmed reversal. Keep exposure conservative and await a volume-backed recovery.",
+      "NEUTRAL": "Data is limited or direction is mixed. Maintain neutral exposure until price-volume signals become clearer."
+    },
+    "hongKongTime": "Hong Kong time",
+    "noUpcomingEvents": "No confirmed market-moving events in the next 14 days.",
+    "eventCategory": {
+      "MACRO": "Macro",
+      "FED": "Fed",
+      "EARNINGS": "Earnings",
+      "TREASURY": "Treasury",
+      "DERIVATIVES": "Derivatives",
+      "INDEX_REBALANCE": "Index changes",
+      "POLICY": "Policy",
+      "OTHER": "Other"
+    },
+    "eventLevel": {
+      "HIGH": "High",
+      "MEDIUM": "Medium",
+      "LOW": "Low"
+    },
+    "event": {
+      "CPI": "Consumer Price Index (CPI)",
+      "CORE_CPI": "Core Consumer Price Index",
+      "PCE": "PCE Price Index",
+      "CORE_PCE": "Core PCE Price Index",
+      "EMPLOYMENT_SITUATION": "Employment situation (payrolls and unemployment)",
+      "NONFARM_PAYROLLS": "Nonfarm payrolls",
+      "NFP": "Nonfarm payrolls",
+      "UNEMPLOYMENT_RATE": "Unemployment rate",
+      "INITIAL_JOBLESS_CLAIMS": "Initial jobless claims",
+      "JOBLESS_CLAIMS": "Initial jobless claims",
+      "FACTORY_ORDERS": "Factory orders",
+      "JOLTS": "JOLTS job openings",
+      "ISM_MANUFACTURING": "ISM Manufacturing PMI",
+      "ISM_SERVICES": "ISM Services PMI",
+      "GDP": "Gross domestic product (GDP)",
+      "RETAIL_SALES": "Retail sales",
+      "PPI": "Producer Price Index (PPI)",
+      "FOMC": "FOMC interest-rate decision",
+      "EARNINGS_REPORT": "{{symbol}} earnings release",
+      "MONTHLY_OPEX": "Monthly options expiration",
+      "QUARTERLY_OPEX": "Quarterly options expiration (triple witching)"
+    },
     "marketRegime": {
       "title": "Market Regime",
       "headwindBanner": "Market is in {{regime}} headwind mode. The opportunity radar is tightened to deep-value strong-fundamental watch-only names, and new buy signals are paused.",
@@ -204,7 +615,11 @@
     "sampleCount": "Share-class observations",
     "peerSampleCounts": "Valid sample: {{companies}} companies / {{samples}} share-class observations",
     "peerMethodDescription": "The range applies the same-date industry's P25, median and P75 multiples to this company's verified financial inputs. It includes this company; share classes are separate observations. It is a relative market comparison, not an intrinsic-value estimate or forecast.",
-    "peerQuantiles": {"q25":"Peer 25th percentile","q50":"Peer median","q75":"Peer 75th percentile"},
+    "peerQuantiles": {
+      "q25": "Peer 25th percentile",
+      "q50": "Peer median",
+      "q75": "Peer 75th percentile"
+    },
     "valuationModel": "Valuation metric",
     "fairValueRange": "Reference price range",
     "fairValueCentral": "Median-multiple reference price",
@@ -271,17 +686,86 @@
     "marketAsOf": "Market comparison date",
     "marketReferenceUnavailable": "No same-date verified industry market comparison is available.",
     "futu": {
-      "valuation": {"title": "Futu market valuation observations", "description": "Market and forward multiples reported by Futu for comparison."},
-      "earnings": {"title": "Futu earnings expectations", "description": "Estimates reported by Futu for each fiscal period, with the currency and period as provided."},
-      "valuationDetail": {"title": "Futu valuation history and peers", "description": "Monthly P25, P50 and P75 use the last observation in each completed month. The historical mean, standard deviation band and current multiple's historical percentile come from Futu's summary.", "peers": "Positive Futu peer multiples (may include this stock)", "plateRankValue": "{{rank}} of {{total}}"},
-      "morningstar": {"title": "Morningstar stock fair value", "description": "Morningstar's stock valuation and rating, retrieved via Futu for external comparison."},
+      "valuation": {
+        "title": "Futu market valuation observations",
+        "description": "Market and forward multiples reported by Futu for comparison."
+      },
+      "earnings": {
+        "title": "Futu earnings expectations",
+        "description": "Estimates reported by Futu for each fiscal period, with the currency and period as provided."
+      },
+      "valuationDetail": {
+        "title": "Futu valuation history and peers",
+        "description": "Monthly P25, P50 and P75 use the last observation in each completed month. The historical mean, standard deviation band and current multiple's historical percentile come from Futu's summary.",
+        "peers": "Positive Futu peer multiples (may include this stock)",
+        "plateRankValue": "{{rank}} of {{total}}"
+      },
+      "morningstar": {
+        "title": "Morningstar stock fair value",
+        "description": "Morningstar's stock valuation and rating, retrieved via Futu for external comparison."
+      },
       "lastKnown": "Last known observations",
-      "columns": {"metric": "Metric", "value": "Market multiple", "forwardValue": "Forward multiple", "expectedValue": "Estimate", "providerSymbol": "Provider symbol", "plateCode": "Provider sector", "observedAt": "Retrieved at", "status": "Status", "fiscalPeriod": "Fiscal period", "periodType": "Period type", "earningsDate": "Earnings date", "publishType": "Release timing", "sourceUpdatedAt": "Source updated at", "valuationPercentile": "Futu historical percentile", "averageValue": "Futu historical mean", "avgMinus1Stddev": "Futu mean minus one standard deviation", "avgPlus1Stddev": "Futu mean plus one standard deviation", "historicalMonths": "Valid monthly samples", "historyFrom": "First monthly sample date", "historyThrough": "Last monthly sample date", "q25": "Monthly P25", "median": "Monthly P50", "q75": "Monthly P75", "plateName": "Futu industry", "plateAverage": "Futu industry mean multiple", "plateRank": "Futu industry rank", "fairValue": "Fair value", "ratingType": "Rating type", "starRating": "Star rating", "uncertainty": "Uncertainty"},
-      "ratingTypes": {"QUALITATIVE": "Qualitative", "QUANTITATIVE": "Quantitative"},
-      "uncertaintyLevels": {"Low": "Low", "Medium": "Medium", "High": "High", "Very High": "Very high", "Extreme": "Extreme"},
-      "metrics": {"PE": "P/E", "PB": "P/B", "PS": "P/S", "EPS": "Earnings per share (GAAP)", "REVENUE": "Revenue", "EBIT": "EBIT"},
-      "periodTypes": {"QUARTERLY": "Quarter", "SEMIANNUAL": "Half year", "ANNUAL": "Year"},
-      "publishTypes": {"BEFORE_MARKET": "Before market open", "AFTER_MARKET": "After market close", "INTRADAY": "During market hours"}
+      "columns": {
+        "metric": "Metric",
+        "value": "Market multiple",
+        "forwardValue": "Forward multiple",
+        "expectedValue": "Estimate",
+        "providerSymbol": "Provider symbol",
+        "plateCode": "Provider sector",
+        "observedAt": "Retrieved at",
+        "status": "Status",
+        "fiscalPeriod": "Fiscal period",
+        "periodType": "Period type",
+        "earningsDate": "Earnings date",
+        "publishType": "Release timing",
+        "sourceUpdatedAt": "Source updated at",
+        "valuationPercentile": "Futu historical percentile",
+        "averageValue": "Futu historical mean",
+        "avgMinus1Stddev": "Futu mean minus one standard deviation",
+        "avgPlus1Stddev": "Futu mean plus one standard deviation",
+        "historicalMonths": "Valid monthly samples",
+        "historyFrom": "First monthly sample date",
+        "historyThrough": "Last monthly sample date",
+        "q25": "Monthly P25",
+        "median": "Monthly P50",
+        "q75": "Monthly P75",
+        "plateName": "Futu industry",
+        "plateAverage": "Futu industry mean multiple",
+        "plateRank": "Futu industry rank",
+        "fairValue": "Fair value",
+        "ratingType": "Rating type",
+        "starRating": "Star rating",
+        "uncertainty": "Uncertainty"
+      },
+      "ratingTypes": {
+        "QUALITATIVE": "Qualitative",
+        "QUANTITATIVE": "Quantitative"
+      },
+      "uncertaintyLevels": {
+        "Low": "Low",
+        "Medium": "Medium",
+        "High": "High",
+        "Very High": "Very high",
+        "Extreme": "Extreme"
+      },
+      "metrics": {
+        "PE": "P/E",
+        "PB": "P/B",
+        "PS": "P/S",
+        "EPS": "Earnings per share (GAAP)",
+        "REVENUE": "Revenue",
+        "EBIT": "EBIT"
+      },
+      "periodTypes": {
+        "QUARTERLY": "Quarter",
+        "SEMIANNUAL": "Half year",
+        "ANNUAL": "Year"
+      },
+      "publishTypes": {
+        "BEFORE_MARKET": "Before market open",
+        "AFTER_MARKET": "After market close",
+        "INTRADAY": "During market hours"
+      }
     },
     "technicalIndicators": "Technical indicators and interpretation",
     "indicator": "Indicator / parameters",
@@ -438,7 +922,59 @@
       "ENTRY_EXPIRED": "The opportunity to open this new entry has expired.",
       "NO_FIXED_TARGET": "There is no verified overhead resistance from which to set profit targets.",
       "RR_BELOW_POLICY": "Risk/reward after costs does not meet the trading policy.",
-      "MARKET_MEDIANS_UNAVAILABLE": "Industry market samples or same-date observations are insufficient."
+      "MARKET_MEDIANS_UNAVAILABLE": "Industry market samples or same-date observations are insufficient.",
+      "NOT_APPLICABLE_FOR_ETF": "Single-company valuation models do not apply to ETFs/ETPs",
+      "ADR_RATIO_UNVERIFIED": "ADR share ratio is not yet verified; valuation blocked to prevent share mismatch",
+      "ADR_SHARES_BASIS_UNVERIFIED": "ADR share count basis requires verification",
+      "FX_RATE_UNAVAILABLE": "Official FX rate unavailable for reporting currency",
+      "FX_RATE_STALE": "Official FX rate is older than 14 days",
+      "NON_POSITIVE_ADJ_FCF": "SBC-adjusted FCF is non-positive (N.M.)",
+      "NON_POSITIVE_INVESTED_CAPITAL": "Invested capital is non-positive (N.M.)",
+      "NON_POSITIVE_TBV": "Tangible book value is non-positive (N.M.)",
+      "NON_POSITIVE_GROSS_PROFIT": "Gross profit is non-positive (N.M.)",
+      "NON_POSITIVE_INTEREST_EXPENSE": "No positive interest expense (N.M.)",
+      "NON_POSITIVE_CURRENT_DEBT": "No short-term interest-bearing debt due within 1 year",
+      "DCF_NOT_APPLICABLE_TO_INDUSTRY": "DCF is not applicable to banks and insurers",
+      "DCF_NOT_APPLICABLE_TO_REIT": "Standard FCF DCF is not applicable to REITs",
+      "DCF_NON_POSITIVE_FCF": "Base TTM FCF is non-positive; DCF is not applicable",
+      "DCF_INVALID_TERMINAL_SPREAD": "Invalid discount rate vs. terminal growth spread",
+      "REVERSE_DCF_OUT_OF_RANGE": "Implied growth lies outside the solvable range (-30% to +100%)",
+      "GROSS_PROFIT_MISSING": "TTM gross profit missing",
+      "OPERATING_PROFIT_MISSING": "TTM operating profit missing",
+      "SBC_MISSING": "Verified SEC stock-based compensation (SBC) missing",
+      "INTEREST_EXPENSE_MISSING": "TTM interest expense missing",
+      "GOODWILL_INTANGIBLES_MISSING": "Goodwill & intangibles missing",
+      "CURRENT_DEBT_MISSING": "Explicit short-term debt disclosure missing",
+      "SHAREHOLDER_RETURN_MISSING": "Complete dividend and net buyback cash flows missing",
+      "PRETAX_OR_TAX_MISSING": "Pretax income or income tax expense missing",
+      "EFFECTIVE_TAX_RATE_UNAVAILABLE": "Effective tax rate unavailable",
+      "DCF_DISCOUNT_RATE_UNAVAILABLE": "10Y Treasury yield missing for discount rate",
+      "SWUNG_TO_LOSS": "Swung to loss",
+      "FORWARD_SWUNG_TO_LOSS": "Consensus swung to loss",
+      "TURNAROUND_FROM_LOSS": "Turnaround from loss",
+      "NON_POSITIVE_BASE_EPS": "Non-positive base EPS",
+      "FCF_TURNED_NEGATIVE": "FCF turned negative",
+      "FCF_TURNAROUND_FROM_NEGATIVE": "FCF turned positive from negative base",
+      "NON_POSITIVE_NET_INCOME": "Non-positive net income",
+      "PRIOR_COMPARABLE_PERIOD_MISSING": "Prior comparable period missing",
+      "REPORTING_CURRENCY_CHANGED": "Reporting currency changed across periods",
+      "ACCOUNTING_STANDARDS_CHANGED": "Accounting standards changed across periods",
+      "SEC_FILING_SHARES_REQUIRED": "Independent SEC filing shares required",
+      "SHARE_BASIS_PERIOD_NOT_INDEPENDENT": "Share basis dates are not independent annual periods",
+      "EPS_GROWTH_BELOW_PEG_THRESHOLD": "EPS growth below 5% PEG threshold",
+      "EPS_GROWTH_LOW_BASE_SPIKE": "Low-base single-year EPS spike excluded from PEG",
+      "EARNINGS_FORECAST_MISSING": "Earnings consensus unavailable",
+      "NO_UNREPORTED_FORECAST_PERIOD": "No eligible open fiscal period for revision",
+      "ANNUAL_EARNINGS_FORECAST_MISSING": "Open annual earnings consensus missing",
+      "FORECAST_FISCAL_PERIOD_UNVERIFIED": "Forecast fiscal period end unverified",
+      "EARNINGS_FORECAST_STALE": "Forecast observation older than 45 days",
+      "FORECAST_REVISION_BASE_MISSING": "No comparable historical baseline for revision",
+      "NON_POSITIVE_FORWARD_EPS": "Non-positive forward EPS (N.M.)",
+      "NON_POSITIVE_FORWARD_REVENUE": "Non-positive forward revenue (N.M.)",
+      "FORWARD_EPS_GROWTH_BELOW_PEG_THRESHOLD": "Forward EPS growth below 5% PEG threshold",
+      "FORWARD_EPS_GROWTH_ABOVE_PEG_CAP": "Forward EPS growth above 100% PEG cap",
+      "NON_POSITIVE_PRIOR_FORECAST_EPS": "Non-positive prior forecast EPS (N.M.)",
+      "NON_POSITIVE_PRIOR_FORECAST_REVENUE": "Non-positive prior forecast revenue (N.M.)"
     },
     "indicatorDefinitions": {
       "RSI14": "Wilder RSI over 14 daily periods; momentum, not a price forecast.",
@@ -542,13 +1078,15 @@
         "FAIR_UPPER": "Upper Half of Reference Band (Fair · Upper Half)",
         "MODERATELY_OVERVALUED": "Above Reference Upper Bound (Moderately Rich)",
         "OVERVALUED_RISK": "Significantly Above Market Band (Valuation Stretch)",
-        "INSUFFICIENT_EVIDENCE": "Insufficient Reference Anchors"
+        "INSUFFICIENT_EVIDENCE": "Insufficient Reference Anchors",
+        "NOT_APPLICABLE_FOR_ETF": "ETF / ETP Technical & Flow Mode (Valuation N/A)"
       },
       "backing": {
         "STRONG": "Strong Fundamental Backing",
         "MIXED": "Mixed Fundamentals",
         "WEAKENING": "Weakening Fundamentals",
-        "INSUFFICIENT_DATA": "Fundamental Comparison Incomplete"
+        "INSUFFICIENT_DATA": "Fundamental Comparison Incomplete",
+        "NOT_APPLICABLE": "Single-Company Financials N/A"
       },
       "stances": {
         "ACCUMULATE_AT_SUPPORT": "Below reference band with active support · Observe staged entries near support",
@@ -559,13 +1097,16 @@
         "CAUTION_OVEREXTENSION": "Above market reference band · Monitor multiple compression risk",
         "WAIT_FOR_MARKET_STABILIZATION": "Market regime headwind · Pause left-side buying until market stabilizes or right-side confirmation",
         "WAIT_FOR_STABILIZATION": "Stop/zone breach, below SMA200 downtrend, or event gate · Wait for stabilization",
-        "INSUFFICIENT_EVIDENCE": "Insufficient market anchors · Displaying individual metrics only"
+        "INSUFFICIENT_EVIDENCE": "Insufficient market anchors · Displaying individual metrics only",
+        "ETF_TECHNICAL_BULLISH_SUPPORT": "ETF in weekly uptrend above SMA200 · Monitor pullbacks to key technical support",
+        "ETF_TECHNICAL_NEUTRAL": "ETF technical structure is neutral · Combine support/resistance, flow, and market regime"
       },
       "anchorSources": {
         "HISTORICAL_AND_PEER": "5Y Own History + Same-Day Peers (50/50 Objective Blend)",
         "HISTORICAL_ONLY": "Single Anchor: 5Y Own History (Peers insufficient or N/A)",
         "PEER_ONLY": "Single Anchor: Same-Day Peers (History insufficient)",
-        "NONE": "No convertible objective market price anchor"
+        "NONE": "No convertible objective market price anchor",
+        "ETF_TECHNICAL_ONLY": "ETF Pure Technical & Flow Mode"
       },
       "rightSideBasis": {
         "SPRING_RECLAIMED": "Spring Reclaimed",
@@ -591,7 +1132,9 @@
         "SHARE_DILUTION_YOY": "Net share count diluted by over 3% YoY",
         "VALUATION_ABOVE_UPPER_BAND": "Current price exceeds objective market upper bound",
         "BELOW_SMA200_DOWNTREND": "Weekly downtrend with daily close below SMA200",
-        "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices"
+        "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices",
+        "MARGIN_COMPRESSION_CONSECUTIVE": "Gross or operating margin declined for two consecutive quarters",
+        "LOW_INTEREST_COVERAGE": "Interest coverage below 3x indicates tight debt-servicing buffer"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "Trend pullback starter ({{anchor}} {{anchorPrice}} {{currency}}): {{positionFraction}} tranche, tight stop {{suggestedStop}} {{currency}}",
@@ -605,10 +1148,99 @@
       }
     },
     "fundamentals": {
-      "title": "Split-Aligned Growth, Quality & Capital Return",
+      "title": "Fundamental Growth, Earnings Quality & Capital Returns (Split-Aligned)",
       "pegBasis": {
         "TRAILING_EPS_CAGR_3Y": "3Y EPS CAGR basis",
         "TRAILING_EPS_YOY": "1Y EPS YoY basis"
+      },
+      "sectionAria": "Fundamental Growth and Quality Metrics",
+      "periodMeta": "Latest Period End: {{periodEnd}}",
+      "priorYearPrefix": "Prior Year: ",
+      "threeYearPrefix": "3Y Base: ",
+      "currencyPrefix": "Reporting Currency: ",
+      "financialInstitutionNote": "FCF margin, Net Debt/EBITDA, and non-financial quality metrics do not apply to banks and insurers.",
+      "notes": {
+        "netCash": "Net Cash",
+        "highLeverage": "High Leverage",
+        "netBuyback": "Net Buyback",
+        "netDilution": "Net Dilution",
+        "roughlyFlat": "Roughly Flat"
+      },
+      "forwardPegBasis": {
+        "FORWARD_FY1_VS_TTM": "FY1 vs TTM",
+        "FORWARD_FY2_VS_FY1": "FY2 vs FY1"
+      },
+      "periodTypes": {
+        "ANNUAL": "Annual",
+        "QUARTERLY": "Quarterly"
+      },
+      "groups": {
+        "growthAndPeg": "Growth Momentum & PEG",
+        "profitabilityAndBalance": "Profitability & Balance Sheet",
+        "yieldsAndShareholder": "Yields & Share Count"
+      },
+      "metrics": {
+        "revenueGrowthYoy": "TTM Revenue Growth (YoY)",
+        "epsGrowthYoy": "TTM Diluted EPS Growth (YoY)",
+        "fcfGrowthYoy": "TTM Free Cash Flow Growth (YoY)",
+        "revenueCagr3y": "3Y Revenue CAGR",
+        "epsCagr3y": "3Y EPS CAGR",
+        "roe": "Return on Common Equity (ROE)",
+        "fcfMargin": "Free Cash Flow Margin",
+        "fcfConversion": "FCF / Net Income Conversion",
+        "netDebtToEbitda": "Net Debt / EBITDA",
+        "fcfYield": "Free Cash Flow Yield",
+        "earningsYield": "Earnings Yield",
+        "earningsYieldSpread10y": "Earnings Yield minus 10Y Treasury",
+        "fcfYieldSpread10y": "FCF Yield minus 10Y Treasury",
+        "netShareChangeYoy": "Net Share Count Change YoY (SEC)"
+      },
+      "quality": {
+        "sectionTitle": "Financial Quality Deepening (SBC, Margins, ROIC & Solvency)",
+        "marginCompressionBadge": "2-Quarter Consecutive Margin Compression",
+        "fcfCagr3y": "3Y FCF CAGR",
+        "roic": "Return on Invested Capital (ROIC)",
+        "pToTbv": "Price / Tangible Book (P/TBV)",
+        "totalShareholderYield": "Total Shareholder Yield (Div + Net Buyback)",
+        "sbcAndAdjFcfTitle": "SBC Dilution & Adjusted FCF",
+        "sbcTtm": "TTM Stock-Based Compensation (SBC)",
+        "sbcToRevenue": "SBC % of Revenue",
+        "adjFcfTtm": "SBC-Adjusted FCF (Adj. FCF)",
+        "pToAdjFcf": "P / Adj. FCF",
+        "ruleOf40": "Rule of 40 (Rev YoY + FCF Margin)",
+        "marginsAndEvTitle": "Gross & Operating Margin Trends",
+        "grossMargin": "TTM Gross Margin",
+        "grossMarginYoyPpt": "Gross Margin YoY Change",
+        "grossMarginQoqPpt": "Gross Margin QoQ Change",
+        "operatingMargin": "TTM Operating Margin",
+        "operatingMarginYoyPpt": "Operating Margin YoY Change",
+        "operatingMarginQoqPpt": "Operating Margin QoQ Change",
+        "capitalAndSolvencyTitle": "Capital Efficiency, Growth Multiples & Solvency",
+        "evToSales": "EV / Sales",
+        "evToGrossProfit": "EV / Gross Profit",
+        "nopat": "NOPAT (TTM)",
+        "investedCapital": "Invested Capital",
+        "tangibleBookValue": "Tangible Book Value (TBV)",
+        "interestCoverage": "Interest Coverage (EBIT / Interest)",
+        "shortTermLiquidityCoverage": "Short-Term Liquidity ((Cash + OCF) / Short Debt)"
+      },
+      "forward": {
+        "title": "Forward Valuation & Analyst Estimate Revisions",
+        "badge": "Consensus Observation (Separate from Reported Financials)",
+        "valuationDatePrefix": "Valuation Date: ",
+        "targetPeriodPrefix": "Target Fiscal Period: ",
+        "obsDatePrefix": "Observed ",
+        "currencyPrefix": "Forecast Currency: ",
+        "multiplesTitle": "Forward Multiples (Open Fiscal Year Consensus)",
+        "impliedEpsGrowth": "Implied Annual EPS Growth (vs TTM)",
+        "revisionsTitle": "Same-Period Estimate Revisions",
+        "epsRevision30d": "30D EPS Revision",
+        "epsRevision90d": "90D EPS Revision",
+        "revenueRevision30d": "30D Revenue Revision",
+        "revenueRevision90d": "90D Revenue Revision",
+        "providerTrailing30d": "Provider 30D trailing baseline",
+        "providerTrailing90d": "Provider 90D trailing baseline",
+        "vsDatePrefix": "vs "
       }
     },
     "peerRelativeStrength": {
@@ -631,12 +1263,69 @@
         "SECTOR_WEAK_COLLECTIVE_DECLINE": "Weak Sector · Broad Decline (Avoid Catching Knife)",
         "NEUTRAL_INLINE": "In Line with Sector & SPY"
       }
+    },
+    "etf": {
+      "pageTitleSuffix": "ETF Technical & Flow Analysis",
+      "badge": "ETF / ETP",
+      "bannerNotice": "Single-company financial valuation is not applicable to ETFs/ETPs. Switched to pure technical structure, support/resistance, volume flow, relative strength vs. SPY, and earnings-free trade plans.",
+      "referenceCloseLabel": "Latest Reference Close",
+      "valuationNotApplicableNote": "Single-company valuation multiples and DCF do not apply to ETFs/ETPs. Review the price structure, key zones, AVWAP, volume profile, and trade plans below."
+    },
+    "fxBanner": {
+      "adrVerifiedChip": "Verified ADR (1:{{ratio}})",
+      "adrUnverifiedChip": "Unverified ADR",
+      "adrUnverifiedNotice": "{{symbol}} is a US-listed ADR whose share ratio is not yet verified (ADR_RATIO_UNVERIFIED). Valuation and DCF are safely blocked to prevent share-count distortion.",
+      "adrUsdNotice": "{{symbol}} is a verified ADR reporting in {{reportingCurrency}} (no FX conversion needed; ratio 1 ADR = {{ratio}} ordinary shares{{underlying}}).",
+      "fxUnavailableNotice": "Official FX rate from {{reportingCurrency}} to {{targetCurrency}} is unavailable or stale; cross-currency valuation and DCF are withheld.",
+      "convertedNotice": "Non-USD financials converted to {{targetCurrency}} via official FX: reporting currency {{reportingCurrency}}, rate 1 {{reportingCurrency}} = {{rate}} {{targetCurrency}} (as of {{rateDate}} · {{source}}){{adrSuffix}}.",
+      "adrRatioSuffix": "; ADR ratio 1 ADR = {{ratio}} ordinary shares{{underlying}}"
+    },
+    "dcf": {
+      "title": "Two-Stage DCF & Reverse DCF (Standalone Intrinsic Reference)",
+      "independentBadge": "Standalone (Excluded from [L, M, H])",
+      "independentDisclaimer": "Two-stage equity cash flow model (FCF approx. FCFE, discount rate = 10Y Treasury + 5.0% ERP, terminal growth 2.5%), strictly separate from the relative market valuation band [L, M, H] and verdict.",
+      "basisToggleLabel": "Cash flow basis toggle",
+      "basisStandard": "Standard FCF",
+      "basisSbcAdjusted": "SBC-Adjusted FCF",
+      "unavailableNotice": "DCF model is currently unavailable ({{status}} · {{reason}}); no forced intrinsic value is fabricated.",
+      "branchUnavailable": "{{basis}} branch is unavailable ({{status}} · {{reason}}).",
+      "scenariosTitle": "Three-Scenario Intrinsic Price per Share (Stage 1 Growth ±3 ppt)",
+      "conservative": "Conservative (h - 3%)",
+      "base": "Base (h)",
+      "optimistic": "Optimistic (h + 3%)",
+      "stage1Growth": "Years 1–5 CAGR: {{value}}",
+      "vsCurrentPrice": "{{value}} vs. current price",
+      "impliedEquityValue": "Implied Equity Value: {{value}}",
+      "reverseTitle": "Reverse DCF (Market-Implied Growth)",
+      "expectationStretchedBadge": "Market Expectation Stretched",
+      "impliedCagrLabel": "Implied Years 1–5 FCF CAGR",
+      "benchmarkLabel": "Benchmark Growth Rate",
+      "expectationGapLabel": "Implied vs. Benchmark Gap",
+      "reverseStretchedHint": "Current price implies 5-year FCF CAGR more than 5 ppt above the historical/forward benchmark—review expectation risk carefully.",
+      "reverseAlignedHint": "Market-implied growth sits within a reasonable range of the benchmark; evaluate alongside relative valuation bands and technical structure.",
+      "reverseNoBenchmarkHint": "No comparable historical or forward growth benchmark is available yet; evaluate implied growth independently alongside business fundamentals.",
+      "reverseUnavailable": "Reverse DCF is unavailable ({{status}} · {{reason}}).",
+      "assumptions": {
+        "discountRate": "Discount Rate r: {{value}}",
+        "riskFree": "10Y Treasury: {{value}} ({{date}})",
+        "erp": "ERP: {{value}}",
+        "terminalGrowth": "Terminal g: {{value}}",
+        "baseFcf": "Base TTM FCF: {{value}}"
+      },
+      "benchmarkSources": {
+        "HISTORICAL_FCF_CAGR_3Y": "3Y Historical FCF CAGR",
+        "HISTORICAL_REVENUE_CAGR_3Y": "3Y Historical Revenue CAGR",
+        "FORWARD_EXPECTED_GROWTH": "Forward Consensus Growth",
+        "DEFAULT_GROWTH": "Default Baseline Growth"
+      }
     }
   },
   "upload": {
     "title": "Data Upload",
     "type": "Upload function",
-    "types": { "STOCK_INDUSTRY": "Stock industry update" },
+    "types": {
+      "STOCK_INDUSTRY": "Stock industry update"
+    },
     "typesLoading": "Loading upload functions…",
     "typesEmpty": "No upload functions are available.",
     "typesFailed": "Unable to load upload functions. Refresh the page to try again.",
@@ -871,5 +1560,15 @@
       "MARKET_REGIME_SHIFT": "Market regime shifted from {{previousRegime}} to {{currentRegime}} since {{previousTradeDate}}",
       "DAILY_CLOSING_BRIEFING": "{{tradeDate}} closing briefing ready: {{criticalCount}} critical · {{warningCount}} warning · {{radarTop5Count}} radar picks"
     }
+  },
+  "stockScreener": {
+    "assetTypeLabel": "Asset Type",
+    "assetTypes": {
+      "STOCK": "Stocks (incl. ADRs)",
+      "ETF": "ETF / ETP",
+      "ALL": "All Assets"
+    },
+    "etfTechnicalChip": "ETF Technicals",
+    "etfTechnicalStatus": "Technical & Flow Mode"
   }
 }

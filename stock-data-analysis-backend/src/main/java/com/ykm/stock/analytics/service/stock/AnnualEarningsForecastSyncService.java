@@ -370,12 +370,22 @@ public class AnnualEarningsForecastSyncService {
         return CURRENCY_USD.equalsIgnoreCase(stock.getCurrency());
     }
 
-    /** 僅認可來自富途原始財報或 SEC 金額事實之明確 USD 證據，不依賴 StockFinancialPeriod 由掛牌幣別回填的欄位。 */
+    /** 僅認可來自富途最近多份原始財報或 SEC 金額事實之 100% 純 USD 證據（同報期任一報表含非美元即拒收），防止混幣污染 Forward P/S。 */
     private boolean hasAuthoritativeUsdReportingCurrency(Stock stock) {
-        List<String> reportCurrencies = financialReports.findLatestReportCurrencies(stock.getFigi(), PageRequest.of(0, 1));
+        List<String> reportCurrencies = financialReports.findLatestReportCurrencies(stock.getFigi(), PageRequest.of(0, 12));
         if (reportCurrencies != null && !reportCurrencies.isEmpty()) {
-            String latestCurrency = reportCurrencies.getFirst();
-            return latestCurrency != null && CURRENCY_USD.equalsIgnoreCase(latestCurrency.trim());
+            boolean sawUsd = false;
+            for (String currency : reportCurrencies) {
+                if (currency == null || currency.isBlank()) {
+                    continue;
+                }
+                if (CURRENCY_USD.equalsIgnoreCase(currency.trim())) {
+                    sawUsd = true;
+                } else {
+                    return false;
+                }
+            }
+            return sawUsd;
         }
         if (stock.getCik() == null || stock.getCik().isBlank()) {
             return false;

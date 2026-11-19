@@ -25,13 +25,15 @@ import java.util.Set;
 public class FinancialReportValuationCalculator {
     private static final MathContext MC = MathContext.DECIMAL128;
     private static final Set<FinancialConcept> ADDITIVE_FLOWS = Set.of(FinancialConcept.REVENUE_AS_REPORTED,
-            FinancialConcept.OPERATING_REVENUE, FinancialConcept.NET_INCOME_COMMON, FinancialConcept.NET_INCOME_PARENT,
-            FinancialConcept.NET_PROFIT, FinancialConcept.OPERATING_PROFIT, FinancialConcept.OPERATING_CASH_FLOW, FinancialConcept.CAPITAL_EXPENDITURE,
+            FinancialConcept.OPERATING_REVENUE, FinancialConcept.GROSS_PROFIT, FinancialConcept.NET_INCOME_COMMON, FinancialConcept.NET_INCOME_PARENT,
+            FinancialConcept.NET_PROFIT, FinancialConcept.OPERATING_PROFIT, FinancialConcept.PRETAX_PROFIT,
+            FinancialConcept.OPERATING_CASH_FLOW, FinancialConcept.CAPITAL_EXPENDITURE,
             FinancialConcept.FREE_CASH_FLOW, FinancialConcept.INCOME_TAX_EXPENSE, FinancialConcept.INTEREST_EXPENSE_AS_REPORTED,
             FinancialConcept.NONOPERATING_INTEREST_EXPENSE, FinancialConcept.INCOME_DEPRECIATION,
             FinancialConcept.INCOME_AMORTIZATION, FinancialConcept.INCOME_DEPLETION,
             FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION,
-            FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION);
+            FinancialConcept.CASH_FLOW_DEPRECIATION_AMORTIZATION_DEPLETION,
+            FinancialConcept.SBC, FinancialConcept.CASH_DIVIDENDS_PAID, FinancialConcept.NET_COMMON_STOCK_ISSUANCE);
 
     private record ItemKey(int statementType, String name) {}
 
@@ -45,6 +47,7 @@ public class FinancialReportValuationCalculator {
         // 1: 損益表（一般工商 8xxx、銀行 9xxx、保險 10xxx）
         registerFields(map, 1, FinancialConcept.REVENUE_AS_REPORTED, 8001L, 9001L, 10001L);
         registerFields(map, 1, FinancialConcept.OPERATING_REVENUE, 8002L, 9002L, 10002L);
+        registerFields(map, 1, FinancialConcept.GROSS_PROFIT, 8004L);
         registerFields(map, 1, FinancialConcept.OPERATING_PROFIT, 8017L);
         registerFields(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION, 8011L, 9022L);
         registerFields(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, 8012L, 9023L, 10023L);
@@ -73,6 +76,9 @@ public class FinancialReportValuationCalculator {
         registerFields(map, 2, FinancialConcept.RESTRICTED_CASH, 8018L);
         registerFields(map, 2, FinancialConcept.RESTRICTED_CASH_AND_INVESTMENTS, 9005L);
         registerFields(map, 2, FinancialConcept.RESTRICTED_CASH_AND_EQUIVALENTS, 10003L);
+        registerFields(map, 2, FinancialConcept.GOODWILL_AND_INTANGIBLES, 8039L, 9026L, 10025L);
+        registerFields(map, 2, FinancialConcept.GOODWILL, 8040L, 9027L, 10026L);
+        registerFields(map, 2, FinancialConcept.INTANGIBLE_ASSETS, 8041L, 9028L, 10027L);
         registerFields(map, 2, FinancialConcept.TOTAL_LIABILITIES, 8048L, 9040L, 10037L);
         registerFields(map, 2, FinancialConcept.BANK_DEPOSITS, 9041L, 10039L);
         registerFields(map, 2, FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES, 9042L);
@@ -100,6 +106,8 @@ public class FinancialReportValuationCalculator {
         registerFields(map, 3, FinancialConcept.CAPITAL_EXPENDITURE, 8044L, 9049L, 10050L);
         registerFields(map, 3, FinancialConcept.NET_PPE_CASH_FLOW, 8046L, 9050L, 10051L);
         registerFields(map, 3, FinancialConcept.NET_INTANGIBLES_CASH_FLOW, 8047L, 9051L, 10052L);
+        registerFields(map, 3, FinancialConcept.NET_COMMON_STOCK_ISSUANCE, 8059L, 9065L, 10065L);
+        registerFields(map, 3, FinancialConcept.CASH_DIVIDENDS_PAID, 8061L, 9067L, 10067L);
         registerFields(map, 3, FinancialConcept.FREE_CASH_FLOW, 8072L, 9078L, 10078L);
         return Map.copyOf(map);
     }
@@ -108,6 +116,7 @@ public class FinancialReportValuationCalculator {
         Map<ItemKey, FinancialConcept> map = new HashMap<>();
         registerNames(map, 1, FinancialConcept.REVENUE_AS_REPORTED, "Total Revenue as Reported");
         registerNames(map, 1, FinancialConcept.OPERATING_REVENUE, "Total Operating Revenue");
+        registerNames(map, 1, FinancialConcept.GROSS_PROFIT, "Gross Profit");
         registerNames(map, 1, FinancialConcept.OPERATING_PROFIT, "Operating Profit");
         registerNames(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION, "Depreciation & Amortization & Depletion");
         registerNames(map, 1, FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, "-Depreciation & Amortization", "Depreciation & Amortization");
@@ -135,6 +144,9 @@ public class FinancialReportValuationCalculator {
         registerNames(map, 2, FinancialConcept.RESTRICTED_CASH, "Restricted Cash");
         registerNames(map, 2, FinancialConcept.RESTRICTED_CASH_AND_INVESTMENTS, "-Restricted Cash and Investments");
         registerNames(map, 2, FinancialConcept.RESTRICTED_CASH_AND_EQUIVALENTS, "Restricted Cash and Cash Equivalents");
+        registerNames(map, 2, FinancialConcept.GOODWILL_AND_INTANGIBLES, "Goodwill and Other Intangible Assets");
+        registerNames(map, 2, FinancialConcept.GOODWILL, "-Goodwill", "Goodwill");
+        registerNames(map, 2, FinancialConcept.INTANGIBLE_ASSETS, "-Other Intangible Assets", "Other Intangible Assets");
         registerNames(map, 2, FinancialConcept.TOTAL_LIABILITIES, "Total Liabilities");
         registerNames(map, 2, FinancialConcept.BANK_DEPOSITS, "Total Deposits");
         registerNames(map, 2, FinancialConcept.FEDERAL_FUNDS_AND_REPO_LIABILITIES,
@@ -163,6 +175,8 @@ public class FinancialReportValuationCalculator {
         registerNames(map, 3, FinancialConcept.CAPITAL_EXPENDITURE, "Capital Expenditure");
         registerNames(map, 3, FinancialConcept.NET_PPE_CASH_FLOW, "Net PPE Purchase and Sale");
         registerNames(map, 3, FinancialConcept.NET_INTANGIBLES_CASH_FLOW, "Net Intangibles Purchase and Sale");
+        registerNames(map, 3, FinancialConcept.NET_COMMON_STOCK_ISSUANCE, "Net Common Stock Issuance");
+        registerNames(map, 3, FinancialConcept.CASH_DIVIDENDS_PAID, "Cash Dividends Paid");
         registerNames(map, 3, FinancialConcept.FREE_CASH_FLOW, "Free Cash Flow");
         for (FinancialConcept concept : FinancialConcept.values()) {
             for (int statementType : new int[]{1, 2, 3}) {
@@ -370,6 +384,18 @@ public class FinancialReportValuationCalculator {
             if (capex.value() == null) return capex;
             return MetricResult.available(capex.value().abs());
         }
+        if (concept == FinancialConcept.CASH_DIVIDENDS_PAID) {
+            MetricResult<BigDecimal> div = report.value(FinancialConcept.CASH_DIVIDENDS_PAID);
+            if (div.value() == null) return div;
+            return MetricResult.available(div.value().signum() < 0 ? div.value().negate() : div.value());
+        }
+        if (concept == FinancialConcept.INTEREST_EXPENSE_AS_REPORTED) {
+            MetricResult<BigDecimal> direct = report.value(FinancialConcept.INTEREST_EXPENSE_AS_REPORTED);
+            if (direct.status() == MetricStatus.UNVERIFIED) return direct;
+            MetricResult<BigDecimal> selected = direct.value() != null ? direct : report.value(FinancialConcept.NONOPERATING_INTEREST_EXPENSE);
+            if (selected.value() == null) return selected;
+            return MetricResult.available(selected.value().signum() < 0 ? selected.value().negate() : selected.value());
+        }
         if (concept != FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION) return report.value(concept);
         MetricResult<BigDecimal> dda = report.value(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION_DEPLETION);
         if (dda.status() == MetricStatus.UNVERIFIED || dda.value() != null) return dda;
@@ -476,6 +502,36 @@ public class FinancialReportValuationCalculator {
             return MetricResult.available(total.value().subtract(parent.value(), MC));
         }
         return hasBalanceAnchor(balance) ? MetricResult.available(BigDecimal.ZERO) : minority;
+    }
+
+    /** 期末商譽與無形資產合計：優先採權威合計項，缺合計時以商譽加不含商譽無形資產合成（避免雙重扣除）；兩者皆缺回傳缺失不預設補零。 */
+    public MetricResult<BigDecimal> goodwillAndIntangibles(ReportValues balance) {
+        MetricResult<BigDecimal> combined = balance.value(FinancialConcept.GOODWILL_AND_INTANGIBLES);
+        if (combined.status() == MetricStatus.UNVERIFIED) return combined;
+        if (combined.value() != null) {
+            return combined.value().signum() < 0 ? unverified("GOODWILL_INTANGIBLES_NEGATIVE") : combined;
+        }
+        MetricResult<BigDecimal> goodwill = balance.value(FinancialConcept.GOODWILL);
+        MetricResult<BigDecimal> intangibles = balance.value(FinancialConcept.INTANGIBLE_ASSETS);
+        if (goodwill.status() == MetricStatus.UNVERIFIED) return goodwill;
+        if (intangibles.status() == MetricStatus.UNVERIFIED) return intangibles;
+        if (goodwill.value() != null || intangibles.value() != null) {
+            BigDecimal gw = goodwill.value() == null ? BigDecimal.ZERO : goodwill.value();
+            BigDecimal ia = intangibles.value() == null ? BigDecimal.ZERO : intangibles.value();
+            if (gw.signum() < 0 || ia.signum() < 0) return unverified("GOODWILL_INTANGIBLES_NEGATIVE");
+            return MetricResult.available(gw.add(ia, MC));
+        }
+        return missing("GOODWILL_INTANGIBLES_MISSING");
+    }
+
+    /** 期末顯式短期計息債務（供短期流動性覆蓋率使用；缺披露回傳缺失，不沿用 EV 缺短借視為 0 之規則）。 */
+    public MetricResult<BigDecimal> explicitCurrentDebt(ReportValues balance) {
+        MetricResult<BigDecimal> pure = balance.value(FinancialConcept.CURRENT_DEBT);
+        if (pure.status() == MetricStatus.UNVERIFIED) return pure;
+        if (pure.value() != null) return pure;
+        MetricResult<BigDecimal> combined = balance.value(FinancialConcept.CURRENT_DEBT_AND_LEASES);
+        if (combined.status() == MetricStatus.UNVERIFIED || combined.value() != null) return combined;
+        return missing("CURRENT_DEBT_MISSING");
     }
 
     private MetricResult<BigDecimal> totalDebt(ReportValues balance, boolean ifrs) {

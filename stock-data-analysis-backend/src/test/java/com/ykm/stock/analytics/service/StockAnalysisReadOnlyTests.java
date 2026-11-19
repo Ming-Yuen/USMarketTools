@@ -301,6 +301,80 @@ class StockAnalysisReadOnlyTests {
         assertThat(plan.positionSizing().suggestedShares()).isNull();
     }
 
+    @Test
+    void etfAnalysisSkipsValuationAndCompanyEarningsLockWhileReturningTechnicalPlanAndSummary() {
+        Stock etf = new Stock();
+        etf.setFigi("ETF_QQQ");
+        etf.setSymbol("QQQ");
+        etf.setLongName("Invesco QQQ Trust");
+        etf.setCurrency("USD");
+        etf.setStockType("ETF");
+        when(stocks.findById("ETF_QQQ")).thenReturn(Optional.of(etf));
+
+        Instant confirmedAt = CLOSE.minusSeconds(86400);
+        when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
+        NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("500"), new BigDecimal("505"), new BigDecimal("498"), new BigDecimal("502"),
+                MetricResult.available(BigDecimal.ONE), CLOSE.minusSeconds(23400), CLOSE, CLOSE, CLOSE, null, "BASIS");
+        PriceBasisDescriptor basis = new PriceBasisDescriptor("BASIS", "STORED_QUOTES", PriceAdjustment.SPLIT_ADJUSTED, DAY,
+                null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, "USD", true, null);
+        NormalizedPriceSeriesDto price = new NormalizedPriceSeriesDto("ETF_QQQ", "DAILY", List.of(bar), basis, null, MetricStatus.AVAILABLE, List.of(), null);
+        MetricResult<StructureTrendDto> trend = MetricResult.available(new StructureTrendDto(TrendState.UPTREND, confirmedAt, PriceRelation.HH, PriceRelation.HL, List.of(), confirmedAt));
+        AtrPointDto atr = new AtrPointDto(DAY, 14, new BigDecimal("8"), null, DAY.minusYears(1), 14, 100);
+        TimeframeStructureDto frame = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar), MetricResult.available(atr), List.of(), List.of(),
+                MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL), trend, trend, List.of(), List.of());
+        PriceStructureDto structure = new PriceStructureDto("ETF_QQQ", null, DAY, List.of(frame), List.of(), List.of());
+        SupportResistanceDto zones = new SupportResistanceDto(List.of(zone("S_ETF", "495", "505", ZoneRole.SUPPORT, confirmedAt)),
+                List.of(zone("R_ETF", "535", "540", ZoneRole.RESISTANCE, confirmedAt)), List.of(), List.of(), List.of(), List.of());
+        MarketContextDto background = new MarketContextDto(null, null, null, List.of(), new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()), List.of(), List.of());
+
+        when(prices.normalize(any(), any(), any())).thenReturn(MetricResult.available(price));
+        when(structures.analyze(any(), same(price))).thenReturn(MetricResult.available(structure));
+        when(market.evaluate(any(), same(price), same(structure), eq(List.of()), eq(true))).thenReturn(MetricResult.available(background));
+        when(levels.analyze(any(), same(price), same(structure), same(background))).thenReturn(MetricResult.available(zones));
+
+        ExecutionCostCalculator costs = new ExecutionCostCalculator();
+        TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
+        StockAnalysisService etfService = new StockAnalysisService(
+                stocks, industries, marketEvents, calendar, clock, prices, structures, levels, realPlans, market,
+                stockObservations, stockValuations, sectorMoneyFlowService, portfolioManagementService, positionSizingCalculator);
+
+        StockAnalysisReportDto report = etfService.analyze(new AnalysisReportRequest("ETF_QQQ", DAY, AnalysisHorizon.SWING));
+
+        assertThat(report.stockType()).isEqualTo("ETF");
+        assertThat(report.valuation().status()).isEqualTo(MetricStatus.NOT_APPLICABLE.name());
+        assertThat(report.valuation().reasonCode()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
+        assertThat(report.dcf().status()).isEqualTo(MetricStatus.NOT_APPLICABLE.name());
+        assertThat(report.dcf().reasonCode()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
+        assertThat(report.summary().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(report.summary().value().verdict()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
+        assertThat(report.tradePlans().status()).isEqualTo(MetricStatus.AVAILABLE);
+        assertThat(report.tradePlans().value().plans()).isNotEmpty();
+        verifyNoInteractions(stockValuations);
+        verify(marketEvents, never()).findVisiblePastEarnings(any(), any(), any());
+        verify(market).evaluate(any(), same(price), same(structure), eq(List.of()), eq(true));
+    }
+
+    @Test
+    void etfWithIncompleteFiveYearPriceStillPreservesTargetCloseAndReturnsInsufficientDataSummary() {
+        Stock etf = new Stock();
+        etf.setFigi("ETF_GAP");
+        etf.setSymbol("SOXX");
+        etf.setLongName("iShares Semiconductor ETF");
+        etf.setCurrency("USD");
+        etf.setStockType("ETF");
+        when(stocks.findById("ETF_GAP")).thenReturn(Optional.of(etf));
+        when(prices.normalize(any(), any(), any())).thenReturn(
+                MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("PRICE_SESSIONS_MISSING", "PRICE", "gap")));
+        when(prices.findStoredClosePrice("ETF_GAP", DAY)).thenReturn(new BigDecimal("218.40"));
+
+        StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("ETF_GAP", DAY, AnalysisHorizon.POSITION));
+
+        assertThat(report.valuation().status()).isEqualTo("NOT_APPLICABLE");
+        assertThat(report.valuation().price()).isEqualByComparingTo("218.40");
+        assertThat(report.dcf().currentPrice()).isEqualByComparingTo("218.40");
+        assertThat(report.summary().status()).isEqualTo(MetricStatus.INSUFFICIENT_DATA);
+    }
+
     private StockAnalysisReportDto assembledReport(boolean hasValuation, boolean hasResistance) {
         ValuationResultDto valuation = new ValuationResultDto(
                 "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", null, "AVAILABLE", null,

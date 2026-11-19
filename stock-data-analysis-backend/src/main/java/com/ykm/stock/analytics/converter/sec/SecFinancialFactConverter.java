@@ -57,6 +57,13 @@ public class SecFinancialFactConverter {
             "CapitalLeaseObligations", "CapitalLeaseObligationsCurrent", "CapitalLeaseObligationsNoncurrent",
             "Assets", "Liabilities",
             "OperatingIncomeLoss", "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
+            "GrossProfit",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeTaxExpenseBenefit",
+            "InterestExpense", "InterestExpenseDebt",
+            "ShareBasedCompensation", "AllocatedShareBasedCompensationExpense",
+            "PaymentsOfDividendsCommonStock", "PaymentsOfDividends", "PaymentsForRepurchaseOfCommonStock",
+            "Goodwill", "IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet",
             "Depreciation", "AmortizationOfIntangibleAssets", DEPRECIATION_DEPLETION_AMORTIZATION,
             DEPRECIATION_AMORTIZATION, DEPRECIATION_AMORTIZATION_ACCRETION);
 

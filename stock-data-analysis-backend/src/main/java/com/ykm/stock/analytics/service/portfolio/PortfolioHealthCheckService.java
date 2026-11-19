@@ -36,6 +36,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.Po
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.SectorExposureDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.WatchlistOpportunityDto;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.DailyClosingBriefing;
 import com.ykm.stock.analytics.model.entity.InAppNotification;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
@@ -47,6 +48,7 @@ import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyClosingBriefingRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository.FigiKnownReportPeriod;
@@ -66,12 +68,16 @@ import com.ykm.stock.analytics.service.analysis.MarketContextService;
 import com.ykm.stock.analytics.service.analysis.MarketContextService.PreloadedMarketData;
 import com.ykm.stock.analytics.service.analysis.PriceStructureService;
 import com.ykm.stock.analytics.service.analysis.QuoteNormalizationService;
+import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.SupportResistanceService;
 import com.ykm.stock.analytics.service.analysis.TradePlanService;
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator.SizingInputs;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator.RadarEvaluationResult;
+import com.ykm.stock.analytics.service.market.FxRateService;
+import com.ykm.stock.analytics.service.market.FxRateService.FxRateLookup;
+import com.ykm.stock.analytics.service.market.FxRateService.FxResolution;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioSplitAligner.AlignedPosition;
 import com.ykm.stock.analytics.service.portfolio.PortfolioSplitAligner.AlignedPrice;
@@ -81,7 +87,7 @@ import com.ykm.stock.analytics.service.valuation.FundamentalSnapshotCalculator;
 import com.ykm.stock.analytics.service.valuation.IndustryValuationProposalService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService.DayEpsResolution;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -112,7 +118,6 @@ import java.util.stream.Collectors;
  * 3. 事前參考止損與 T1/T2 均自上一份已發布簡報對齊拆股後比對，不回頭捏造當日剛產生的目標已觸及。
  */
 @Service
-@RequiredArgsConstructor
 public class PortfolioHealthCheckService {
     public static final String SOURCE_MODE_CLOSING_SNAPSHOT = "CLOSING_SNAPSHOT";
     public static final String SOURCE_MODE_LIVE = "LIVE";
@@ -161,10 +166,98 @@ public class PortfolioHealthCheckService {
     private final MarketStatusService calendar;
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactions;
+    private final FxRateService fxRateService;
+    private final AdrShareRatioRepository adrShareRatios;
 
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
     private final ForwardValuationCalculator forwardCalculator = new ForwardValuationCalculator();
+
+    public PortfolioHealthCheckService(
+            PortfolioItemRepository portfolioItemRepository,
+            PortfolioRiskConfigService riskConfigService,
+            DailyClosingBriefingRepository briefingRepository,
+            StockRepository stockRepository,
+            StockStatusRepository stockStatusRepository,
+            StockQuoteRepository stockQuoteRepository,
+            StockSplitRepository stockSplitRepository,
+            StockValuationLatestRepository latestValuations,
+            StockFinancialPeriodRepository financialPeriods,
+            FinancialReportRepository financialReports,
+            StockEarningsForecastRepository forecasts,
+            MarketEventRepository marketEvents,
+            StockIndustryHistoryRepository industryHistories,
+            QuoteNormalizationService quoteNormalization,
+            PriceStructureService priceStructures,
+            MarketContextService marketContextService,
+            SupportResistanceService supportResistanceService,
+            TradePlanService tradePlanService,
+            PortfolioSplitAligner splitAligner,
+            PositionSizingCalculator positionSizingCalculator,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            TransactionTemplate transactions) {
+        this(portfolioItemRepository, riskConfigService, briefingRepository, stockRepository,
+                stockStatusRepository, stockQuoteRepository, stockSplitRepository, latestValuations,
+                financialPeriods, financialReports, forecasts, marketEvents, industryHistories,
+                quoteNormalization, priceStructures, marketContextService, supportResistanceService,
+                tradePlanService, splitAligner, positionSizingCalculator, calendar, dateTimeService,
+                transactions, null, null);
+    }
+
+    @Autowired
+    public PortfolioHealthCheckService(
+            PortfolioItemRepository portfolioItemRepository,
+            PortfolioRiskConfigService riskConfigService,
+            DailyClosingBriefingRepository briefingRepository,
+            StockRepository stockRepository,
+            StockStatusRepository stockStatusRepository,
+            StockQuoteRepository stockQuoteRepository,
+            StockSplitRepository stockSplitRepository,
+            StockValuationLatestRepository latestValuations,
+            StockFinancialPeriodRepository financialPeriods,
+            FinancialReportRepository financialReports,
+            StockEarningsForecastRepository forecasts,
+            MarketEventRepository marketEvents,
+            StockIndustryHistoryRepository industryHistories,
+            QuoteNormalizationService quoteNormalization,
+            PriceStructureService priceStructures,
+            MarketContextService marketContextService,
+            SupportResistanceService supportResistanceService,
+            TradePlanService tradePlanService,
+            PortfolioSplitAligner splitAligner,
+            PositionSizingCalculator positionSizingCalculator,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            TransactionTemplate transactions,
+            FxRateService fxRateService,
+            AdrShareRatioRepository adrShareRatios) {
+        this.portfolioItemRepository = portfolioItemRepository;
+        this.riskConfigService = riskConfigService;
+        this.briefingRepository = briefingRepository;
+        this.stockRepository = stockRepository;
+        this.stockStatusRepository = stockStatusRepository;
+        this.stockQuoteRepository = stockQuoteRepository;
+        this.stockSplitRepository = stockSplitRepository;
+        this.latestValuations = latestValuations;
+        this.financialPeriods = financialPeriods;
+        this.financialReports = financialReports;
+        this.forecasts = forecasts;
+        this.marketEvents = marketEvents;
+        this.industryHistories = industryHistories;
+        this.quoteNormalization = quoteNormalization;
+        this.priceStructures = priceStructures;
+        this.marketContextService = marketContextService;
+        this.supportResistanceService = supportResistanceService;
+        this.tradePlanService = tradePlanService;
+        this.splitAligner = splitAligner;
+        this.positionSizingCalculator = positionSizingCalculator;
+        this.calendar = calendar;
+        this.dateTimeService = dateTimeService;
+        this.transactions = transactions;
+        this.fxRateService = fxRateService;
+        this.adrShareRatios = adrShareRatios;
+    }
 
     /** 單次體檢的完整結果（含可複用之大盤快照與 USD 曝險分佈，供收盤簡報進一步計算雷達前 5 名股數）。 */
     public record HealthEvaluationOutput(
@@ -196,7 +289,9 @@ public class PortfolioHealthCheckService {
             Map<String, List<MarketEvent>> earningsByFigi,
             Map<String, List<StockEarningsForecast>> forecastsByFigi,
             Map<String, List<StockFinancialPeriod>> periodsByFigi,
-            Map<String, List<KnownReportPeriod>> knownReportsByFigi
+            Map<String, List<KnownReportPeriod>> knownReportsByFigi,
+            FxRateLookup fxLookup,
+            Map<String, AdrShareRatio> adrBySymbol
     ) {}
 
     private record PriorHoldingReference(
@@ -437,7 +532,8 @@ public class PortfolioHealthCheckService {
             if (items.isEmpty()) {
                 return new LoadedInputs(items, config, priorBriefing,
                         Map.of(), Map.of(), Map.of(), Map.of(),
-                        Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+                        Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                        FxRateLookup.EMPTY, Map.of());
             }
 
             List<String> allFigis = items.stream().map(PortfolioItem::getFigi).distinct().toList();
@@ -486,10 +582,13 @@ public class PortfolioHealthCheckService {
                 }
             }
 
+            FxRateLookup fxLookup = preloadFxLookup(periodsByFigi, effectiveDate);
+            Map<String, AdrShareRatio> adrBySymbol = preloadAdrRatios(stocksByFigi);
             return new LoadedInputs(
                     items, config, priorBriefing,
                     stocksByFigi, statusByFigi, valuationByFigi, industryByFigi,
-                    quotesByFigi, splitsByFigi, earningsByFigi, forecastsByFigi, periodsByFigi, knownReportsByFigi
+                    quotesByFigi, splitsByFigi, earningsByFigi, forecastsByFigi, periodsByFigi, knownReportsByFigi,
+                    fxLookup, adrBySymbol
             );
         });
     }
@@ -658,13 +757,25 @@ public class PortfolioHealthCheckService {
 
         StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, targetDate);
         String splitError = StockValuationService.splitSyncError(pre.status());
-        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate);
+        boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
+        AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
+                ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
+        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
+                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
+        FxResolution fxRes = resolveFxForStock(loaded.fxLookup(), matchedPeriod, stock.getCurrency(), targetDate);
+        BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
+        String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
+                : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
+        DayEpsResolution epsResolution = (isAdr)
+                ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
+                : StockValuationService.resolveDayEps(stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate, fxRateToQuote);
         String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 stockPeriods, matchedPeriod, stockSplits, targetDate, stock.getCurrency(),
                 evalPrice, valuationFresh ? v.getMarketCap() : null, null, epsResolution.epsAtDay(), peReason,
-                valuationFresh ? v.getPe() : null, financialInstitution, splitError));
+                valuationFresh ? v.getPe() : null, financialInstitution, splitError,
+                fxRateToQuote, valuationBlockedReason, verifiedAdr));
         FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
                 targetDate, obsCutoff, maxAnnualObsDate, stock.getCurrency(), evalPrice,
                 valuationFresh ? v.getMarketCap() : null, epsResolution.epsAtDay(), peReason,
@@ -1009,13 +1120,25 @@ public class PortfolioHealthCheckService {
         List<StockEarningsForecast> stockForecasts = loaded.forecastsByFigi().getOrDefault(figi, List.of());
         StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, targetDate);
         String splitError = StockValuationService.splitSyncError(status);
-        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(stock.getCurrency(), status, matchedPeriod, stockSplits, targetDate);
+        boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
+        AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
+                ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
+        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
+                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
+        FxResolution fxRes = resolveFxForStock(loaded.fxLookup(), matchedPeriod, stock.getCurrency(), targetDate);
+        BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
+        String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
+                : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
+        DayEpsResolution epsResolution = (isAdr)
+                ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
+                : StockValuationService.resolveDayEps(stock.getCurrency(), status, matchedPeriod, stockSplits, targetDate, fxRateToQuote);
         String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 stockPeriods, matchedPeriod, stockSplits, targetDate, stock.getCurrency(),
                 evalPrice, valuationFresh ? v.getMarketCap() : null, null, epsResolution.epsAtDay(), peReason,
-                valuationFresh ? v.getPe() : null, financialInstitution, splitError));
+                valuationFresh ? v.getPe() : null, financialInstitution, splitError,
+                fxRateToQuote, valuationBlockedReason, verifiedAdr));
         FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
                 targetDate, obsCutoff, maxAnnualObsDate, stock.getCurrency(), evalPrice,
                 valuationFresh ? v.getMarketCap() : null, epsResolution.epsAtDay(), peReason,
@@ -1536,6 +1659,62 @@ public class PortfolioHealthCheckService {
         }
         ForwardMetrics forwardMetrics = forwardCalculator.calculate(calcInputs, revHistory);
         return new FutuObservationsDto(null, List.of(), forwardMetrics);
+    }
+
+    private FxRateLookup preloadFxLookup(Map<String, List<StockFinancialPeriod>> periodsByFigi, LocalDate effectiveDate) {
+        if (fxRateService == null || periodsByFigi == null || periodsByFigi.isEmpty() || effectiveDate == null) {
+            return FxRateLookup.EMPTY;
+        }
+        Set<String> currencies = new LinkedHashSet<>();
+        for (List<StockFinancialPeriod> list : periodsByFigi.values()) {
+            for (StockFinancialPeriod p : list) {
+                if (p != null && p.getReportingCurrency() != null && !p.getReportingCurrency().isBlank()
+                        && !"USD".equalsIgnoreCase(p.getReportingCurrency().trim())) {
+                    currencies.add(p.getReportingCurrency().trim().toUpperCase(java.util.Locale.ROOT));
+                }
+            }
+        }
+        if (currencies.isEmpty()) {
+            return FxRateLookup.EMPTY;
+        }
+        return fxRateService.preload(currencies, effectiveDate, effectiveDate);
+    }
+
+    private Map<String, AdrShareRatio> preloadAdrRatios(Map<String, Stock> stocksByFigi) {
+        if (adrShareRatios == null || stocksByFigi == null || stocksByFigi.isEmpty()) {
+            return Map.of();
+        }
+        List<String> adrSymbols = new ArrayList<>();
+        for (Stock s : stocksByFigi.values()) {
+            if (s != null && SecurityTypePolicy.isAdrType(s.getStockType())
+                    && s.getSymbol() != null && !s.getSymbol().isBlank()) {
+                adrSymbols.add(s.getSymbol().trim().toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+        if (adrSymbols.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, AdrShareRatio> out = new HashMap<>();
+        for (AdrShareRatio ratio : adrShareRatios.findBySymbolIn(adrSymbols)) {
+            if (ratio != null && ratio.getSymbol() != null) {
+                out.put(ratio.getSymbol().trim().toUpperCase(java.util.Locale.ROOT), ratio);
+            }
+        }
+        return out;
+    }
+
+    private FxResolution resolveFxForStock(FxRateLookup fxLookup, StockFinancialPeriod matchedPeriod,
+                                           String quoteCurrency, LocalDate targetDate) {
+        if (matchedPeriod == null || matchedPeriod.getReportingCurrency() == null || quoteCurrency == null) {
+            return null;
+        }
+        if (matchedPeriod.getReportingCurrency().trim().equalsIgnoreCase(quoteCurrency.trim())) {
+            return FxResolution.identity(quoteCurrency.trim().toUpperCase(java.util.Locale.ROOT));
+        }
+        if (fxLookup == null) {
+            return null;
+        }
+        return fxLookup.resolve(matchedPeriod.getReportingCurrency(), quoteCurrency, targetDate);
     }
 
     private int severityRank(String severity) {

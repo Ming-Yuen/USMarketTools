@@ -95,14 +95,20 @@ public class StockValuationDailyTask implements Job {
         log.info("Daily valuation refresh completed | valuationDate={} targets={} rebuiltPeriods={}",
                 targetDate, targetFigis.size(), toRebuild.size());
 
-        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標營運股當日行情批次已達覆蓋門檻（>= 95%）且估值就緒時，
-        //    串接板塊量價資金流、每日機會雷達（同交易原子寫入當日新訊號）與歷史訊號到期結算
+        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標普通營運股當日行情批次已達覆蓋門檻（>= 95%）且估值就緒時，
+        //    串接板塊量價資金流、每日機會雷達（同交易原子寫入當日新訊號）與歷史訊號到期結算（不讓未核實 ADR 拖累收盤流程）
         if (requestedDate == null && marketWideRun
                 && sectorMoneyFlowService != null && dailyOpportunityRadarService != null && signalTrackingService != null) {
-            long readyQuotes = targets.stream()
+            List<ActiveStockWithStatus> coverageBase = targets.stream()
+                    .filter(row -> row.stock() != null && com.ykm.stock.analytics.service.analysis.SecurityTypePolicy.isOperatingCompanyType(row.stock().getStockType()))
+                    .toList();
+            if (coverageBase.isEmpty()) {
+                coverageBase = targets;
+            }
+            long readyQuotes = coverageBase.stream()
                     .filter(row -> row.status() != null && targetDate.equals(row.status().getQuoteDate()))
                     .count();
-            boolean quotesBatchReady = readyQuotes * 100L >= (long) targets.size() * MIN_MARKET_QUOTE_COVERAGE_PCT;
+            boolean quotesBatchReady = readyQuotes * 100L >= (long) coverageBase.size() * MIN_MARKET_QUOTE_COVERAGE_PCT;
             LocalDate snapshotDate = resolveEffectiveSnapshotDate(targetDate);
             if (quotesBatchReady && targetDate.equals(snapshotDate)) {
                 sectorMoneyFlowService.refreshDaily(snapshotDate, startedAt);
@@ -120,7 +126,7 @@ public class StockValuationDailyTask implements Job {
                 }
             } else {
                 log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={}",
-                        targetDate, readyQuotes, targets.size(), snapshotDate);
+                        targetDate, readyQuotes, coverageBase.size(), snapshotDate);
             }
         }
 

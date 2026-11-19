@@ -13,6 +13,7 @@ import { AnalysisHorizon, AnalysisReportRequest, MetricResult, StockAnalysisRepo
 import { readableReason, reasonLabel, statusLabel, TechnicalIndicatorsPanel, ValuationReferencePanel } from "./AnalysisPanels";
 import { ExecutiveSummaryPanel } from "./ExecutiveSummaryPanel";
 import { FundamentalsPanel } from "./FundamentalsPanel";
+import { DcfValuationPanel } from "./DcfValuationPanel";
 import { FinancialsPanel, ValuationHistoryPanel } from "./ValuationPanels";
 import { FutuObservationPanels } from "./FutuObservationPanels";
 import { IndustryValuationProposalPanel } from "./IndustryValuationProposalPanel";
@@ -76,6 +77,8 @@ export function StockAnalysisPage() {
   });
   const report = reportQuery.data;
   const valuation = report?.valuation;
+  const fxConversion = valuation?.fxConversion ?? null;
+  const isEtf = report?.stockType === "ETF" || report?.stockType === "ETP" || valuation?.reasonCode === "NOT_APPLICABLE_FOR_ETF";
   const structure = valueOf(report?.priceStructure);
   const market = valueOf(report?.marketContext);
   const levels = valueOf(report?.supportResistance);
@@ -86,7 +89,22 @@ export function StockAnalysisPage() {
   return <Box sx={{ width: "100%", minWidth: 0 }}>
     <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ md: "center" }} spacing={2} sx={{ mb: 2 }}>
       <Box>
-        <Typography variant="h5" fontWeight={800}>{report?.symbol ?? figi} · 股票分析</Typography>
+        <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+          <Typography variant="h5" fontWeight={800}>
+            {report?.symbol ?? figi} · {isEtf ? t("analysisReport.etf.pageTitleSuffix") : "股票分析"}
+          </Typography>
+          {isEtf && <Chip size="small" color="info" label={t("analysisReport.etf.badge")} />}
+          {!isEtf && fxConversion?.adr && (
+            <Chip
+              size="small"
+              color={fxConversion.adrRatioVerified ? "primary" : "warning"}
+              variant="outlined"
+              label={fxConversion.adrRatioVerified
+                ? t("analysisReport.fxBanner.adrVerifiedChip", { ratio: fxConversion.adrRatio ?? "—" })
+                : t("analysisReport.fxBanner.adrUnverifiedChip")}
+            />
+          )}
+        </Stack>
         <Typography color="text.secondary">{report?.name ?? ""} · FIGI {figi}</Typography>
         {report && <Typography variant="caption" color="text.secondary">估值日：{report.valuationDate}
           {valuation?.analysisAsOf ? " · 分析切點（香港）：" + formatHongKongDateTime(valuation.analysisAsOf, "zh-HK") : ""}
@@ -125,8 +143,54 @@ export function StockAnalysisPage() {
         && Date.parse(valuation.sharesObservedAt) > Date.parse(valuation.analysisAsOf) && <Alert severity="info" sx={{ mb: 2 }}>
         收市估算使用收市後取得的股數。股數取得時間（香港）：{formatHongKongDateTime(valuation.sharesObservedAt, "zh-HK")}。
       </Alert>}
-      {valuation?.status !== "AVAILABLE" && <Alert severity="info" sx={{ mb: 2 }}>
+      {!isEtf && fxConversion && (fxConversion.converted || fxConversion.adr) && (
+        <Alert
+          severity={
+            (fxConversion.adr && !fxConversion.adrRatioVerified)
+            || (!fxConversion.converted && fxConversion.reportingCurrency && fxConversion.targetCurrency
+              && fxConversion.reportingCurrency !== fxConversion.targetCurrency)
+              ? "warning"
+              : "info"
+          }
+          sx={{ mb: 2 }}
+        >
+          {fxConversion.adr && !fxConversion.adrRatioVerified ? (
+            t("analysisReport.fxBanner.adrUnverifiedNotice", { symbol: report.symbol })
+          ) : fxConversion.converted ? (
+            t("analysisReport.fxBanner.convertedNotice", {
+              reportingCurrency: fxConversion.reportingCurrency ?? "—",
+              targetCurrency: fxConversion.targetCurrency ?? "USD",
+              rate: fxConversion.usdPerUnit != null ? fxConversion.usdPerUnit.toFixed(6) : "—",
+              rateDate: fxConversion.rateDate ?? "—",
+              source: fxConversion.fxSource ?? "—",
+              adrSuffix: fxConversion.adr && fxConversion.adrRatio != null
+                ? t("analysisReport.fxBanner.adrRatioSuffix", {
+                  ratio: fxConversion.adrRatio,
+                  underlying: fxConversion.underlyingSymbol ? ` (${fxConversion.underlyingSymbol})` : "",
+                })
+                : "",
+            })
+          ) : fxConversion.reportingCurrency && fxConversion.targetCurrency
+            && fxConversion.reportingCurrency !== fxConversion.targetCurrency ? (
+              t("analysisReport.fxBanner.fxUnavailableNotice", {
+                reportingCurrency: fxConversion.reportingCurrency,
+                targetCurrency: fxConversion.targetCurrency,
+              })
+            ) : (
+              t("analysisReport.fxBanner.adrUsdNotice", {
+                symbol: report.symbol,
+                reportingCurrency: fxConversion.reportingCurrency ?? fxConversion.targetCurrency ?? "USD",
+                ratio: fxConversion.adrRatio ?? "—",
+                underlying: fxConversion.underlyingSymbol ? ` (${fxConversion.underlyingSymbol})` : "",
+              })
+            )}
+        </Alert>
+      )}
+      {!isEtf && valuation?.status !== "AVAILABLE" && <Alert severity="info" sx={{ mb: 2 }}>
         估值狀態：{statusLabel(valuation?.status)} · {reasonLabel(t, valuation?.reasonCode)}。個別可用指標仍會顯示。
+      </Alert>}
+      {isEtf && <Alert severity="info" sx={{ mb: 2 }}>
+        {t("analysisReport.etf.bannerNotice")}
       </Alert>}
 
       {/* L1. 置頂首屏：綜合估值位置、參考價帶標尺、觀察傾向與當期核心估值倍數 */}
@@ -148,18 +212,21 @@ export function StockAnalysisPage() {
         onHorizonChange={setHorizon}
       />
 
-      {/* L3. 估值與基本面證據層（歷史參考、同業參考與人工產業假設三個獨立面板並列，緊接基本面與歷史走勢圖） */}
-      <Grid container spacing={2} sx={{ mt: 0.5 }}>
-        <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="歷史市場估值參考" description="比較這隻股票過去實際市場給予的估值倍數。" reference={valuation?.historicalReference} currency={valuation?.currency} /></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="同業市場估值參考" description="比較可比公司的實際市場倍數；優先採用自訂對標或同市值量級對手，樣本不足時依序放寬。" reference={valuation?.peerReference} currency={valuation?.currency} figi={figi} symbol={report?.symbol} fundamentals={report.fundamentals} isHistoricalDate={Boolean(valuationDate)} peerRelativeStrength={report.peerRelativeStrength} /></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="產業估值假設" description="以人工確認的產業模型及倍數建立假設情境，與實際市場參考分開。" reference={valuation?.industryAssumption} currency={valuation?.currency} /></Grid>
-      </Grid>
-      <FundamentalsPanel fundamentals={report.fundamentals} summary={summary} forward={report.futuObservations?.forward} />
-      <ValuationHistoryPanel key={figi + ":" + report.valuationDate} figi={figi} initial={report.history ?? []} />
+      {/* L3. 估值與基本面證據層（ETF 模式不顯示單一公司財報與估值面板） */}
+      {!isEtf && <>
+        <Grid container spacing={2} sx={{ mt: 0.5 }}>
+          <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="歷史市場估值參考" description="比較這隻股票過去實際市場給予的估值倍數。" reference={valuation?.historicalReference} currency={valuation?.currency} /></Grid>
+          <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="同業市場估值參考" description="比較可比公司的實際市場倍數；優先採用自訂對標或同市值量級對手，樣本不足時依序放寬。" reference={valuation?.peerReference} currency={valuation?.currency} figi={figi} symbol={report?.symbol} fundamentals={report.fundamentals} isHistoricalDate={Boolean(valuationDate)} peerRelativeStrength={report.peerRelativeStrength} /></Grid>
+          <Grid size={{ xs: 12, lg: 4 }}><ValuationReferencePanel title="產業估值假設" description="以人工確認的產業模型及倍數建立假設情境，與實際市場參考分開。" reference={valuation?.industryAssumption} currency={valuation?.currency} /></Grid>
+        </Grid>
+        <FundamentalsPanel fundamentals={report.fundamentals} summary={summary} forward={report.futuObservations?.forward} />
+        <DcfValuationPanel dcf={report.dcf} />
+        <ValuationHistoryPanel key={figi + ":" + report.valuationDate} figi={figi} initial={report.history ?? []} />
 
-      {/* L4. 稽核明細折疊區（14 項財務原料、富途觀察預期、29 項完整技術指標與產業假設設定預設收合） */}
-      <FinancialsPanel financials={report.financials} />
-      {report.futuObservations && <FutuObservationPanels observations={report.futuObservations} />}
+        {/* L4. 稽核明細折疊區（財務原料、富途觀察預期） */}
+        <FinancialsPanel financials={report.financials} />
+        {report.futuObservations && <FutuObservationPanels observations={report.futuObservations} />}
+      </>}
 
       <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
         <AccordionSummary expandIcon={<ExpandMore />}>
@@ -170,7 +237,7 @@ export function StockAnalysisPage() {
         </AccordionDetails>
       </Accordion>
 
-      <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
+      {!isEtf && <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
         <AccordionSummary expandIcon={<ExpandMore />}>
           <Typography fontWeight={700}>產業估值假設設定與 AI 建議（點擊展開）</Typography>
         </AccordionSummary>
@@ -178,7 +245,7 @@ export function StockAnalysisPage() {
           <IndustryValuationProposalPanel key={figi + ":" + (valuation?.industryCode ?? "")} industryCode={valuation?.industryCode} figi={figi} valuationDate={report.valuationDate}
             reloadReport={async () => (await reportQuery.refetch()).data ?? null} />
         </AccordionDetails>
-      </Accordion>
+      </Accordion>}
 
       {!!report.reasons?.length && <Alert severity="info" sx={{ mt: 2 }}>{report.reasons.map(reason => readableReason(t, reason)).join("；")}</Alert>}
     </>}

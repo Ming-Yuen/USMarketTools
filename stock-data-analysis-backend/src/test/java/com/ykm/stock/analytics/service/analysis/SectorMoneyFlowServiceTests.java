@@ -107,7 +107,7 @@ class SectorMoneyFlowServiceTests {
         ActiveStockWithStatus flatStock = stockWithStatus("F_FLAT", "FLAT", "USD", last200.getFirst(), TRADE_DATE);
         // 3) F_CAD：非 USD 報價，不得混入 USD 成交額與廣度
         ActiveStockWithStatus nonUsdStock = stockWithStatus("F_CAD", "CADX", "CAD", last200.getFirst(), TRADE_DATE);
-        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(splitStock, flatStock, nonUsdStock));
+        when(stocks.findOperatingValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(splitStock, flatStock, nonUsdStock));
 
         StockSplit split = new StockSplit();
         split.setSourceEventId("SPLT-10-1");
@@ -247,7 +247,7 @@ class SectorMoneyFlowServiceTests {
 
         ActiveStockWithStatus fullStock = stockWithStatus("F_FULL", "FULL", "USD", last25.getFirst(), TRADE_DATE);
         ActiveStockWithStatus gappedStock = stockWithStatus("F_GAPP", "GAPP", "USD", last25.getFirst(), TRADE_DATE);
-        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(fullStock, gappedStock));
+        when(stocks.findOperatingValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(fullStock, gappedStock));
         when(splits.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of());
 
         List<QuoteBarRow> bars = new ArrayList<>();

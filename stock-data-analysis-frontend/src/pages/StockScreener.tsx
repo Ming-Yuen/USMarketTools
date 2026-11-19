@@ -1,10 +1,11 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   Alert, Box, Button, Chip, CircularProgress, FormControl, Grid, InputLabel,
   MenuItem, Paper, Select, Stack, Table, TableBody, TableCell, TableContainer,
-  TableHead, TablePagination, TableRow, TextField, Typography,
+  TableHead, TablePagination, TableRow, TextField, ToggleButton, ToggleButtonGroup, Typography,
 } from "@mui/material";
 import { apiClient } from "../services/apiClient";
 import { apiConfig } from "../apiConfig";
@@ -12,6 +13,7 @@ import { StockClassificationResponse, StockScreenResponse } from "../services/ty
 import { formatCompactMarketCap, formatNumber, metricLabel, statusLabel, TIER_LABELS, TIER_SHORT_LABELS } from "./AnalysisPanels";
 
 interface ScreenerFilters {
+  assetType: string;
   symbol: string;
   industry: string;
   conceptCode: string;
@@ -27,6 +29,7 @@ interface ScreenerFilters {
 }
 
 const emptyFilters: ScreenerFilters = {
+  assetType: "STOCK",
   symbol: "",
   industry: "",
   conceptCode: "",
@@ -98,6 +101,7 @@ const formatScreenerPct = (val?: number | null, signed = false) => {
 };
 
 export function StockScreenerPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState<ScreenerFilters>(emptyFilters);
   const [filters, setFilters] = useState<ScreenerFilters>(emptyFilters);
@@ -112,17 +116,19 @@ export function StockScreenerPage() {
   const stocks = useQuery<StockScreenResponse>({
     queryKey: ["stock-screen", filters, page],
     queryFn: async () => {
+      const isEtfOnly = filters.assetType === "ETF";
       const params: Record<string, unknown> = {
+        assetType: filters.assetType && filters.assetType !== "STOCK" ? filters.assetType : undefined,
         symbol: filters.symbol || undefined,
-        industry: filters.industry || undefined,
+        industry: isEtfOnly ? undefined : (filters.industry || undefined),
         conceptCode: filters.conceptCode || undefined,
-        marketCapTier: filters.marketCapTier || undefined,
-        verdict: filters.verdict || undefined,
-        minRevenueGrowthYoy: parsePctToDecimal(filters.minRevenueGrowthPct),
-        minRoe: parsePctToDecimal(filters.minRoePct),
-        minFcfMargin: parsePctToDecimal(filters.minFcfMarginPct),
-        minHistoricalPercentile: parsePlainNumber(filters.minHistoricalPercentile),
-        maxHistoricalPercentile: parsePlainNumber(filters.maxHistoricalPercentile),
+        marketCapTier: isEtfOnly ? undefined : (filters.marketCapTier || undefined),
+        verdict: isEtfOnly ? undefined : (filters.verdict || undefined),
+        minRevenueGrowthYoy: isEtfOnly ? undefined : parsePctToDecimal(filters.minRevenueGrowthPct),
+        minRoe: isEtfOnly ? undefined : parsePctToDecimal(filters.minRoePct),
+        minFcfMargin: isEtfOnly ? undefined : parsePctToDecimal(filters.minFcfMarginPct),
+        minHistoricalPercentile: isEtfOnly ? undefined : parsePlainNumber(filters.minHistoricalPercentile),
+        maxHistoricalPercentile: isEtfOnly ? undefined : parsePlainNumber(filters.maxHistoricalPercentile),
         sortBy: filters.sortBy || undefined,
         sortDir: filters.sortBy ? filters.sortDir : undefined,
         page,
@@ -135,9 +141,33 @@ export function StockScreenerPage() {
   const industries = useMemo(() => Array.from(new Set((classifications.data?.classifications ?? [])
     .map(row => row.industry).filter(Boolean))).sort((a, b) => a.localeCompare(b)), [classifications.data]);
   const concepts = classifications.data?.concepts ?? [];
+  const assetTypeOptions = classifications.data?.assetTypes ?? [];
   const tierOptions = classifications.data?.marketCapTiers ?? [];
   const verdictOptions = classifications.data?.verdicts ?? [];
   const sortFieldOptions = classifications.data?.sortFields ?? [];
+  const draftIsEtf = draft.assetType === "ETF";
+
+  const handleAssetTypeChange = (_event: React.MouseEvent<HTMLElement>, next: string | null) => {
+    if (!next) return;
+    const nextDraft: ScreenerFilters = next === "ETF"
+      ? {
+        ...draft,
+        assetType: next,
+        industry: "",
+        marketCapTier: "",
+        verdict: "",
+        minRevenueGrowthPct: "",
+        minRoePct: "",
+        minFcfMarginPct: "",
+        minHistoricalPercentile: "",
+        maxHistoricalPercentile: "",
+      }
+      : { ...draft, assetType: next };
+    setValidationError(null);
+    setDraft(nextDraft);
+    setFilters({ ...nextDraft, symbol: nextDraft.symbol.trim().toUpperCase() });
+    setPage(0);
+  };
 
   const apply = (event: React.FormEvent) => {
     event.preventDefault();
@@ -164,10 +194,30 @@ export function StockScreenerPage() {
   };
 
   return <Box sx={{ width: "100%", minWidth: 0 }}>
-    <Typography variant="h5" fontWeight={800}>美股篩選</Typography>
-    <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-      全市場股票資料；支援按代碼、產業、概念、市值量級、成長品質、歷史分位及估值結論篩選與全域排序。點選股票代碼或雙擊資料列開啟分析。
-    </Typography>
+    <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1.5}>
+      <Box>
+        <Typography variant="h5" fontWeight={800}>美股篩選</Typography>
+        <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+          全市場股票與 ETF 資料；支援按資產類型、代碼、產業、概念、市值量級、成長品質、歷史分位及估值結論篩選與全域排序。點選股票代碼或雙擊資料列開啟分析。
+        </Typography>
+      </Box>
+      {assetTypeOptions.length > 0 && (
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={draft.assetType}
+          onChange={handleAssetTypeChange}
+          aria-label={t("stockScreener.assetTypeLabel")}
+          sx={{ mb: { xs: 1.5, sm: 0 } }}
+        >
+          {assetTypeOptions.map(option => (
+            <ToggleButton key={option} value={option}>
+              {t(`stockScreener.assetTypes.${option}`, { defaultValue: option })}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+      )}
+    </Stack>
 
     <Paper component="form" variant="outlined" onSubmit={apply} sx={{ p: 2, mb: 2 }}>
       <Grid container spacing={1.5} alignItems="center">
@@ -176,7 +226,7 @@ export function StockScreenerPage() {
             onChange={event => setDraft({ ...draft, symbol: event.target.value })} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 2.5 }}>
-          <FormControl fullWidth size="small">
+          <FormControl fullWidth size="small" disabled={draftIsEtf}>
             <InputLabel id="stock-industry-label">產業</InputLabel>
             <Select labelId="stock-industry-label" label="產業" value={draft.industry}
               onChange={event => setDraft({ ...draft, industry: event.target.value })}>
@@ -196,7 +246,7 @@ export function StockScreenerPage() {
           </FormControl>
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 2.25 }}>
-          <FormControl fullWidth size="small">
+          <FormControl fullWidth size="small" disabled={draftIsEtf}>
             <InputLabel id="stock-tier-label">市值量級</InputLabel>
             <Select labelId="stock-tier-label" label="市值量級" value={draft.marketCapTier}
               onChange={event => setDraft({ ...draft, marketCapTier: event.target.value })}>
@@ -206,7 +256,7 @@ export function StockScreenerPage() {
           </FormControl>
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 2.25 }}>
-          <FormControl fullWidth size="small">
+          <FormControl fullWidth size="small" disabled={draftIsEtf}>
             <InputLabel id="stock-verdict-label">估值結論</InputLabel>
             <Select labelId="stock-verdict-label" label="估值結論" value={draft.verdict}
               onChange={event => setDraft({ ...draft, verdict: event.target.value })}>
@@ -217,23 +267,23 @@ export function StockScreenerPage() {
         </Grid>
 
         <Grid size={{ xs: 6, sm: 4, md: 1.8 }}>
-          <TextField fullWidth size="small" type="number" inputProps={{ step: "any" }} label="最低營收 YoY (%)"
+          <TextField fullWidth size="small" type="number" disabled={draftIsEtf} inputProps={{ step: "any" }} label="最低營收 YoY (%)"
             value={draft.minRevenueGrowthPct} onChange={e => setDraft({ ...draft, minRevenueGrowthPct: e.target.value })} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 1.6 }}>
-          <TextField fullWidth size="small" type="number" inputProps={{ step: "any" }} label="最低 ROE (%)"
+          <TextField fullWidth size="small" type="number" disabled={draftIsEtf} inputProps={{ step: "any" }} label="最低 ROE (%)"
             value={draft.minRoePct} onChange={e => setDraft({ ...draft, minRoePct: e.target.value })} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 1.8 }}>
-          <TextField fullWidth size="small" type="number" inputProps={{ step: "any" }} label="最低 FCF 率 (%)"
+          <TextField fullWidth size="small" type="number" disabled={draftIsEtf} inputProps={{ step: "any" }} label="最低 FCF 率 (%)"
             value={draft.minFcfMarginPct} onChange={e => setDraft({ ...draft, minFcfMarginPct: e.target.value })} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 1.6 }}>
-          <TextField fullWidth size="small" type="number" inputProps={{ step: "any" }} label="最低歷史分位"
+          <TextField fullWidth size="small" type="number" disabled={draftIsEtf} inputProps={{ step: "any" }} label="最低歷史分位"
             value={draft.minHistoricalPercentile} onChange={e => setDraft({ ...draft, minHistoricalPercentile: e.target.value })} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 1.6 }}>
-          <TextField fullWidth size="small" type="number" inputProps={{ step: "any" }} label="最高歷史分位"
+          <TextField fullWidth size="small" type="number" disabled={draftIsEtf} inputProps={{ step: "any" }} label="最高歷史分位"
             value={draft.maxHistoricalPercentile} onChange={e => setDraft({ ...draft, maxHistoricalPercentile: e.target.value })} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
@@ -283,37 +333,51 @@ export function StockScreenerPage() {
             ] as const).map(([label, align]) => <TableCell key={label} align={align} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}
           </TableRow></TableHead>
           <TableBody>
-            {(stocks.data?.items ?? []).map(row => <TableRow hover key={row.figi} onDoubleClick={() => navigate("/stockAnalysis/" + encodeURIComponent(row.figi))}>
-              <TableCell><Button size="small" onClick={() => navigate("/stockAnalysis/" + encodeURIComponent(row.figi))}>{row.symbol}</Button></TableCell>
-              <TableCell>{row.name}</TableCell>
-              <TableCell sx={{ whiteSpace: "nowrap" }}>{row.industry ?? "—"}</TableCell>
-              <TableCell sx={{ minWidth: 160 }}>{row.concepts?.map(concept => concept.name).join("、") || "—"}</TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                {row.marketCap != null ? (
-                  <>{formatCompactMarketCap(row.marketCap, row.currency)}
-                    {row.marketCapTier ? ` (${TIER_SHORT_LABELS[row.marketCapTier] ?? row.marketCapTier})` : ""}</>
-                ) : "—"}
-              </TableCell>
-              <TableCell sx={{ whiteSpace: "nowrap" }}>
-                {row.verdict ? (
-                  <Chip size="small" color={verdictColor(row.verdict)} label={VERDICT_LABELS[row.verdict] ?? row.verdict} />
-                ) : "—"}
-              </TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                {row.historicalPercentile != null
-                  ? `P${Math.round(row.historicalPercentile)}${row.primaryMetric ? ` (${metricLabel(row.primaryMetric)})` : ""}`
-                  : "—"}
-              </TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.revenueGrowthYoy, true)}</TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.roe)}</TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.fcfMargin)}</TableCell>
-              <TableCell sx={{ whiteSpace: "nowrap" }}>{row.quoteDate ?? "—"}</TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatNumber(row.closePrice)}</TableCell>
-              {[row.pe, row.pb, row.ps, row.pfcf, row.evEbitda].map((value, index) => <TableCell align="right" key={index}>{formatNumber(value)}</TableCell>)}
-              <TableCell title={row.reasonCode ?? undefined} sx={{ whiteSpace: "nowrap" }}>
-                {row.valuationDate ? `${row.valuationDate} · ` : ""}{statusLabel(row.status)}
-              </TableCell>
-            </TableRow>)}
+            {(stocks.data?.items ?? []).map(row => {
+              const rowIsEtf = row.stockType === "ETF" || row.stockType === "ETP" || row.reasonCode === "NOT_APPLICABLE_FOR_ETF";
+              const rowIsAdr = row.stockType === "ADR";
+              return <TableRow hover key={row.figi} onDoubleClick={() => navigate("/stockAnalysis/" + encodeURIComponent(row.figi))}>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                  <Stack direction="row" spacing={0.5} alignItems="center">
+                    <Button size="small" onClick={() => navigate("/stockAnalysis/" + encodeURIComponent(row.figi))}>{row.symbol}</Button>
+                    {rowIsEtf && <Chip size="small" color="info" variant="outlined" label="ETF" sx={{ height: 18, fontSize: "0.68rem" }} />}
+                    {rowIsAdr && <Chip size="small" color="secondary" variant="outlined" label="ADR" sx={{ height: 18, fontSize: "0.68rem" }} />}
+                  </Stack>
+                </TableCell>
+                <TableCell>{row.name}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{row.industry ?? "—"}</TableCell>
+                <TableCell sx={{ minWidth: 160 }}>{row.concepts?.map(concept => concept.name).join("、") || "—"}</TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                  {row.marketCap != null ? (
+                    <>{formatCompactMarketCap(row.marketCap, row.currency)}
+                      {row.marketCapTier ? ` (${TIER_SHORT_LABELS[row.marketCapTier] ?? row.marketCapTier})` : ""}</>
+                  ) : "—"}
+                </TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                  {rowIsEtf ? (
+                    <Chip size="small" color="info" variant="outlined" label={t("stockScreener.etfTechnicalChip")} />
+                  ) : row.verdict ? (
+                    <Chip size="small" color={verdictColor(row.verdict)} label={VERDICT_LABELS[row.verdict] ?? row.verdict} />
+                  ) : "—"}
+                </TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                  {row.historicalPercentile != null
+                    ? `P${Math.round(row.historicalPercentile)}${row.primaryMetric ? ` (${metricLabel(row.primaryMetric)})` : ""}`
+                    : "—"}
+                </TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.revenueGrowthYoy, true)}</TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.roe)}</TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatScreenerPct(row.fcfMargin)}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{row.quoteDate ?? "—"}</TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{formatNumber(row.closePrice)}</TableCell>
+                {[row.pe, row.pb, row.ps, row.pfcf, row.evEbitda].map((value, index) => <TableCell align="right" key={index}>{formatNumber(value)}</TableCell>)}
+                <TableCell title={row.reasonCode ?? undefined} sx={{ whiteSpace: "nowrap" }}>
+                  {rowIsEtf
+                    ? t("stockScreener.etfTechnicalStatus")
+                    : `${row.valuationDate ? `${row.valuationDate} · ` : ""}${statusLabel(row.status)}`}
+                </TableCell>
+              </TableRow>;
+            })}
             {!stocks.isFetching && !stocks.isError && !stocks.data?.items.length && (
               <TableRow><TableCell colSpan={18} align="center">沒有符合條件的股票</TableCell></TableRow>
             )}

@@ -10,10 +10,12 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.CustomPeerGroupDt
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto.FinancialValue;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FxConversionDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationReferenceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.FinancialReport;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
 import com.ykm.stock.analytics.model.entity.SecFinancialFact;
@@ -26,6 +28,7 @@ import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
@@ -41,6 +44,9 @@ import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.calculator.StockSplitCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
+import com.ykm.stock.analytics.service.market.FxRateService;
+import com.ykm.stock.analytics.service.market.FxRateService.FxRateLookup;
+import com.ykm.stock.analytics.service.market.FxRateService.FxResolution;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
 import com.ykm.stock.analytics.service.valuation.FinancialReportValuationCalculator.MarketMultiples;
@@ -50,8 +56,8 @@ import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.Flo
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.PeriodAlignment;
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.PeriodWindow;
 import jakarta.persistence.EntityManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -88,7 +94,6 @@ import java.util.stream.Collectors;
  * 財季分母整股重建、最新估值快照刷新與歷史交易日即時估值服務。
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class StockValuationService {
     private static final MathContext MC = MathContext.DECIMAL128;
@@ -131,11 +136,78 @@ public class StockValuationService {
     private final SecIssuerHistory issuerHistory;
     private final TransactionTemplate transactions;
     private final EntityManager entityManager;
+    private final FxRateService fxRateService;
+    private final AdrShareRatioRepository adrShareRatios;
 
     private final FinancialReportValuationCalculator calculator = new FinancialReportValuationCalculator();
     private final SecFinancialFactsCalculator secCalculator = new SecFinancialFactsCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
     private final ReentrantLock localPublishLock = new ReentrantLock();
+
+    public StockValuationService(
+            StockRepository stocks,
+            StockStatusRepository statuses,
+            StockQuoteRepository quotes,
+            StockSplitRepository splits,
+            FinancialReportRepository reports,
+            SecFinancialFactRepository secFacts,
+            StockShareObservationRepository shareObservations,
+            StockIndustryHistoryRepository industries,
+            IndustryValuationConfigRepository industryConfigs,
+            StockFinancialPeriodRepository financialPeriods,
+            StockValuationLatestRepository latestValuations,
+            StockCustomPeerRepository customPeers,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            SecIssuerHistory issuerHistory,
+            TransactionTemplate transactions,
+            EntityManager entityManager) {
+        this(stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
+                industries, industryConfigs, financialPeriods, latestValuations, customPeers,
+                calendar, dateTimeService, issuerHistory, transactions, entityManager, null, null);
+    }
+
+    @Autowired
+    public StockValuationService(
+            StockRepository stocks,
+            StockStatusRepository statuses,
+            StockQuoteRepository quotes,
+            StockSplitRepository splits,
+            FinancialReportRepository reports,
+            SecFinancialFactRepository secFacts,
+            StockShareObservationRepository shareObservations,
+            StockIndustryHistoryRepository industries,
+            IndustryValuationConfigRepository industryConfigs,
+            StockFinancialPeriodRepository financialPeriods,
+            StockValuationLatestRepository latestValuations,
+            StockCustomPeerRepository customPeers,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            SecIssuerHistory issuerHistory,
+            TransactionTemplate transactions,
+            EntityManager entityManager,
+            FxRateService fxRateService,
+            AdrShareRatioRepository adrShareRatios) {
+        this.stocks = stocks;
+        this.statuses = statuses;
+        this.quotes = quotes;
+        this.splits = splits;
+        this.reports = reports;
+        this.secFacts = secFacts;
+        this.shareObservations = shareObservations;
+        this.industries = industries;
+        this.industryConfigs = industryConfigs;
+        this.financialPeriods = financialPeriods;
+        this.latestValuations = latestValuations;
+        this.customPeers = customPeers;
+        this.calendar = calendar;
+        this.dateTimeService = dateTimeService;
+        this.issuerHistory = issuerHistory;
+        this.transactions = transactions;
+        this.entityManager = entityManager;
+        this.fxRateService = fxRateService;
+        this.adrShareRatios = adrShareRatios;
+    }
 
     private record ReportObservationKey(int statementType, LocalDate periodEnd, int periodType) {}
 
@@ -146,7 +218,22 @@ public class StockValuationService {
     private record ShareEvaluation(BigDecimal marketCap, BigDecimal sharesAtDay, String marketCapSource,
                                    Instant sharesObservedAt, String sharesReason, String sharesCalculation) {}
 
-    private record DayDenominators(BigDecimal epsAtDay, BigDecimal sharesAtDay, String peReason) {}
+    private record DayDenominators(BigDecimal epsAtDay, BigDecimal sharesAtDay, String peReason,
+                                   BigDecimal fxRateToQuote, String fxFailureReason) {}
+
+    private record AdrContext(boolean adr, boolean verified, BigDecimal ratio, String underlyingSymbol) {
+        static AdrContext nonAdr() {
+            return new AdrContext(false, true, BigDecimal.ONE, null);
+        }
+
+        static AdrContext unverified() {
+            return new AdrContext(true, false, null, null);
+        }
+
+        static AdrContext verified(AdrShareRatio entity) {
+            return new AdrContext(true, true, entity.getAdrRatio(), entity.getUnderlyingSymbol());
+        }
+    }
 
     /** Controller 入口：整股重建指定股票的財季分母並刷新最新估值快照，回傳指定日期區間的即時估值。 */
     public List<ValuationResultDto> recalculate(String figi, LocalDate from, LocalDate through) {
@@ -203,14 +290,30 @@ public class StockValuationService {
             String peReasonAtDay,
             List<StockSplit> splits,
             String splitSyncError,
-            List<StockFinancialPeriod> storedPeriods
+            List<StockFinancialPeriod> storedPeriods,
+            BigDecimal sharesAtDay,
+            BigDecimal dcfMarketCapAtDay,
+            BigDecimal fxRateToQuote,
+            String valuationBlockedReason,
+            boolean financialInstitution
     ) {
+        public ReportValuationBundle(
+                ValuationResultDto valuation, FinancialsDto financials, List<ValuationResultDto> history,
+                FundamentalSnapshotDto fundamentals, LocalDate resolvedValuationDate, BigDecimal closePriceAtDay,
+                BigDecimal marketCapAtDay, String sharesReasonAtDay, BigDecimal epsAtDay, String peReasonAtDay,
+                List<StockSplit> splits, String splitSyncError, List<StockFinancialPeriod> storedPeriods) {
+            this(valuation, financials, history, fundamentals, resolvedValuationDate, closePriceAtDay,
+                    marketCapAtDay, sharesReasonAtDay, epsAtDay, peReasonAtDay, splits, splitSyncError, storedPeriods,
+                    null, marketCapAtDay, BigDecimal.ONE, null, false);
+        }
+
         public ReportValuationBundle(ValuationResultDto valuation, FinancialsDto financials,
                                      List<ValuationResultDto> history, FundamentalSnapshotDto fundamentals) {
             this(valuation, financials, history, fundamentals,
                     valuation == null ? null : valuation.valuationDate(),
                     valuation == null ? null : valuation.price(),
-                    null, null, null, null, List.of(), null, List.of());
+                    null, null, null, null, List.of(), null, List.of(),
+                    null, null, BigDecimal.ONE, null, false);
         }
 
         public ReportValuationBundle(ValuationResultDto valuation, FinancialsDto financials, List<ValuationResultDto> history) {
@@ -292,7 +395,8 @@ public class StockValuationService {
         LocalDate latestSessionForRequest = defaultLatestRequest ? effectiveLatest : lastClosed;
         List<StockSplit> stockSplits = splits.findByFigiInOrderByExecutionDateAsc(List.of(figi));
         String cik = resolveCik(stock, day);
-        boolean multiSecurityIssuer = cik != null && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
+        boolean multiSecurityIssuer = cik != null && !SecurityTypePolicy.isAdrType(stock.getStockType())
+                && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
         StockShareObservation latestObs = shareObservations
                 .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", now).orElse(null);
         StockShareObservation cutoffObs = day.equals(latestSessionForRequest) ? latestObs
@@ -307,20 +411,28 @@ public class StockValuationService {
         IndustryModelContext modelCtx = resolveIndustryModel(stock, fellBackToEffectiveLatest ? null : industryCode, cutoff, now);
 
         StockFinancialPeriod matchedPeriod = matchPeriod(periods, day);
-        StockShareObservation primaryObs = closingSnap != null ? closingSnap : cutoffObs;
-        // 單次計算當日股數與市值，共用傳入估值、14 項財務原料、價格換算分母與基本面快照，消除口徑微差
-        ShareEvaluation dayShareEval = matchedPeriod == null
-                ? evaluateQuoteOnlyMarketCap(targetQuote, stockSplits, status, primaryObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest)
-                : evaluateDayShares(targetQuote, matchedPeriod, stockSplits, status,
-                        primaryObs, cutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest);
+        AdrContext adrCtx = resolveAdrContext(stock);
+        boolean unverifiedAdr = adrCtx.adr() && !adrCtx.verified();
+        FxRateLookup fxLookup = preloadFxLookup(periods, historyFrom, day);
+        StockShareObservation primaryObs = filterObsForAdrDay(
+                closingSnap != null ? closingSnap : cutoffObs, adrCtx, day, latestSessionForRequest);
+        StockShareObservation effectiveCutoffObs = filterObsForAdrDay(cutoffObs, adrCtx, day, latestSessionForRequest);
+        // 單次計算當日股數與市值，共用傳入估值、14 項財務原料、價格換算分母與基本面快照；未核實 ADR 直接阻斷股數與市值避免任何旁路洩漏
+        ShareEvaluation dayShareEval = unverifiedAdr
+                ? new ShareEvaluation(null, null, null, null, "ADR_RATIO_UNVERIFIED", null)
+                : matchedPeriod == null
+                        ? evaluateQuoteOnlyMarketCap(targetQuote, stockSplits, status, primaryObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest)
+                        : evaluateDayShares(targetQuote, matchedPeriod, stockSplits, status,
+                                primaryObs, effectiveCutoffObs, multiSecurityIssuer, verifiedOneToOne, day, cutoff, now, latestSessionForRequest);
 
         ValuationResultDto dayValuation;
-        if (periods.isEmpty() && storedLatest.isPresent() && day.equals(storedLatest.get().getValuationDate())) {
+        if (!unverifiedAdr && periods.isEmpty() && storedLatest.isPresent() && day.equals(storedLatest.get().getValuationDate())) {
             dayValuation = ValuationResultDto.fromLatest(storedLatest.get());
         } else {
             dayValuation = evaluateSingleDay(stock, status, targetQuote, matchedPeriod, stockSplits,
-                    primaryObs, cutoffObs,
-                    multiSecurityIssuer, verifiedOneToOne, modelCtx, day, cutoff, now, latestSessionForRequest, dayShareEval);
+                    primaryObs, effectiveCutoffObs,
+                    multiSecurityIssuer, verifiedOneToOne, modelCtx, day, cutoff, now, latestSessionForRequest, dayShareEval,
+                    adrCtx, fxLookup);
         }
 
         FinancialsDto financialsDto = matchedPeriod == null ? null
@@ -328,14 +440,14 @@ public class StockValuationService {
 
         List<ValuationResultDto> monthlyHistory = buildHistoryFromLoaded(
                 stock, status, quoteByDate, periods, stockSplits, closingSnap, cutoffObs,
-                multiSecurityIssuer, verifiedOneToOne, modelCtx, latestSessionForRequest, now, true);
+                multiSecurityIssuer, verifiedOneToOne, modelCtx, latestSessionForRequest, now, true, adrCtx, fxLookup);
 
         boolean historicalDate = day.isBefore(latestSessionForRequest);
         boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
         String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
                 : dayValuation.modelCode() != null ? dayValuation.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
         String selectedMetric = selectPrimaryMetricForDay(modelCtx, dayValuation.metrics(), matchedPeriod);
-        DayDenominators denoms = resolveDayDenominators(stock, status, matchedPeriod, stockSplits, day, dayShareEval);
+        DayDenominators denoms = resolveDayDenominators(stock, status, matchedPeriod, stockSplits, day, dayShareEval, adrCtx, fxLookup);
         String fallbackIndustryCode = fellBackToEffectiveLatest ? null : industryCode;
         String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null ? modelCtx.industryCode() : fallbackIndustryCode;
 
@@ -344,8 +456,9 @@ public class StockValuationService {
         String peMetricReason = dayValuation.metrics() != null && dayValuation.metrics().pe() != null
                 && dayValuation.metrics().pe().reasonCode() != null
                 ? dayValuation.metrics().pe().reasonCode() : denoms.peReason();
-        BigDecimal dayMarketCap = dayShareEval == null ? null : dayShareEval.marketCap();
-        String daySharesReason = dayShareEval == null ? null : dayShareEval.sharesReason();
+        BigDecimal dayMarketCap = unverifiedAdr ? null : (dayShareEval == null ? null : dayShareEval.marketCap());
+        String daySharesReason = unverifiedAdr ? "ADR_RATIO_UNVERIFIED" : (dayShareEval == null ? null : dayShareEval.sharesReason());
+        String valuationBlockedReason = unverifiedAdr ? "ADR_RATIO_UNVERIFIED" : denoms.fxFailureReason();
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 periods,
                 matchedPeriod,
@@ -359,7 +472,10 @@ public class StockValuationService {
                 peMetricReason,
                 peAtDay,
                 financialInstitution,
-                splitSyncError(status)
+                splitSyncError(status),
+                denoms.fxRateToQuote(),
+                valuationBlockedReason,
+                adrCtx.adr() && adrCtx.verified()
         ));
 
         BigDecimal currentSelectedMultiple = positiveMetricValue(dayValuation.metrics(), selectedMetric);
@@ -375,23 +491,26 @@ public class StockValuationService {
         ValuationResultDto enrichedValuation = dayValuation.withReferences(
                 resolvedModelCode, selectedMetric, historicalRef, peerRef, assumptionRef);
 
-        // 顯式查詢指定估值日截點時，前瞻預期對比之市值與 TTM EPS 僅採用截至該截點已公開之股數與盈利版本
+        // 顯式查詢指定估值日截點時，前瞻預期對比之市值與 TTM EPS 僅採用截至該截點已公開之股數與盈利版本；未核實 ADR 維持阻斷不覆寫
         BigDecimal forwardMarketCap = dayMarketCap;
         String forwardSharesReason = daySharesReason;
         BigDecimal forwardEpsAtDay = denoms.epsAtDay();
         String forwardPeReason = peMetricReason;
-        if (!defaultLatestRequest) {
+        if (!defaultLatestRequest && !unverifiedAdr) {
             Instant forwardCutoff = supplementalCutoff != null ? supplementalCutoff : cutoff;
             LocalDate queryDay = day;
-            StockShareObservation strictCutoffObs = shareObservations
-                    .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", forwardCutoff).orElse(null);
+            StockShareObservation strictCutoffObs = filterObsForAdrDay(shareObservations
+                    .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", forwardCutoff).orElse(null),
+                    adrCtx, day, latestSessionForRequest);
             StockShareObservation strictClosingSnap = null;
             if (day.equals(latestSessionForRequest)) {
                 List<StockShareObservation> strictSnaps = shareObservations.findLatestClosingSnapshotAt(
                         List.of(figi), calendar.getSessionOpenAt(day), cutoff, forwardCutoff);
                 if (!strictSnaps.isEmpty()) strictClosingSnap = strictSnaps.getFirst();
             }
-            StockShareObservation strictPrimaryObs = strictClosingSnap != null ? strictClosingSnap : strictCutoffObs;
+            StockShareObservation strictPrimaryObs = filterObsForAdrDay(
+                    strictClosingSnap != null ? strictClosingSnap : strictCutoffObs,
+                    adrCtx, day, latestSessionForRequest);
             boolean forwardVerifiedOneToOne = multiSecurityIssuer
                     && isMultiClassVerifiedAtCutoff(cik, strictPrimaryObs, queryDay, forwardCutoff, stockSplits);
 
@@ -441,7 +560,7 @@ public class StockValuationService {
                 forwardEpsAtDay = null;
                 forwardPeReason = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
             } else {
-                DayDenominators cutoffDenoms = resolveDayDenominators(stock, status, epsMatched, stockSplits, day, forwardShareEval);
+                DayDenominators cutoffDenoms = resolveDayDenominators(stock, status, epsMatched, stockSplits, day, forwardShareEval, adrCtx, fxLookup);
                 forwardEpsAtDay = cutoffDenoms.epsAtDay();
                 forwardPeReason = cutoffDenoms.peReason();
             }
@@ -452,7 +571,10 @@ public class StockValuationService {
         return new ReportValuationBundle(
                 enrichedValuation, financialsDto, monthlyHistory, fundamentalsDto,
                 day, closePrice, forwardMarketCap, forwardSharesReason, forwardEpsAtDay, forwardPeReason,
-                stockSplits, splitSyncError(status), periods);
+                stockSplits, splitSyncError(status), periods,
+                unverifiedAdr ? null : (dayShareEval == null ? null : dayShareEval.sharesAtDay()),
+                dayMarketCap,
+                denoms.fxRateToQuote(), valuationBlockedReason, financialInstitution);
     }
 
     /** 當財報、SEC 披露或拆股有變更時，整股重建財季分母並刷新最新收市估值快照。 */
@@ -474,7 +596,7 @@ public class StockValuationService {
 
         for (List<String> batchFigis : Lists.partition(orderedFigis, REBUILD_BATCH_SIZE)) {
             List<Stock> batchStocks = stocks.findAllById(batchFigis).stream()
-                    .filter(s -> SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                    .filter(s -> SecurityTypePolicy.supportsValuation(s.getStockType()))
                     .toList();
             if (batchStocks.isEmpty()) continue;
 
@@ -501,6 +623,7 @@ public class StockValuationService {
             Map<String, StockShareObservation> latestObsByFigi = shareObservations.findLatestAt(activeFigis, calculatedAt).stream()
                     .collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
             Map<String, IndustryModelContext> modelsByFigi = resolveBatchIndustryModels(batchStocks, calendar.getSessionCloseAt(lastClosed), calculatedAt);
+            Map<String, AdrContext> adrContextsByFigi = loadAdrContexts(batchStocks);
 
             Map<String, List<StockFinancialPeriod>> builtByFigi = new LinkedHashMap<>();
             for (Stock stock : batchStocks) {
@@ -508,15 +631,17 @@ public class StockValuationService {
                 String cik = stock.getCik() != null && !stock.getCik().isBlank() ? stock.getCik() : null;
                 List<SecFinancialFact> rawCikFacts = collectStockSecFacts(stock, factsByCik);
                 List<StockSplit> stockSplits = splitsByFigi.getOrDefault(figi, List.of());
-                boolean multiClass = cik != null && multiSecurityIssuers.contains(cik);
+                boolean multiClass = cik != null && !SecurityTypePolicy.isAdrType(stock.getStockType())
+                        && multiSecurityIssuers.contains(cik);
                 boolean verifiedOneToOne = multiClass && isMultiClassVerifiedFromRawFacts(
                         latestObsByFigi.get(figi), rawCikFacts, stockSplits, calculatedAt);
                 IndustryModelContext modelCtx = modelsByFigi.get(figi);
+                AdrContext adrCtx = adrContextsByFigi.getOrDefault(figi, AdrContext.nonAdr());
                 List<StockFinancialPeriod> built = buildPeriodsForStock(
                         stock, statusMap.get(figi), reportsByFigi.getOrDefault(figi, List.of()),
                         rawCikFacts, stockSplits, latestObsByFigi.get(figi),
                         multiClass, verifiedOneToOne, modelCtx != null && modelCtx.financialInstitution(),
-                        lastClosed, calculatedAt);
+                        adrCtx, lastClosed, calculatedAt);
                 builtByFigi.put(figi, built);
             }
 
@@ -608,7 +733,7 @@ public class StockValuationService {
 
             List<Stock> batchStocks = stocks.findAllById(batchFigis).stream()
                     .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
-                            && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                            && SecurityTypePolicy.supportsValuation(s.getStockType()))
                     .toList();
             if (batchStocks.isEmpty()) continue;
 
@@ -650,7 +775,7 @@ public class StockValuationService {
         List<Stock> foundStocks = stocks.findAllById(normalized);
         List<Stock> reEnabledStocks = foundStocks.stream()
                 .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
-                        && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                        && SecurityTypePolicy.supportsValuation(s.getStockType()))
                 .toList();
         Set<String> reEnabledFigis = reEnabledStocks.stream().map(Stock::getFigi).collect(Collectors.toCollection(LinkedHashSet::new));
         List<String> disabled = normalized.stream().filter(f -> !reEnabledFigis.contains(f)).toList();
@@ -806,7 +931,7 @@ public class StockValuationService {
             }
             for (String pf : deduplicated) {
                 Stock peerStock = peerMap.get(pf);
-                if (!SecurityTypePolicy.isOperatingCompanyType(peerStock.getStockType())) {
+                if (!SecurityTypePolicy.supportsValuation(peerStock.getStockType())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_CUSTOM_PEER_TYPE");
                 }
                 if (isSelfOrSiblingIssuer(target, modelDate, peerStock.getCik(), peerStock.getFigi())) {
@@ -938,7 +1063,7 @@ public class StockValuationService {
         }
         Stock stock = stocks.findById(figi.trim())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND"));
-        if (!SecurityTypePolicy.isOperatingCompanyType(stock.getStockType())) {
+        if (!SecurityTypePolicy.supportsValuation(stock.getStockType())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "STOCK_TYPE_NOT_SUPPORTED");
         }
         return stock;
@@ -1044,6 +1169,12 @@ public class StockValuationService {
         Map<String, StockShareObservation> latestObsMap = latestObsRows == null ? Map.of()
                 : latestObsRows.stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
 
+        Map<String, AdrContext> adrContextsByFigi = loadAdrContexts(batchStocks);
+        LocalDate batchMinDate = dateByFigi.values().stream().min(LocalDate::compareTo).orElse(lastClosed).minusYears(5);
+        LocalDate batchMaxDate = dateByFigi.values().stream().max(LocalDate::compareTo).orElse(lastClosed);
+        List<StockFinancialPeriod> allBatchPeriods = periodsByFigi.values().stream().flatMap(List::stream).toList();
+        FxRateLookup batchFxLookup = preloadFxLookup(allBatchPeriods, batchMinDate, batchMaxDate);
+
         List<PendingTargetEvaluation> results = new ArrayList<>(eligibleFigis.size());
         for (Stock stock : batchStocks) {
             String figi = stock.getFigi();
@@ -1059,7 +1190,8 @@ public class StockValuationService {
             StockFinancialPeriod matched = matchPeriod(stockPeriods, stockValDate);
             List<StockSplit> stockSplits = splitsByFigi.getOrDefault(figi, List.of());
             String cik = resolveCik(stock, stockValDate);
-            boolean multiClass = cik != null && multiSecurityIssuers.contains(cik);
+            boolean multiClass = cik != null && !SecurityTypePolicy.isAdrType(stock.getStockType())
+                    && multiSecurityIssuers.contains(cik);
             StockShareObservation latestObs = latestObsMap.get(figi);
             StockShareObservation closingSnap = closingSnapsByDate.getOrDefault(stockValDate, Map.of()).get(figi);
             StockShareObservation primaryObs = closingSnap != null ? closingSnap : latestObs;
@@ -1067,6 +1199,7 @@ public class StockValuationService {
                     latestObs, multiClassShareFactsByCik.getOrDefault(cik, List.of()), stockSplits, calculatedAt);
             IndustryModelContext modelCtx = modelsByFigi.get(figi);
             boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
+            AdrContext adrCtx = adrContextsByFigi.getOrDefault(figi, AdrContext.nonAdr());
 
             ShareEvaluation dayShareEval = matched == null
                     ? evaluateQuoteOnlyMarketCap(stockQuote, stockSplits, status, primaryObs, multiClass, verifiedOneToOne, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest)
@@ -1076,18 +1209,19 @@ public class StockValuationService {
             ValuationResultDto evaluated = evaluateSingleDay(
                     stock, status, stockQuote, matched, stockSplits,
                     primaryObs, latestObs, multiClass, verifiedOneToOne,
-                    modelCtx, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest, dayShareEval);
+                    modelCtx, stockValDate, stockCutoff, calculatedAt, stockEffectiveLatest, dayShareEval,
+                    adrCtx, batchFxLookup);
 
             String selectedMetric = selectPrimaryMetricForDay(modelCtx, evaluated.metrics(), matched);
             String resolvedModelCode = modelCtx != null ? modelCtx.modelCode()
                     : evaluated.modelCode() != null ? evaluated.modelCode() : IndustryValuationProposalService.MODEL_NON_FINANCIAL;
             ValuationResultDto normalizedEvaluated = evaluated.withReferences(resolvedModelCode, selectedMetric, null, null, null);
-            DayDenominators denoms = resolveDayDenominators(stock, status, matched, stockSplits, stockValDate, dayShareEval);
+            DayDenominators denoms = resolveDayDenominators(stock, status, matched, stockSplits, stockValDate, dayShareEval, adrCtx, batchFxLookup);
 
             Map<LocalDate, StockQuote> monthQuoteMap = monthEndQuotesByFigi.getOrDefault(figi, Map.of());
             List<ValuationResultDto> monthlyHistory = buildHistoryFromLoaded(
                     stock, status, monthQuoteMap, stockPeriods, stockSplits, closingSnap, latestObs,
-                    multiClass, verifiedOneToOne, modelCtx, stockEffectiveLatest, calculatedAt, true);
+                    multiClass, verifiedOneToOne, modelCtx, stockEffectiveLatest, calculatedAt, true, adrCtx, batchFxLookup);
             BigDecimal currentSelectedMultiple = positiveMetricValue(normalizedEvaluated.metrics(), selectedMetric);
             ValuationReferenceDto historicalRef = buildHistoricalReference(
                     selectedMetric, currentSelectedMultiple, monthlyHistory, matched, denoms,
@@ -1098,12 +1232,15 @@ public class StockValuationService {
             String peMetricReason = normalizedEvaluated.metrics() != null && normalizedEvaluated.metrics().pe() != null
                     && normalizedEvaluated.metrics().pe().reasonCode() != null
                     ? normalizedEvaluated.metrics().pe().reasonCode() : denoms.peReason();
-            BigDecimal marketCap = dayShareEval == null ? null : dayShareEval.marketCap();
-            String sharesReason = dayShareEval == null ? null : dayShareEval.sharesReason();
+            boolean unverifiedAdr = adrCtx.adr() && !adrCtx.verified();
+            BigDecimal marketCap = unverifiedAdr ? null : (dayShareEval == null ? null : dayShareEval.marketCap());
+            String sharesReason = unverifiedAdr ? "ADR_RATIO_UNVERIFIED" : (dayShareEval == null ? null : dayShareEval.sharesReason());
+            String fxBlockReason = unverifiedAdr ? "ADR_RATIO_UNVERIFIED" : denoms.fxFailureReason();
             FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                     stockPeriods, matched, stockSplits, stockValDate, stock.getCurrency(),
                     closePrice, marketCap, sharesReason, denoms.epsAtDay(), peMetricReason, peAtDay,
-                    financialInstitution, splitSyncError(status)
+                    financialInstitution, splitSyncError(status),
+                    denoms.fxRateToQuote(), fxBlockReason, adrCtx.adr() && adrCtx.verified()
             ));
 
             BigDecimal revGrowthYoy = extractAvailableMetric(fundamentalsDto == null ? null : fundamentalsDto.revenueGrowthYoy());
@@ -1147,7 +1284,7 @@ public class StockValuationService {
 
             List<Stock> extStocks = stocks.findAllById(storedMap.keySet()).stream()
                     .filter(s -> s.isTracked() && s.getActiveStatus() == ActiveStatus.ACTIVE
-                            && SecurityTypePolicy.isOperatingCompanyType(s.getStockType()))
+                            && SecurityTypePolicy.supportsValuation(s.getStockType()))
                     .toList();
             if (extStocks.isEmpty()) continue;
 
@@ -1389,7 +1526,7 @@ public class StockValuationService {
                 StockValuationLatest ex = existingLatest.get(revFigi);
                 if (s == null || ex == null || ex.getValuationDate() == null
                         || !s.isTracked() || s.getActiveStatus() != ActiveStatus.ACTIVE
-                        || !SecurityTypePolicy.isOperatingCompanyType(s.getStockType())) {
+                        || !SecurityTypePolicy.supportsValuation(s.getStockType())) {
                     workingPending.remove(revFigi);
                     continue;
                 }
@@ -1627,7 +1764,8 @@ public class StockValuationService {
         LocalDate effectiveLatest = effectiveLatestQuoteDate(status, lastClosed);
         List<StockSplit> stockSplits = splits.findByFigiInOrderByExecutionDateAsc(List.of(figi));
         String cik = resolveCik(stock, through);
-        boolean multiClass = cik != null && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
+        boolean multiClass = cik != null && !SecurityTypePolicy.isAdrType(stock.getStockType())
+                && !stocks.findMultiSecurityIssuers(List.of(cik), ActiveStatus.ACTIVE).isEmpty();
         StockShareObservation latestObs = shareObservations
                 .findFirstByFigiAndSourceAndObservedAtLessThanEqualOrderByObservedAtDesc(figi, "FUTU", now).orElse(null);
         StockShareObservation closingSnap = null;
@@ -1640,9 +1778,11 @@ public class StockValuationService {
         Instant throughClose = calendar.getSessionCloseAt(through);
         String industryCode = industries.findAt(figi, throughClose).map(row -> row.getIndustry().getCode()).orElse(null);
         IndustryModelContext modelCtx = resolveIndustryModel(stock, industryCode, throughClose, now);
+        AdrContext adrCtx = resolveAdrContext(stock);
+        FxRateLookup fxLookup = preloadFxLookup(periods, from, through);
 
         return buildHistoryFromLoaded(stock, status, quoteByDate, periods, stockSplits,
-                closingSnap, latestObs, multiClass, verifiedOneToOne, modelCtx, effectiveLatest, now, monthly);
+                closingSnap, latestObs, multiClass, verifiedOneToOne, modelCtx, effectiveLatest, now, monthly, adrCtx, fxLookup);
     }
 
     private LocalDate effectiveLatestQuoteDate(StockStatus status, LocalDate lastClosed) {
@@ -1657,7 +1797,8 @@ public class StockValuationService {
             List<StockFinancialPeriod> periods, List<StockSplit> stockSplits,
             StockShareObservation closingSnap, StockShareObservation fallbackObs,
             boolean multiClass, boolean verifiedOneToOne, IndustryModelContext modelCtx,
-            LocalDate lastClosed, Instant calculatedAt, boolean monthly) {
+            LocalDate lastClosed, Instant calculatedAt, boolean monthly,
+            AdrContext adrCtx, FxRateLookup fxLookup) {
         if (quoteByDate.isEmpty()) return List.of();
         Collection<LocalDate> targetDays;
         if (monthly) {
@@ -1674,34 +1815,46 @@ public class StockValuationService {
             StockQuote quote = quoteByDate.get(day);
             Instant dayCutoff = calendar.isTradingDay(day) ? calendar.getSessionCloseAt(day) : calculatedAt;
             StockFinancialPeriod matched = matchPeriod(periods, day);
-            StockShareObservation primary = day.equals(lastClosed) && closingSnap != null ? closingSnap : fallbackObs;
+            StockShareObservation dayPrimary = filterObsForAdrDay(
+                    day.equals(lastClosed) && closingSnap != null ? closingSnap : fallbackObs,
+                    adrCtx, day, lastClosed);
+            StockShareObservation dayFallback = filterObsForAdrDay(fallbackObs, adrCtx, day, lastClosed);
             results.add(evaluateSingleDay(stock, status, quote, matched, stockSplits,
-                    primary, fallbackObs, multiClass, verifiedOneToOne, modelCtx, day, dayCutoff, calculatedAt, lastClosed));
+                    dayPrimary, dayFallback, multiClass, verifiedOneToOne, modelCtx, day, dayCutoff, calculatedAt, lastClosed,
+                    null, adrCtx, fxLookup));
         }
         return List.copyOf(results);
     }
 
-    /** 即時計算單一交易日 D 的五項估值倍數。 */
-    private ValuationResultDto evaluateSingleDay(
-            Stock stock, StockStatus status, StockQuote quote, StockFinancialPeriod period,
-            List<StockSplit> stockSplits, StockShareObservation primaryObs, StockShareObservation fallbackObs,
-            boolean multiClass, boolean verifiedOneToOne, IndustryModelContext modelCtx,
-            LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed) {
-        return evaluateSingleDay(stock, status, quote, period, stockSplits, primaryObs, fallbackObs,
-                multiClass, verifiedOneToOne, modelCtx, day, cutoff, calculatedAt, lastClosed, null);
+    /** 歷史估值日絕不以晚於目標日觀察之 Futu 最新股數快照倒填 ADR 歷史股數，避免誤算回購／增發前市值。 */
+    private StockShareObservation filterObsForAdrDay(
+            StockShareObservation obs, AdrContext adrCtx, LocalDate day, LocalDate lastClosed) {
+        if (obs == null || adrCtx == null || !adrCtx.adr()) {
+            return obs;
+        }
+        if (day != null && day.equals(lastClosed)) {
+            return obs;
+        }
+        if (obs.getObservedAt() == null || day == null) {
+            return null;
+        }
+        LocalDate obsDate = obs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
+        return obsDate.isAfter(day) ? null : obs;
     }
 
+    /** 即時計算單一交易日 D 的五項估值倍數（支援非美元財報官方匯率換算與已核實 ADR 公司口徑估值）。 */
     private ValuationResultDto evaluateSingleDay(
             Stock stock, StockStatus status, StockQuote quote, StockFinancialPeriod period,
             List<StockSplit> stockSplits, StockShareObservation primaryObs, StockShareObservation fallbackObs,
             boolean multiClass, boolean verifiedOneToOne, IndustryModelContext modelCtx,
             LocalDate day, Instant cutoff, Instant calculatedAt, LocalDate lastClosed,
-            ShareEvaluation precomputedShareEval) {
+            ShareEvaluation precomputedShareEval, AdrContext adrCtx, FxRateLookup fxLookup) {
         String figi = stock.getFigi();
         String quoteCurrency = stock.getCurrency();
         String industryCode = modelCtx == null ? null : modelCtx.industryCode();
         String modelCode = modelCtx == null ? IndustryValuationProposalService.MODEL_NON_FINANCIAL : modelCtx.modelCode();
         boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
+        AdrContext effectiveAdr = adrCtx != null ? adrCtx : AdrContext.nonAdr();
 
         if (quote == null || quote.getClosePrice() == null) {
             return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, null, "CLOSING_PRICE_MISSING");
@@ -1709,56 +1862,66 @@ public class StockValuationService {
         if (quote.getClosePrice().signum() <= 0) {
             return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "CLOSING_PRICE_INVALID");
         }
+        if (effectiveAdr.adr() && !effectiveAdr.verified()) {
+            FxConversionDto unverifiedFx = new FxConversionDto(false, period == null ? null : period.getReportingCurrency(),
+                    quoteCurrency, null, null, null, true, null, false, null);
+            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "ADR_RATIO_UNVERIFIED")
+                    .withFxConversion(unverifiedFx);
+        }
         if (period == null) {
             return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
         }
 
         String reportingCurrency = period.getReportingCurrency();
-        boolean currencyMatch = sameCurrency(quoteCurrency, reportingCurrency);
-        if (!currencyMatch) {
-            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "REPORTING_CURRENCY_MISMATCH");
+        FxResolution fx = resolveFxForDay(fxLookup, reportingCurrency, quoteCurrency, day);
+        if (!fx.isUsable()) {
+            String fxFail = fx.reason() != null ? fx.reason().name() : "REPORTING_CURRENCY_MISMATCH";
+            FxConversionDto failedFx = new FxConversionDto(false, reportingCurrency, quoteCurrency, null, null, null,
+                    effectiveAdr.adr(), effectiveAdr.adr() ? effectiveAdr.ratio() : null,
+                    effectiveAdr.adr() ? effectiveAdr.verified() : null, effectiveAdr.underlyingSymbol());
+            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), fxFail)
+                    .withFxConversion(failedFx);
         }
+        BigDecimal fxMult = fx.usdPerUnit();
+        FxConversionDto fxDto = (fx.converted() || effectiveAdr.adr())
+                ? new FxConversionDto(fx.converted(), reportingCurrency, quoteCurrency, fx.rateDate(),
+                        fx.converted() ? fx.usdPerUnit() : null, fx.source(),
+                        effectiveAdr.adr(), effectiveAdr.adr() ? effectiveAdr.ratio() : null,
+                        effectiveAdr.adr() ? effectiveAdr.verified() : null, effectiveAdr.underlyingSymbol())
+                : null;
 
-        String splitError = splitSyncError(status);
-        // 1. 計算交易日 D 對應的 EPS 分母
-        BigDecimal epsAtDay = null;
-        String peReason = period.getEpsTtmReason() == null ? null : period.getEpsTtmReason().name();
-        if (period.getEpsTtm() != null && MetricStatus.AVAILABLE.name().equals(period.getEpsTtmStatus())) {
-            if (period.getEpsShareBasisDate() == null) {
-                peReason = "EPS_SOURCE_PERIOD_MISSING";
-            } else if (splitError != null && !period.getEpsShareBasisDate().equals(day)) {
-                peReason = splitError;
-            } else {
-                BigDecimal factor = StockSplitCalculator.shareFactor(stockSplits, period.getEpsShareBasisDate(), day);
-                if (factor.signum() > 0) {
-                    epsAtDay = period.getEpsTtm().divide(factor, MC);
-                    peReason = null;
-                } else {
-                    peReason = "EPS_SPLIT_BASIS_UNCONFIRMED";
-                }
-            }
-        } else if (peReason == null) {
-            peReason = "DILUTED_EPS_TTM_MISSING";
-        }
-
-        // 2. 計算交易日 D 的總市值（報告查詢重用單次計算的 ShareEvaluation）
+        // 1. 計算交易日 D 的總市值（報告查詢重用單次計算的 ShareEvaluation；ADR 歷史日絕不回退晚於 D 的 Futu 股數觀察）
+        StockShareObservation safePrimaryObs = filterObsForAdrDay(primaryObs, effectiveAdr, day, lastClosed);
+        StockShareObservation safeFallbackObs = filterObsForAdrDay(fallbackObs, effectiveAdr, day, lastClosed);
         ShareEvaluation shareEval = precomputedShareEval != null ? precomputedShareEval
-                : evaluateMarketCap(quote, period, stockSplits, status, primaryObs, fallbackObs,
+                : evaluateMarketCap(quote, period, stockSplits, status, safePrimaryObs, safeFallbackObs,
                         multiClass, verifiedOneToOne, day, cutoff, calculatedAt, lastClosed);
         BigDecimal marketCap = shareEval.marketCap();
         String sharesReason = shareEval.sharesReason();
 
-        // 3. 組裝 EV 與五項倍數
-        BigDecimal equityVal = MetricStatus.AVAILABLE.name().equals(period.getCommonEquityStatus()) ? period.getCommonEquity() : null;
-        BigDecimal revenueVal = MetricStatus.AVAILABLE.name().equals(period.getRevenueTtmStatus()) ? period.getRevenueTtm() : null;
-        BigDecimal fcfVal = MetricStatus.AVAILABLE.name().equals(period.getFreeCashFlowTtmStatus()) ? period.getFreeCashFlowTtm() : null;
-        BigDecimal ebitdaVal = MetricStatus.AVAILABLE.name().equals(period.getEbitdaTtmStatus()) ? period.getEbitdaTtm() : null;
+        // 2. 計算交易日 D 對應的 EPS 分母（已核實 ADR 統一採公司整體口徑 NetIncome_USD / adrSharesAtDay，與 P/E 與參考價反算 100% 一致）
+        DayEpsResolution epsRes = resolveAlignedDayEps(quoteCurrency, status, period, stockSplits, day,
+                shareEval.sharesAtDay(), sharesReason, effectiveAdr, fxMult);
+        BigDecimal epsAtDay = epsRes.epsAtDay();
+        String peReason = epsRes.peReason();
+        String peSource = effectiveAdr.adr() ? period.getNetIncomeCommonTtmSource() : period.getEpsTtmSource();
+        LocalDate pePeriodStart = effectiveAdr.adr() ? period.getNetIncomeCommonTtmPeriodStart() : period.getEpsTtmPeriodStart();
+
+        // 3. 組裝已對齊報價幣別之 EV 與五項倍數
+        BigDecimal equityVal = MetricStatus.AVAILABLE.name().equals(period.getCommonEquityStatus()) && period.getCommonEquity() != null
+                ? period.getCommonEquity().multiply(fxMult, MC) : null;
+        BigDecimal revenueVal = MetricStatus.AVAILABLE.name().equals(period.getRevenueTtmStatus()) && period.getRevenueTtm() != null
+                ? period.getRevenueTtm().multiply(fxMult, MC) : null;
+        BigDecimal fcfVal = MetricStatus.AVAILABLE.name().equals(period.getFreeCashFlowTtmStatus()) && period.getFreeCashFlowTtm() != null
+                ? period.getFreeCashFlowTtm().multiply(fxMult, MC) : null;
+        BigDecimal ebitdaVal = MetricStatus.AVAILABLE.name().equals(period.getEbitdaTtmStatus()) && period.getEbitdaTtm() != null
+                ? period.getEbitdaTtm().multiply(fxMult, MC) : null;
         BigDecimal evVal = MetricStatus.AVAILABLE.name().equals(period.getEvAdjustmentStatus())
                 && period.getEvAdjustment() != null && marketCap != null
-                ? marketCap.add(period.getEvAdjustment(), MC) : null;
+                ? marketCap.add(period.getEvAdjustment().multiply(fxMult, MC), MC) : null;
 
         MarketMultiples multiples = calculator.calculate(new FinancialReportValuationCalculator.ValuationInputs(
-                day, quote.getClosePrice(), quoteCurrency, reportingCurrency,
+                day, quote.getClosePrice(), quoteCurrency, quoteCurrency,
                 marketCap, epsAtDay, equityVal, revenueVal, fcfVal, evVal, ebitdaVal));
 
         BigDecimal pe = multiples.pe().value();
@@ -1789,7 +1952,7 @@ public class StockValuationService {
                 : period.getEbitdaTtmReason() != null ? period.getEbitdaTtmReason().name() : evCalcReason;
 
         ValuationResultDto.Metrics dtoMetrics = new ValuationResultDto.Metrics(
-                ValuationResultDto.financialValue(pe, resolvedPeReason, period.getEpsTtmSource(), period.getEpsTtmPeriodStart(), period.getPeriodEnd()),
+                ValuationResultDto.financialValue(pe, resolvedPeReason, peSource, pePeriodStart, period.getPeriodEnd()),
                 ValuationResultDto.financialValue(pb, resolvedPbReason, period.getCommonEquitySource(), null, period.getPeriodEnd()),
                 ValuationResultDto.financialValue(ps, resolvedPsReason, period.getRevenueTtmSource(), period.getRevenueTtmPeriodStart(), period.getPeriodEnd()),
                 ValuationResultDto.financialValue(pfcf, resolvedPfcfReason, period.getFreeCashFlowTtmSource(), period.getFreeCashFlowTtmPeriodStart(), period.getPeriodEnd()),
@@ -1821,7 +1984,8 @@ public class StockValuationService {
                 period.getSecAvailableFromDate(),
                 null,
                 null,
-                null
+                null,
+                fxDto
         );
     }
 
@@ -2063,6 +2227,15 @@ public class StockValuationService {
             List<SecFinancialFact> rawSecFacts, List<StockSplit> stockSplits, StockShareObservation latestObs,
             boolean multiClass, boolean verifiedOneToOne, boolean financialInstitution,
             LocalDate latestShareBasisDate, Instant calculatedAt) {
+        return buildPeriodsForStock(stock, status, rawFutuReports, rawSecFacts, stockSplits, latestObs,
+                multiClass, verifiedOneToOne, financialInstitution, resolveAdrContext(stock), latestShareBasisDate, calculatedAt);
+    }
+
+    List<StockFinancialPeriod> buildPeriodsForStock(
+            Stock stock, StockStatus status, List<FinancialReport> rawFutuReports,
+            List<SecFinancialFact> rawSecFacts, List<StockSplit> stockSplits, StockShareObservation latestObs,
+            boolean multiClass, boolean verifiedOneToOne, boolean financialInstitution, AdrContext adrCtx,
+            LocalDate latestShareBasisDate, Instant calculatedAt) {
         String figi = stock.getFigi();
         LocalDate knownNyDay = calculatedAt.atZone(MarketStatusService.NY_ZONE).toLocalDate();
         List<FinancialReport> eligibleFutu = rawFutuReports.stream()
@@ -2104,12 +2277,14 @@ public class StockValuationService {
             boolean hasSecAtEnd = factsUpToP.stream().anyMatch(f -> periodEnd.equals(f.getPeriodEnd()) && !"shares".equals(f.getUnit()));
             if (!hasFutuAtEnd && !hasSecAtEnd) continue;
 
+            // 優先採用本期原始財報幣別與 SEC 核心金額單位，避免非美 ADR 被掛牌幣別 USD 覆蓋
             String reportingCurrency = firstNonBlank(
                     income != null ? income.currency() : null,
                     balance != null ? balance.currency() : null,
                     cashFlow != null ? cashFlow.currency() : null,
                     latestReportCurrency(reportsUpToP),
-                    stock.getCurrency());
+                    dominantSecMonetaryUnit(factsUpToP, periodEnd),
+                    SecurityTypePolicy.isAdrType(stock.getStockType()) ? null : stock.getCurrency());
 
             Flows secFlows = factsUpToP.isEmpty() || reportingCurrency == null ? null
                     : secCalculator.calculateSelectedFacts(factsUpToP, periodCik, stock.getSic(), reportingCurrency,
@@ -2118,7 +2293,7 @@ public class StockValuationService {
             StockFinancialPeriod row = assemblePeriodRow(
                     stock, status, window, reportsUpToP, income, balance, cashFlow,
                     secFlows, periodCikFacts, rawSecFacts, futuObservedMap, stockSplits, latestObs,
-                    multiClass, verifiedOneToOne, financialInstitution,
+                    multiClass, verifiedOneToOne, financialInstitution, adrCtx,
                     reportingCurrency, periodCik, latestShareBasisDate, calculatedAt);
             builtRows.add(row);
         }
@@ -2130,7 +2305,7 @@ public class StockValuationService {
             ReportValues income, ReportValues balance, ReportValues cashFlow,
             Flows secFlows, List<SecFinancialFact> periodCikFacts, List<SecFinancialFact> allStockSecFacts,
             Map<ReportObservationKey, Instant> futuObservedMap, List<StockSplit> stockSplits, StockShareObservation latestObs,
-            boolean multiClass, boolean verifiedOneToOne, boolean financialInstitution,
+            boolean multiClass, boolean verifiedOneToOne, boolean financialInstitution, AdrContext adrCtx,
             String reportingCurrency, String periodCik, LocalDate latestShareBasisDate, Instant calculatedAt) {
         String figi = stock.getFigi();
         LocalDate periodEnd = window.periodEnd();
@@ -2183,7 +2358,7 @@ public class StockValuationService {
 
         // 3. TTM 稀釋 EPS 與拆股基準驗證
         populateEpsTtm(row, reportsUpToP, effectiveIncome, secFlows, allStockSecFacts, stockSplits,
-                multiClass, verifiedOneToOne, reportingCurrency, periodEnd, ttmStart, incomeObs, latestShareBasisDate, calculatedAt, usedSecFlows);
+                multiClass, verifiedOneToOne, adrCtx, reportingCurrency, periodEnd, ttmStart, incomeObs, latestShareBasisDate, calculatedAt, usedSecFlows);
 
         // 4. TTM 營運現金流
         applyResolvedFlow(resolveTrailingFlow(reportsUpToP, effectiveCashFlow, FinancialConcept.OPERATING_CASH_FLOW,
@@ -2211,8 +2386,12 @@ public class StockValuationService {
         // 8 & 11-14 & EV Adjustment：資產負債表項目
         populateBalanceAndEv(row, balance, secFlows, financialInstitution, reportingCurrency, periodEnd, balanceObs, usedSecFlows);
 
-        // 9 & 10：期末流通股數基準與每股帳面值
-        populateSharesAndBookValue(row, periodCikFacts, latestObs, stockSplits, multiClass, verifiedOneToOne, status, periodEnd, calculatedAt);
+        // 9 & 10：期末流通股數基準與每股帳面值（已核實 ADR 的 SEC 普通股數依 adrRatio 換算為 ADR 等值股數）
+        populateSharesAndBookValue(row, periodCikFacts, latestObs, stockSplits, multiClass, verifiedOneToOne, adrCtx, status, periodEnd, calculatedAt);
+
+        // 15. 財務品質深化擴充（使用獨立 qualitySecFlows，不讓晚到的 SBC 推遲既有 EPS／前瞻的公開時間門）
+        populateFinancialQualityFields(row, reportsUpToP, effectiveIncome, balance, effectiveCashFlow,
+                secFlows, reportingCurrency, periodEnd, ttmStart, cfTtmStart, incomeObs, balanceObs, cashFlowObs);
 
         // 彙整本列觀察時間與 SEC 披露日期
         Instant maxAvail = maxInstant(incomeObs, balanceObs, cashFlowObs);
@@ -2316,10 +2495,12 @@ public class StockValuationService {
     private void populateEpsTtm(
             StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues income,
             Flows secFlows, List<SecFinancialFact> allStockSecFacts, List<StockSplit> stockSplits,
-            boolean multiClass, boolean verifiedOneToOne, String currency, LocalDate periodEnd, LocalDate futuStart, Instant incomeObs,
+            boolean multiClass, boolean verifiedOneToOne, AdrContext adrCtx, String currency, LocalDate periodEnd, LocalDate futuStart, Instant incomeObs,
             LocalDate latestShareBasisDate, Instant calculatedAt, Set<Flow> usedSecFlows) {
         String figi = row.getFigi();
-        boolean allowSecEps = !multiClass || verifiedOneToOne;
+        boolean isAdr = adrCtx != null && adrCtx.adr();
+        // ADR 的 Futu Diluted EPS 為每 ADR 口徑而 SEC 為每原股口徑，禁止將兩者混算於同一 TTM 內
+        boolean allowSecEps = (!multiClass || verifiedOneToOne) && !isAdr;
         Flow issuerEps = secFlows == null ? null : samePeriodSecFlow(secFlows.dilutedEpsTtm(), periodEnd);
         Flow secEps = allowSecEps ? issuerEps : null;
 
@@ -2521,8 +2702,9 @@ public class StockValuationService {
             StockFinancialPeriod row, ReportValues balance, Flows secFlows,
             boolean financialInstitution, String currency, LocalDate periodEnd, Instant balanceObs, Set<Flow> usedSecFlows) {
         Map<FinancialConcept, Flow> secBalUsed = new EnumMap<>(FinancialConcept.class);
-        ReportValues enrichedBalance = balance != null && secFlows != null && sameCurrency(currency, balance.currency())
-                ? supplementBalance(balance, secFlows, secBalUsed) : balance;
+        ReportValues currencyMatchedBalance = balance != null && sameCurrency(currency, balance.currency()) ? balance : null;
+        ReportValues enrichedBalance = currencyMatchedBalance != null && secFlows != null
+                ? supplementBalance(currencyMatchedBalance, secFlows, secBalUsed) : currencyMatchedBalance;
 
         // 8. 普通股權益（與面板優先股、權益修正共用同一份 enrichedBalance，避免普通股權益漏扣已補入之優先股）
         MetricResult<BigDecimal> futuEq = enrichedBalance == null ? missingMetric("BALANCE_SHEET_MISSING") : calculator.commonEquity(enrichedBalance);
@@ -2708,8 +2890,19 @@ public class StockValuationService {
 
     private void populateSharesAndBookValue(
             StockFinancialPeriod row, List<SecFinancialFact> periodCikFacts, StockShareObservation latestObs,
-            List<StockSplit> stockSplits, boolean multiClass, boolean verifiedOneToOne,
+            List<StockSplit> stockSplits, boolean multiClass, boolean verifiedOneToOne, AdrContext adrCtx,
             StockStatus status, LocalDate periodEnd, Instant calculatedAt) {
+        AdrContext effectiveAdr = adrCtx != null ? adrCtx : AdrContext.nonAdr();
+        if (effectiveAdr.adr() && !effectiveAdr.verified()) {
+            row.setSharesOutstandingStatus(MetricStatus.UNVERIFIED.name());
+            row.setSharesOutstandingReason(ValuationReason.ADR_RATIO_UNVERIFIED);
+            row.setSharesOutstandingSource("ADR_UNVERIFIED");
+            row.setSharesOutstandingCalculation("ADR 換股比例尚未核實，暫不換算流通股數");
+            row.setBookValuePerShareStatus(MetricStatus.UNVERIFIED.name());
+            row.setBookValuePerShareReason(ValuationReason.ADR_RATIO_UNVERIFIED);
+            row.setBookValuePerShareSource("ADR_UNVERIFIED");
+            return;
+        }
         if (multiClass && !verifiedOneToOne) {
             row.setSharesOutstandingStatus(MetricStatus.UNVERIFIED.name());
             row.setSharesOutstandingReason(ValuationReason.SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED);
@@ -2721,7 +2914,7 @@ public class StockValuationService {
             return;
         }
 
-        SecFinancialFact secShare = selectFilingSharesAtPeriod(periodCikFacts, periodEnd, calculatedAt);
+        SecFinancialFact secShare = selectFilingSharesAtPeriod(periodCikFacts, periodEnd, calculatedAt, effectiveAdr.adr());
         BigDecimal sharesAtPeriodEnd = null;
         if (secShare != null && secShare.getValue() != null && secShare.getValue().signum() > 0) {
             if (hasSplitBetween(stockSplits, secShare.getPeriodEnd(), secShare.getFiled())) {
@@ -2732,19 +2925,26 @@ public class StockValuationService {
                 row.setBookValuePerShareReason(ValuationReason.SEC_SHARE_SPLIT_BASIS_UNCONFIRMED);
                 return;
             }
-            row.setSharesOutstanding(secShare.getValue());
+            BigDecimal normalizedShares = effectiveAdr.adr() && effectiveAdr.ratio() != null && effectiveAdr.ratio().signum() > 0
+                    ? secShare.getValue().divide(effectiveAdr.ratio(), 4, RoundingMode.HALF_UP)
+                    : secShare.getValue();
+            String shareCalc = effectiveAdr.adr()
+                    ? "SEC " + secShare.getTag() + " ÷ ADR 比例 " + effectiveAdr.ratio().stripTrailingZeros().toPlainString()
+                            + "（基準日 " + secShare.getPeriodEnd() + "）"
+                    : "SEC " + secShare.getTag() + "（基準日 " + secShare.getPeriodEnd() + "）";
+            row.setSharesOutstanding(normalizedShares);
             row.setSharesOutstandingStatus(MetricStatus.AVAILABLE.name());
             row.setSharesOutstandingSource("SEC_FILING_SHARES");
-            row.setSharesOutstandingCalculation("SEC " + secShare.getTag() + "（基準日 " + secShare.getPeriodEnd() + "）");
+            row.setSharesOutstandingCalculation(shareCalc);
             row.setSharesOutstandingAvailableAt(secShare.getObservedAt());
             row.setSharesSecAvailableFromDate(secShare.getAvailableFromDate());
             row.setSharesBasisDate(secShare.getPeriodEnd());
             row.setSecShareAccession(secShare.getAccession());
             if (splitSyncError(status) == null || secShare.getPeriodEnd().equals(periodEnd)) {
-                sharesAtPeriodEnd = secShare.getValue()
+                sharesAtPeriodEnd = normalizedShares
                         .multiply(StockSplitCalculator.shareFactor(stockSplits, secShare.getPeriodEnd(), periodEnd), MC);
             }
-        } else if (latestObs != null && splitSyncError(status) == null) {
+        } else if (!effectiveAdr.adr() && latestObs != null && splitSyncError(status) == null) {
             LocalDate obsDate = latestObs.getObservedAt().atZone(MarketStatusService.NY_ZONE).toLocalDate();
             BigDecimal baseShares = observedBaseShares(latestObs, multiClass);
             row.setSharesOutstanding(baseShares);
@@ -2780,7 +2980,7 @@ public class StockValuationService {
         }
     }
 
-    private SecFinancialFact selectFilingSharesAtPeriod(List<SecFinancialFact> facts, LocalDate periodEnd, Instant calculatedAt) {
+    private SecFinancialFact selectFilingSharesAtPeriod(List<SecFinancialFact> facts, LocalDate periodEnd, Instant calculatedAt, boolean adr) {
         LocalDate ceiling = periodEnd.plusDays(45);
         List<SecFinancialFact> counts = facts.stream().filter(fact -> "shares".equals(fact.getUnit())
                 && fact.getPeriodStart() == null && fact.getPeriodEnd() != null && !fact.getPeriodEnd().isAfter(ceiling)
@@ -2797,6 +2997,16 @@ public class StockValuationService {
         if (bestBalance != null && bestCover != null) {
             if (!bestBalance.getPeriodEnd().isBefore(periodEnd.minusDays(7))) {
                 return bestBalance;
+            }
+            // 僅對 ADR／20-F 外企申報且封面與主表日期相近（<= 45 天）時防護封面少一位數異常（如 BABA 2026 封面 1.858B vs 主表 18.58B），保留一般美股 10-K/10-Q 原行為
+            String coverForm = Objects.toString(bestCover.getForm(), "");
+            boolean foreignCover = adr || "20-F".equals(coverForm) || "20-F/A".equals(coverForm) || "6-K".equals(coverForm);
+            long dateGapDays = Math.abs(ChronoUnit.DAYS.between(bestCover.getPeriodEnd(), bestBalance.getPeriodEnd()));
+            if (foreignCover && dateGapDays <= 45) {
+                BigDecimal ratio = bestCover.getValue().divide(bestBalance.getValue(), MC);
+                if (ratio.compareTo(new BigDecimal("0.5")) < 0 || ratio.compareTo(BigDecimal.valueOf(2)) > 0) {
+                    return bestBalance;
+                }
             }
             return bestCover.getPeriodEnd().isAfter(bestBalance.getPeriodEnd()) ? bestCover : bestBalance;
         }
@@ -2966,7 +3176,7 @@ public class StockValuationService {
     }
 
     private String resolveCik(Stock stock, LocalDate day) {
-        if (stock.getCik() == null || stock.getCik().isBlank() || !SecurityTypePolicy.isOperatingCompanyType(stock.getStockType())) {
+        if (stock.getCik() == null || stock.getCik().isBlank() || !SecurityTypePolicy.supportsValuation(stock.getStockType())) {
             return null;
         }
         return issuerHistory.cikAt(stock.getCik(), day);
@@ -3083,9 +3293,19 @@ public class StockValuationService {
     public static DayEpsResolution resolveDayEps(
             String quoteCurrency, StockStatus status, StockFinancialPeriod period,
             List<StockSplit> stockSplits, LocalDate day) {
-        if (period == null || !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
-            String mismatchReason = period != null ? "REPORTING_CURRENCY_MISMATCH" : "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE";
-            return new DayEpsResolution(null, mismatchReason);
+        return resolveDayEps(quoteCurrency, status, period, stockSplits, day, null);
+    }
+
+    public static DayEpsResolution resolveDayEps(
+            String quoteCurrency, StockStatus status, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, LocalDate day, BigDecimal fxRateToQuote) {
+        if (period == null) {
+            return new DayEpsResolution(null, "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
+        }
+        boolean sameCcy = sameCurrency(quoteCurrency, period.getReportingCurrency());
+        boolean hasFx = fxRateToQuote != null && fxRateToQuote.signum() > 0;
+        if (!sameCcy && !hasFx) {
+            return new DayEpsResolution(null, "REPORTING_CURRENCY_MISMATCH");
         }
         String splitError = splitSyncError(status);
         BigDecimal epsAtDay = null;
@@ -3098,7 +3318,8 @@ public class StockValuationService {
             } else {
                 BigDecimal factor = StockSplitCalculator.shareFactor(stockSplits, period.getEpsShareBasisDate(), day);
                 if (factor.signum() > 0) {
-                    epsAtDay = period.getEpsTtm().divide(factor, MC);
+                    BigDecimal rawEps = period.getEpsTtm().divide(factor, MC);
+                    epsAtDay = sameCcy ? rawEps : rawEps.multiply(fxRateToQuote, MC);
                     peReason = null;
                 } else {
                     peReason = "EPS_SPLIT_BASIS_UNCONFIRMED";
@@ -3112,9 +3333,308 @@ public class StockValuationService {
 
     private DayDenominators resolveDayDenominators(
             Stock stock, StockStatus status, StockFinancialPeriod period,
-            List<StockSplit> stockSplits, LocalDate day, ShareEvaluation dayShareEval) {
-        DayEpsResolution epsRes = resolveDayEps(stock.getCurrency(), status, period, stockSplits, day);
-        return new DayDenominators(epsRes.epsAtDay(), dayShareEval == null ? null : dayShareEval.sharesAtDay(), epsRes.peReason());
+            List<StockSplit> stockSplits, LocalDate day, ShareEvaluation dayShareEval,
+            AdrContext adrCtx, FxRateLookup fxLookup) {
+        AdrContext effectiveAdr = adrCtx != null ? adrCtx : AdrContext.nonAdr();
+        if (effectiveAdr.adr() && !effectiveAdr.verified()) {
+            return new DayDenominators(null, null, "ADR_RATIO_UNVERIFIED", null, "ADR_RATIO_UNVERIFIED");
+        }
+        if (period == null) {
+            return new DayDenominators(null, dayShareEval == null ? null : dayShareEval.sharesAtDay(),
+                    "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE", null, null);
+        }
+        FxResolution fx = resolveFxForDay(fxLookup, period.getReportingCurrency(), stock.getCurrency(), day);
+        if (!fx.isUsable()) {
+            String fxFail = fx.reason() != null ? fx.reason().name() : "REPORTING_CURRENCY_MISMATCH";
+            return new DayDenominators(null, dayShareEval == null ? null : dayShareEval.sharesAtDay(),
+                    fxFail, null, fxFail);
+        }
+        DayEpsResolution epsRes = resolveAlignedDayEps(stock.getCurrency(), status, period, stockSplits, day,
+                dayShareEval == null ? null : dayShareEval.sharesAtDay(),
+                dayShareEval == null ? null : dayShareEval.sharesReason(),
+                effectiveAdr, fx.usdPerUnit());
+        return new DayDenominators(epsRes.epsAtDay(), dayShareEval == null ? null : dayShareEval.sharesAtDay(),
+                epsRes.peReason(), fx.usdPerUnit(), null);
+    }
+
+    private DayEpsResolution resolveAlignedDayEps(
+            String quoteCurrency, StockStatus status, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, LocalDate day, BigDecimal sharesAtDay, String sharesReason,
+            AdrContext adrCtx, BigDecimal fxMult) {
+        if (period == null || fxMult == null || fxMult.signum() <= 0) {
+            return new DayEpsResolution(null, period == null ? "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE" : "FX_RATE_UNAVAILABLE");
+        }
+        if (adrCtx != null && adrCtx.adr()) {
+            if (!adrCtx.verified()) {
+                return new DayEpsResolution(null, "ADR_RATIO_UNVERIFIED");
+            }
+            if (!MetricStatus.AVAILABLE.name().equals(period.getNetIncomeCommonTtmStatus())
+                    || period.getNetIncomeCommonTtm() == null) {
+                String niReason = period.getNetIncomeCommonTtmReason() != null
+                        ? period.getNetIncomeCommonTtmReason().name() : "NET_INCOME_COMMON_MISSING";
+                return new DayEpsResolution(null, niReason);
+            }
+            if (sharesAtDay == null || sharesAtDay.signum() <= 0) {
+                return new DayEpsResolution(null, sharesReason != null ? sharesReason : "VALUATION_DATE_SHARES_MISSING");
+            }
+            BigDecimal netIncomeQuote = period.getNetIncomeCommonTtm().multiply(fxMult, MC);
+            return new DayEpsResolution(netIncomeQuote.divide(sharesAtDay, MC), null);
+        }
+        String splitError = splitSyncError(status);
+        BigDecimal epsAtDay = null;
+        String peReason = period.getEpsTtmReason() == null ? null : period.getEpsTtmReason().name();
+        if (period.getEpsTtm() != null && MetricStatus.AVAILABLE.name().equals(period.getEpsTtmStatus())) {
+            if (period.getEpsShareBasisDate() == null) {
+                peReason = "EPS_SOURCE_PERIOD_MISSING";
+            } else if (splitError != null && !period.getEpsShareBasisDate().equals(day)) {
+                peReason = splitError;
+            } else {
+                BigDecimal factor = StockSplitCalculator.shareFactor(stockSplits, period.getEpsShareBasisDate(), day);
+                if (factor.signum() > 0) {
+                    epsAtDay = period.getEpsTtm().divide(factor, MC).multiply(fxMult, MC);
+                    peReason = null;
+                } else {
+                    peReason = "EPS_SPLIT_BASIS_UNCONFIRMED";
+                }
+            }
+        } else if (peReason == null) {
+            peReason = "DILUTED_EPS_TTM_MISSING";
+        }
+        return new DayEpsResolution(epsAtDay, peReason);
+    }
+
+    private AdrContext resolveAdrContext(Stock stock) {
+        if (stock == null || !SecurityTypePolicy.isAdrType(stock.getStockType())) {
+            return AdrContext.nonAdr();
+        }
+        if (adrShareRatios == null || stock.getSymbol() == null || stock.getSymbol().isBlank()) {
+            return AdrContext.unverified();
+        }
+        AdrShareRatio ratio = adrShareRatios.findById(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)).orElse(null);
+        if (ratio == null || !ratio.isVerified() || ratio.getAdrRatio() == null || ratio.getAdrRatio().signum() <= 0) {
+            return AdrContext.unverified();
+        }
+        return AdrContext.verified(ratio);
+    }
+
+    private Map<String, AdrContext> loadAdrContexts(Collection<Stock> batchStocks) {
+        if (batchStocks == null || batchStocks.isEmpty()) {
+            return Map.of();
+        }
+        Set<String> adrSymbols = new LinkedHashSet<>();
+        for (Stock s : batchStocks) {
+            if (s != null && SecurityTypePolicy.isAdrType(s.getStockType())
+                    && s.getSymbol() != null && !s.getSymbol().isBlank()) {
+                adrSymbols.add(s.getSymbol().trim().toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+        Map<String, AdrShareRatio> ratioBySymbol = new HashMap<>();
+        if (!adrSymbols.isEmpty() && adrShareRatios != null) {
+            for (AdrShareRatio row : adrShareRatios.findBySymbolIn(adrSymbols)) {
+                if (row != null && row.getSymbol() != null) {
+                    ratioBySymbol.put(row.getSymbol().trim().toUpperCase(java.util.Locale.ROOT), row);
+                }
+            }
+        }
+        Map<String, AdrContext> result = new HashMap<>();
+        for (Stock s : batchStocks) {
+            if (s == null) continue;
+            if (!SecurityTypePolicy.isAdrType(s.getStockType())) {
+                result.put(s.getFigi(), AdrContext.nonAdr());
+                continue;
+            }
+            String sym = s.getSymbol() == null ? null : s.getSymbol().trim().toUpperCase(java.util.Locale.ROOT);
+            AdrShareRatio ratio = sym == null ? null : ratioBySymbol.get(sym);
+            if (ratio != null && ratio.isVerified() && ratio.getAdrRatio() != null && ratio.getAdrRatio().signum() > 0) {
+                result.put(s.getFigi(), AdrContext.verified(ratio));
+            } else {
+                result.put(s.getFigi(), AdrContext.unverified());
+            }
+        }
+        return result;
+    }
+
+    private FxRateLookup preloadFxLookup(Collection<StockFinancialPeriod> periods, LocalDate fromDate, LocalDate throughDate) {
+        if (fxRateService == null || periods == null || periods.isEmpty() || fromDate == null || throughDate == null) {
+            return FxRateLookup.EMPTY;
+        }
+        Set<String> currencies = new LinkedHashSet<>();
+        for (StockFinancialPeriod p : periods) {
+            if (p != null && p.getReportingCurrency() != null && !p.getReportingCurrency().isBlank()) {
+                currencies.add(p.getReportingCurrency().trim().toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+        return fxRateService.preload(currencies, fromDate, throughDate);
+    }
+
+    private FxResolution resolveFxForDay(FxRateLookup fxLookup, String reportingCurrency, String quoteCurrency, LocalDate day) {
+        if (sameCurrency(quoteCurrency, reportingCurrency)) {
+            return FxResolution.identity(quoteCurrency);
+        }
+        if (fxRateService == null) {
+            return FxResolution.unavailable(reportingCurrency, quoteCurrency, ValuationReason.REPORTING_CURRENCY_MISMATCH);
+        }
+        FxRateLookup lookup = fxLookup != null ? fxLookup : FxRateLookup.EMPTY;
+        return lookup.resolve(reportingCurrency, quoteCurrency, day);
+    }
+
+    private String dominantSecMonetaryUnit(List<SecFinancialFact> facts, LocalDate periodEnd) {
+        if (facts == null || facts.isEmpty()) {
+            return null;
+        }
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (SecFinancialFact f : facts) {
+            if (f == null || f.getUnit() == null || f.getUnit().isBlank()) continue;
+            String unit = f.getUnit().trim();
+            if ("shares".equalsIgnoreCase(unit) || "pure".equalsIgnoreCase(unit) || unit.contains("/")) continue;
+            if (unit.length() != 3) continue;
+            int weight = periodEnd != null && periodEnd.equals(f.getPeriodEnd()) ? 3 : 1;
+            counts.merge(unit.toUpperCase(java.util.Locale.ROOT), weight, Integer::sum);
+        }
+        return counts.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(null);
+    }
+
+    /** 填入 10 項財務品質深化欄位（使用獨立 qualitySecFlows，不影響既有 14 項與 availableAt 披露時間門）。 */
+    private void populateFinancialQualityFields(
+            StockFinancialPeriod row,
+            List<ReportValues> reportsUpToP,
+            ReportValues effectiveIncome,
+            ReportValues balance,
+            ReportValues effectiveCashFlow,
+            Flows secFlows,
+            String reportingCurrency,
+            LocalDate periodEnd,
+            LocalDate ttmStart,
+            LocalDate cfTtmStart,
+            Instant incomeObs,
+            Instant balanceObs,
+            Instant cashFlowObs) {
+        Set<Flow> qualitySecFlows = new ArrayListSet();
+
+        // 毛利 TTM
+        Flow secGross = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.GROSS_PROFIT), periodEnd);
+        ResolvedFlow gross = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.GROSS_PROFIT,
+                secGross, secFlows, reportingCurrency, ttmStart, incomeObs, "Futu 毛利 TTM", "SEC 毛利 TTM", qualitySecFlows);
+        row.setGrossProfitTtm(gross.value());
+        row.setGrossProfitTtmSource(gross.source());
+        row.setGrossProfitTtmReason(gross.value() != null ? null : (gross.reason() != null ? gross.reason() : ValuationReason.GROSS_PROFIT_MISSING));
+
+        // 營業利益 TTM
+        Flow secOp = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.OPERATING_PROFIT), periodEnd);
+        ResolvedFlow op = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.OPERATING_PROFIT,
+                secOp, secFlows, reportingCurrency, ttmStart, incomeObs, "Futu 營業利益 TTM", "SEC 營業利益 TTM", qualitySecFlows);
+        row.setOperatingProfitTtm(op.value());
+        row.setOperatingProfitTtmSource(op.source());
+        row.setOperatingProfitTtmReason(op.value() != null ? null : (op.reason() != null ? op.reason() : ValuationReason.OPERATING_PROFIT_MISSING));
+
+        // 稅前盈利 TTM
+        Flow secPretax = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.PRETAX_PROFIT), periodEnd);
+        ResolvedFlow pretax = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.PRETAX_PROFIT,
+                secPretax, secFlows, reportingCurrency, ttmStart, incomeObs, "Futu 稅前盈利 TTM", "SEC 稅前盈利 TTM", qualitySecFlows);
+        row.setPretaxProfitTtm(pretax.value());
+        row.setPretaxProfitTtmSource(pretax.source());
+        row.setPretaxProfitTtmReason(pretax.value() != null ? null : (pretax.reason() != null ? pretax.reason() : ValuationReason.PRETAX_OR_TAX_MISSING));
+
+        // 所得稅費用 TTM
+        Flow secTax = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.INCOME_TAX_EXPENSE), periodEnd);
+        ResolvedFlow tax = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.INCOME_TAX_EXPENSE,
+                secTax, secFlows, reportingCurrency, ttmStart, incomeObs, "Futu 所得稅費用 TTM", "SEC 所得稅費用 TTM", qualitySecFlows);
+        row.setIncomeTaxExpenseTtm(tax.value());
+        row.setIncomeTaxExpenseTtmSource(tax.source());
+        row.setIncomeTaxExpenseTtmReason(tax.value() != null ? null : (tax.reason() != null ? tax.reason() : ValuationReason.PRETAX_OR_TAX_MISSING));
+
+        // 利息費用 TTM（正規化為正數規模）
+        Flow secInt = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.INTEREST_EXPENSE_AS_REPORTED), periodEnd);
+        ResolvedFlow interest = resolveTrailingFlow(reportsUpToP, effectiveIncome, FinancialConcept.INTEREST_EXPENSE_AS_REPORTED,
+                secInt, secFlows, reportingCurrency, ttmStart, incomeObs, "Futu 利息費用 TTM", "SEC 利息費用 TTM", qualitySecFlows);
+        BigDecimal intVal = interest.value() == null ? null : interest.value().abs();
+        row.setInterestExpenseTtm(intVal);
+        row.setInterestExpenseTtmSource(interest.source());
+        row.setInterestExpenseTtmReason(intVal != null ? null : (interest.reason() != null ? interest.reason() : ValuationReason.INTEREST_EXPENSE_MISSING));
+
+        // SBC TTM（Futu 無獨立 SBC，以 SEC 標準標籤為主）
+        Flow secSbc = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.SBC), periodEnd);
+        if (secSbc != null && secSbc.value() != null) {
+            row.setSbcTtm(secSbc.value());
+            row.setSbcTtmSource("SEC");
+            row.setSbcTtmReason(null);
+        } else {
+            row.setSbcTtm(null);
+            row.setSbcTtmSource("SEC");
+            row.setSbcTtmReason(secSbc != null && secSbc.reason() != null
+                    ? ValuationReason.fromCode(secSbc.reason()) : ValuationReason.SBC_MISSING);
+        }
+
+        // 普通股現金股息流出 TTM（正規化為非負流出規模）
+        Flow secDiv = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.CASH_DIVIDENDS_PAID), periodEnd);
+        ResolvedFlow div = resolveTrailingFlow(reportsUpToP, effectiveCashFlow, FinancialConcept.CASH_DIVIDENDS_PAID,
+                secDiv, secFlows, reportingCurrency, cfTtmStart, cashFlowObs, "Futu 現金股息 TTM", "SEC 現金股息 TTM", qualitySecFlows);
+        BigDecimal divVal = div.value() == null ? null : (div.value().signum() < 0 ? div.value().negate() : div.value());
+        row.setCashDividendsPaidTtm(divVal);
+        row.setCashDividendsPaidTtmSource(div.source());
+        row.setCashDividendsPaidTtmReason(divVal != null ? null : (div.reason() != null ? div.reason() : ValuationReason.SHAREHOLDER_RETURN_MISSING));
+
+        // 普通股淨發行現金流 TTM（正數發行、負數回購；不以 SEC gross 回購冒充 net）
+        MetricResult<BigDecimal> futuNetIssuance = effectiveCashFlow == null
+                ? missingMetric("SHAREHOLDER_RETURN_MISSING")
+                : calculator.trailingTwelveMonths(reportsUpToP, effectiveCashFlow.figi(), 3,
+                        FinancialConcept.NET_COMMON_STOCK_ISSUANCE, effectiveCashFlow.periodEnd(), reportingCurrency);
+        if (futuNetIssuance.value() != null) {
+            row.setNetCommonStockIssuanceTtm(futuNetIssuance.value());
+            row.setNetCommonStockIssuanceTtmSource("FUTU");
+            row.setNetCommonStockIssuanceTtmReason(null);
+        } else {
+            row.setNetCommonStockIssuanceTtm(null);
+            row.setNetCommonStockIssuanceTtmSource("FUTU");
+            String rCode = reasonOf(futuNetIssuance);
+            row.setNetCommonStockIssuanceTtmReason(rCode != null
+                    ? ValuationReason.fromCode(rCode) : ValuationReason.SHAREHOLDER_RETURN_MISSING);
+        }
+
+        // 期末商譽與無形資產合計（優先 Futu 權威合計或分項合成，缺時由 SEC Goodwill + Intangibles 補齊）
+        ReportValues currencyMatchedBalance = balance != null && sameCurrency(reportingCurrency, balance.currency()) ? balance : null;
+        MetricResult<BigDecimal> futuGw = currencyMatchedBalance == null
+                ? missingMetric("GOODWILL_INTANGIBLES_MISSING") : calculator.goodwillAndIntangibles(currencyMatchedBalance);
+        Flow secGw = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.GOODWILL_AND_INTANGIBLES), periodEnd);
+        if (preferSec(secGw, futuGw, currencyMatchedBalance)) {
+            row.setGoodwillAndIntangibles(secGw.value());
+            row.setGoodwillAndIntangiblesSource("SEC");
+            row.setGoodwillAndIntangiblesReason(secGw.value() != null ? null
+                    : (secGw.reason() != null ? ValuationReason.fromCode(secGw.reason()) : ValuationReason.GOODWILL_INTANGIBLES_MISSING));
+        } else if (futuGw.value() != null) {
+            row.setGoodwillAndIntangibles(futuGw.value());
+            row.setGoodwillAndIntangiblesSource("FUTU");
+            row.setGoodwillAndIntangiblesReason(null);
+        } else {
+            row.setGoodwillAndIntangibles(null);
+            row.setGoodwillAndIntangiblesSource("FUTU");
+            String rCode = reasonOf(futuGw);
+            row.setGoodwillAndIntangiblesReason(rCode != null
+                    ? ValuationReason.fromCode(rCode) : ValuationReason.GOODWILL_INTANGIBLES_MISSING);
+        }
+
+        // 期末顯式短期計息債務（缺披露保留 NULL，不沿用 EV 補零）
+        MetricResult<BigDecimal> futuCurDebt = currencyMatchedBalance == null
+                ? missingMetric("CURRENT_DEBT_MISSING") : calculator.explicitCurrentDebt(currencyMatchedBalance);
+        Flow secCurDebt = secFlows == null ? null : samePeriodSecFlow(secFlows.inputs().get(FinancialConcept.CURRENT_DEBT), periodEnd);
+        if (preferSec(secCurDebt, futuCurDebt, currencyMatchedBalance)) {
+            row.setCurrentDebt(secCurDebt.value());
+            row.setCurrentDebtSource("SEC");
+            row.setCurrentDebtReason(secCurDebt.value() != null ? null
+                    : (secCurDebt.reason() != null ? ValuationReason.fromCode(secCurDebt.reason()) : ValuationReason.CURRENT_DEBT_MISSING));
+        } else if (futuCurDebt.value() != null) {
+            row.setCurrentDebt(futuCurDebt.value());
+            row.setCurrentDebtSource("FUTU");
+            row.setCurrentDebtReason(null);
+        } else {
+            row.setCurrentDebt(null);
+            row.setCurrentDebtSource("FUTU");
+            String rCode = reasonOf(futuCurDebt);
+            row.setCurrentDebtReason(rCode != null ? ValuationReason.fromCode(rCode) : ValuationReason.CURRENT_DEBT_MISSING);
+        }
     }
 
     private BigDecimal positiveMetricValue(ValuationResultDto.Metrics metrics, String metricCode) {
@@ -3130,7 +3650,13 @@ public class StockValuationService {
     private ValuationReferenceDto buildHistoricalReference(
             String selectedMetric, BigDecimal currentMultiple, List<ValuationResultDto> monthlyHistory, StockFinancialPeriod period,
             DayDenominators denoms, String quoteCurrency, boolean financialInstitution, LocalDate day) {
-        if (period != null && !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
+        if (denoms != null && denoms.fxFailureReason() != null) {
+            ValuationReason failReason = ValuationReason.fromCode(denoms.fxFailureReason());
+            return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
+                    failReason.statusName(), denoms.fxFailureReason());
+        }
+        if (period != null && !sameCurrency(quoteCurrency, period.getReportingCurrency())
+                && (denoms == null || denoms.fxRateToQuote() == null || denoms.fxRateToQuote().signum() <= 0)) {
             return ValuationReferenceDto.unavailable(ValuationReferenceDto.KIND_HISTORICAL_MARKET, selectedMetric,
                     MetricStatus.UNVERIFIED.name(), "REPORTING_CURRENCY_MISMATCH");
         }
@@ -3673,12 +4199,22 @@ public class StockValuationService {
                 null, null, null, null, null, currentMultiple, null, assumptionMidPrice);
     }
 
-    /** 以所選交易日配對之同財季每股分母將目標估值倍數換算為隱含正股價；分母非正或缺值時回傳 null。 */
+    /** 以所選交易日配對之同財季每股分母（已含當日匯率與 ADR 股數口徑對齊）將目標估值倍數換算為隱含正股價；分母非正或缺值時回傳 null。 */
     private BigDecimal convertMultipleToPrice(
             String metricCode, BigDecimal multiple, StockFinancialPeriod period,
             DayDenominators denoms, String quoteCurrency, boolean financialInstitution) {
-        if (metricCode == null || multiple == null || multiple.signum() <= 0 || period == null || denoms == null
-                || !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
+        if (metricCode == null || multiple == null || multiple.signum() <= 0 || period == null || denoms == null) {
+            return null;
+        }
+        if (denoms.fxFailureReason() != null) {
+            return null;
+        }
+        BigDecimal fxMult;
+        if (sameCurrency(quoteCurrency, period.getReportingCurrency())) {
+            fxMult = BigDecimal.ONE;
+        } else if (denoms.fxRateToQuote() != null && denoms.fxRateToQuote().signum() > 0) {
+            fxMult = denoms.fxRateToQuote();
+        } else {
             return null;
         }
         BigDecimal impliedPrice = switch (metricCode.toUpperCase()) {
@@ -3687,15 +4223,15 @@ public class StockValuationService {
             case "PB" -> MetricStatus.AVAILABLE.name().equals(period.getCommonEquityStatus())
                     && period.getCommonEquity() != null && period.getCommonEquity().signum() > 0
                     && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
-                    ? multiple.multiply(period.getCommonEquity(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+                    ? multiple.multiply(period.getCommonEquity().multiply(fxMult, MC), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
             case "PS" -> MetricStatus.AVAILABLE.name().equals(period.getRevenueTtmStatus())
                     && period.getRevenueTtm() != null && period.getRevenueTtm().signum() > 0
                     && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
-                    ? multiple.multiply(period.getRevenueTtm(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+                    ? multiple.multiply(period.getRevenueTtm().multiply(fxMult, MC), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
             case "PFCF" -> !financialInstitution && MetricStatus.AVAILABLE.name().equals(period.getFreeCashFlowTtmStatus())
                     && period.getFreeCashFlowTtm() != null && period.getFreeCashFlowTtm().signum() > 0
                     && denoms.sharesAtDay() != null && denoms.sharesAtDay().signum() > 0
-                    ? multiple.multiply(period.getFreeCashFlowTtm(), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
+                    ? multiple.multiply(period.getFreeCashFlowTtm().multiply(fxMult, MC), MC).divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
             case "EV_EBITDA" -> {
                 if (financialInstitution || !MetricStatus.AVAILABLE.name().equals(period.getEbitdaTtmStatus())
                         || period.getEbitdaTtm() == null || period.getEbitdaTtm().signum() <= 0
@@ -3704,7 +4240,9 @@ public class StockValuationService {
                         || denoms.sharesAtDay() == null || denoms.sharesAtDay().signum() <= 0) {
                     yield null;
                 }
-                BigDecimal impliedMarketCap = multiple.multiply(period.getEbitdaTtm(), MC).subtract(period.getEvAdjustment(), MC);
+                BigDecimal ebitdaQuote = period.getEbitdaTtm().multiply(fxMult, MC);
+                BigDecimal evAdjQuote = period.getEvAdjustment().multiply(fxMult, MC);
+                BigDecimal impliedMarketCap = multiple.multiply(ebitdaQuote, MC).subtract(evAdjQuote, MC);
                 yield impliedMarketCap.signum() > 0 ? impliedMarketCap.divide(denoms.sharesAtDay(), 4, RoundingMode.HALF_UP) : null;
             }
             default -> null;

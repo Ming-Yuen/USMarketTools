@@ -222,6 +222,130 @@ public class ValuationSummaryCalculator {
                 priceStructure, supportResistance, tradePlans, marketContext);
     }
 
+    /** 專供 ETF／ETP 產出純技術與資金面綜合摘要（估值與基本面標示 NOT_APPLICABLE_FOR_ETF，保留大盤逆風、真假破位與支撐阻力觀察）。 */
+    public MetricResult<InvestmentSummaryDto> calculateForEtf(
+            AnalysisHorizon horizon,
+            BigDecimal currentPrice,
+            String currency,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<SupportResistanceDto> supportResistance,
+            MetricResult<TradePlanResultDto> tradePlans,
+            MetricResult<MarketContextDto> marketContext) {
+        AnalysisHorizon effectiveHorizon = horizon == null ? AnalysisHorizon.POSITION : horizon;
+        boolean structureAvailable = priceStructure != null && priceStructure.status() == MetricStatus.AVAILABLE && priceStructure.value() != null;
+        boolean supportAvailable = supportResistance != null && supportResistance.status() == MetricStatus.AVAILABLE && supportResistance.value() != null;
+        if (!structureAvailable && !supportAvailable) {
+            return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                    AnalysisReasonDto.of("TECHNICAL_PRICE_MISSING", "SUMMARY", "缺少有效技術結構與支撐阻力資料，暫不產生 ETF 技術摘要。"));
+        }
+        String weeklyTrend = extractWeeklyMajorTrend(priceStructure);
+        List<TradePlanDto> planList = tradePlans != null && tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
+                ? tradePlans.value().plans() : List.of();
+        List<NormalizedBarDto> dailyBars = extractDailyBars(priceStructure);
+        BigDecimal dailyLatestClose = extractLatestDailyClose(priceStructure);
+        if (dailyLatestClose == null) {
+            dailyLatestClose = dailyBars.isEmpty() ? currentPrice : dailyBars.getLast().close();
+        }
+        BigDecimal sma200 = extractSma200(marketContext);
+        Boolean aboveSma200 = dailyLatestClose != null && sma200 != null ? dailyLatestClose.compareTo(sma200) >= 0 : null;
+        SupportSelection supportSelection = selectTechnicalSupportZone(
+                effectiveHorizon, supportResistance, planList, dailyLatestClose, dailyBars, currentPrice, null);
+        LevelZoneDto supportZone = supportSelection.zone();
+        PlanConstraintDto constraint = extractConstraint(marketContext);
+        EntryPermission permission = constraint != null ? constraint.entryPermission() : null;
+        MarketRegime marketRegime = extractMarketRegime(marketContext);
+        BigDecimal vixClose = extractVixClose(marketContext);
+        BigDecimal tenYearChange20 = extractTenYearChange20(marketContext);
+        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20);
+        BreakoutDiagnosisDto primaryDiagnosis = extractPrimaryDiagnosis(supportResistance);
+        BreakoutDiagnosisDto matchedZoneDiagnosis = findDiagnosisForZone(supportResistance, supportZone);
+        BreakoutDiagnosisDto breakoutDiagnosis = matchedZoneDiagnosis != null ? matchedZoneDiagnosis : primaryDiagnosis;
+        boolean highRiskBreakdown = (matchedZoneDiagnosis != null && matchedZoneDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN)
+                || (supportZone == null && primaryDiagnosis != null && primaryDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN);
+        boolean stopBreachedOrReclaim = supportSelection.excludedByBreachOrInvalidation()
+                || highRiskBreakdown
+                || hasStopBreachedOrReclaim(planList, supportZone, dailyLatestClose, dailyBars);
+
+        String stance;
+        if (marketRegime == MarketRegime.BEAR || marketRegime == MarketRegime.PANIC) {
+            stance = "WAIT_FOR_MARKET_STABILIZATION";
+        } else if (stopBreachedOrReclaim || permission == EntryPermission.BLOCK) {
+            stance = "WAIT_FOR_STABILIZATION";
+        } else if ("UPTREND".equals(weeklyTrend) && Boolean.TRUE.equals(aboveSma200) && supportZone != null) {
+            stance = "ETF_TECHNICAL_BULLISH_SUPPORT";
+        } else if ("DOWNTREND".equals(weeklyTrend) && Boolean.FALSE.equals(aboveSma200)) {
+            stance = "WAIT_FOR_STABILIZATION";
+        } else {
+            stance = "ETF_TECHNICAL_NEUTRAL";
+        }
+
+        List<SummaryFlagDto> risks = new ArrayList<>();
+        if (macroCaution != null && macroCaution.marketRegime() != null
+                && (macroCaution.marketRegime() == MarketRegime.PANIC
+                || macroCaution.marketRegime() == MarketRegime.BEAR
+                || macroCaution.marketRegime() == MarketRegime.CORRECTION)) {
+            String sev = macroCaution.marketRegime() == MarketRegime.CORRECTION ? "MEDIUM" : "HIGH";
+            risks.add(new SummaryFlagDto("MARKET_REGIME_HEADWIND", sev, Map.of("regime", macroCaution.marketRegime().name())));
+        }
+        if (macroCaution != null && (macroCaution.triggerCodes().contains("VIX_ELEVATED")
+                || macroCaution.triggerCodes().contains("TREASURY_10Y_SURGE_20P"))) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (macroCaution.vixClose() != null) params.put("vixClose", macroCaution.vixClose());
+            if (macroCaution.tenYearChange20() != null) params.put("tenYearChange20", macroCaution.tenYearChange20());
+            risks.add(new SummaryFlagDto("MACRO_VOLATILITY_OR_RATE_STRESS", "MEDIUM", params));
+        }
+        if (highRiskBreakdown) {
+            risks.add(new SummaryFlagDto("SUPPORT_HIGH_RISK_BREAKDOWN", "HIGH", Map.of()));
+        }
+        if (stopBreachedOrReclaim) {
+            risks.add(new SummaryFlagDto("PROTECTIVE_STOP_OR_RECLAIM_PENDING", "HIGH", Map.of()));
+        }
+        if ("DOWNTREND".equals(weeklyTrend) && Boolean.FALSE.equals(aboveSma200)) {
+            risks.add(new SummaryFlagDto("BELOW_SMA200_DOWNTREND", "MEDIUM", Map.of()));
+        }
+
+        List<WatchItemDto> watchItems = new ArrayList<>();
+        if (supportZone != null && supportZone.lower() != null && supportZone.upper() != null) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("lower", supportZone.lower());
+            params.put("upper", supportZone.upper());
+            if (supportZone.timeframe() != null) params.put("timeframe", supportZone.timeframe().name());
+            if (currency != null) params.put("currency", currency);
+            watchItems.add(new WatchItemDto("WATCH_TECHNICAL_SUPPORT", params));
+        }
+
+        PriceRangeDto supportRange = supportZone == null ? null : new PriceRangeDto(supportZone.lower(), supportZone.upper(), null);
+        InvestmentSummaryDto dto = new InvestmentSummaryDto(
+                "NOT_APPLICABLE_FOR_ETF",
+                "NOT_APPLICABLE",
+                stance,
+                null,
+                "ETF_TECHNICAL_ONLY",
+                null,
+                null,
+                null,
+                null,
+                null,
+                supportZone == null ? null : supportZone.id(),
+                supportRange,
+                supportZone == null || supportZone.timeframe() == null ? null : supportZone.timeframe().name(),
+                supportZone == null ? null : supportZone.effectiveStrength(),
+                weeklyTrend,
+                aboveSma200,
+                permission == null ? null : permission.name(),
+                false,
+                null,
+                List.copyOf(risks),
+                List.copyOf(watchItems),
+                List.of(AnalysisReasonDto.of("NOT_APPLICABLE_FOR_ETF", "SUMMARY", "ETF／ETP 不適用單一公司財報估值模型，僅提供技術結構、資金流與交易計畫。")),
+                macroCaution,
+                null,
+                breakoutDiagnosis,
+                null
+        );
+        return MetricResult.available(dto);
+    }
+
     public MetricResult<InvestmentSummaryDto> calculate(
             AnalysisHorizon horizon,
             ValuationResultDto valuation,
@@ -624,7 +748,7 @@ public class ValuationSummaryCalculator {
         }
 
         int availableCount = countAvailable(f.revenueGrowthYoy(), f.epsGrowthYoy(), f.roe(), f.fcfMargin(), f.netDebtToEbitda());
-        if (availableCount < 2 && !swungToLoss && !currentLoss) {
+        if (availableCount < 2 && !swungToLoss && !currentLoss && !f.marginCompressionConsecutive()) {
             return "INSUFFICIENT_DATA";
         }
 
@@ -634,7 +758,8 @@ public class ValuationSummaryCalculator {
                 || swungToLoss
                 || (negativeFcf && !highRevGrowth)
                 || (currentLoss && !(highRevGrowth && fcfMargin != null && fcfMargin.signum() > 0))
-                || (debtEbitda != null && debtEbitda.compareTo(WEAK_DEBT_EBITDA) > 0);
+                || (debtEbitda != null && debtEbitda.compareTo(WEAK_DEBT_EBITDA) > 0)
+                || f.marginCompressionConsecutive();
         if (weakening) {
             return "WEAKENING";
         }
@@ -1405,9 +1530,20 @@ public class ValuationSummaryCalculator {
                 candidates.add(new SummaryFlagDto("NEGATIVE_FCF_BURN", "HIGH", Map.of("fcfMargin", fcfMargin)));
             }
             BigDecimal debtEbitda = val(f.netDebtToEbitda());
-            if (debtEbitda != null && debtEbitda.compareTo(STRONG_MAX_DEBT_EBITDA) > 0) {
+            BigDecimal interestCov = val(f.interestCoverage());
+            boolean lowInterestCov = debtEbitda != null && debtEbitda.compareTo(WEAK_DEBT_EBITDA) > 0
+                    && interestCov != null && interestCov.compareTo(TWO) < 0;
+            if (lowInterestCov) {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("netDebtToEbitda", debtEbitda);
+                params.put("interestCoverage", interestCov);
+                candidates.add(new SummaryFlagDto("LOW_INTEREST_COVERAGE", "HIGH", params));
+            } else if (debtEbitda != null && debtEbitda.compareTo(STRONG_MAX_DEBT_EBITDA) > 0) {
                 String sev = debtEbitda.compareTo(WEAK_DEBT_EBITDA) > 0 ? "HIGH" : "MEDIUM";
                 candidates.add(new SummaryFlagDto("HIGH_LEVERAGE_DEBT_EBITDA", sev, Map.of("netDebtToEbitda", debtEbitda)));
+            }
+            if (f.marginCompressionConsecutive()) {
+                candidates.add(new SummaryFlagDto("MARGIN_COMPRESSION_CONSECUTIVE", "MEDIUM", Map.of()));
             }
         }
         if (f != null) {

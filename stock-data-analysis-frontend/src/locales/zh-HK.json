@@ -1,13 +1,49 @@
 {
   "industryProposal": {
     "publishedDate": "來源發布日期",
-    "title": "AI 產業估值提案", "description": "請核對產業假設與來源；草稿只會在你批准後生效。批准會更新整個產業的正式設定，此畫面只重算目前股票。",
-    "current": "正式設定", "proposal": "最新提案", "model": "業務估值模型", "metric": "固定主要指標", "range": "建議倍數範圍", "asOf": "評估日期", "createdAt": "建立時間（香港時間）", "noRationale": "尚未提供理由。", "noProposal": "尚未產生提案。", "industryMissing": "後端尚未提供這隻股票的產業。",
-    "approvalNotice": "按批准會把此假設儲存為該產業的正式設定，並重算目前股票。", "refresh": "重新讀取狀態", "propose": "產生 AI 草稿", "approve": "批准並重算目前股票",
-    "jobUnavailable": "目前無法取得估值工作；假設可能已批准，但尚未確認重算。", "jobFailed": "估值工作失敗，已批准的設定仍保留。", "reportMismatch": "報告尚未與批准的假設相符，暫不能確認重算完成。",
-    "status": { "PENDING": "排隊中", "PROCESSING": "產生中", "DRAFT": "草稿，等待你批准", "FAILED": "產生失敗", "APPROVED": "已批准" },
-    "recalculation": { "QUEUED": "已批准，重算正在排隊或執行中；完成後會核對報告。", "CONFIRMED": "已重新讀取報告，並確認與批准的假設一致。", "UNCONFIRMED": "正式設定已儲存，但尚未核實這隻股票的報告已採用該假設。", "FAILED": "正式設定已儲存；重算或結果核對失敗，請先查看原因再重試。" },
-    "codes": { "NON_FINANCIAL_OPERATING": "非金融營運企業", "BANK": "銀行", "INSURANCE": "保險", "REIT": "房地產投資信託", "UNKNOWN": "尚未分類", "PE": "P/E", "PB": "P/B", "PS": "P/S", "EV_EBITDA": "EV/EBITDA" }
+    "title": "AI 產業估值提案",
+    "description": "請核對產業假設與來源；草稿只會在你批准後生效。批准會更新整個產業的正式設定，此畫面只重算目前股票。",
+    "current": "正式設定",
+    "proposal": "最新提案",
+    "model": "業務估值模型",
+    "metric": "固定主要指標",
+    "range": "建議倍數範圍",
+    "asOf": "評估日期",
+    "createdAt": "建立時間（香港時間）",
+    "noRationale": "尚未提供理由。",
+    "noProposal": "尚未產生提案。",
+    "industryMissing": "後端尚未提供這隻股票的產業。",
+    "approvalNotice": "按批准會把此假設儲存為該產業的正式設定，並重算目前股票。",
+    "refresh": "重新讀取狀態",
+    "propose": "產生 AI 草稿",
+    "approve": "批准並重算目前股票",
+    "jobUnavailable": "目前無法取得估值工作；假設可能已批准，但尚未確認重算。",
+    "jobFailed": "估值工作失敗，已批准的設定仍保留。",
+    "reportMismatch": "報告尚未與批准的假設相符，暫不能確認重算完成。",
+    "status": {
+      "PENDING": "排隊中",
+      "PROCESSING": "產生中",
+      "DRAFT": "草稿，等待你批准",
+      "FAILED": "產生失敗",
+      "APPROVED": "已批准"
+    },
+    "recalculation": {
+      "QUEUED": "已批准，重算正在排隊或執行中；完成後會核對報告。",
+      "CONFIRMED": "已重新讀取報告，並確認與批准的假設一致。",
+      "UNCONFIRMED": "正式設定已儲存，但尚未核實這隻股票的報告已採用該假設。",
+      "FAILED": "正式設定已儲存；重算或結果核對失敗，請先查看原因再重試。"
+    },
+    "codes": {
+      "NON_FINANCIAL_OPERATING": "非金融營運企業",
+      "BANK": "銀行",
+      "INSURANCE": "保險",
+      "REIT": "房地產投資信託",
+      "UNKNOWN": "尚未分類",
+      "PE": "P/E",
+      "PB": "P/B",
+      "PS": "P/S",
+      "EV_EBITDA": "EV/EBITDA"
+    }
   },
   "stockAnalysisExtra": {
     "debtPerShare": "每股債務（賬面價值）",
@@ -24,9 +60,28 @@
     "financialPeriodEnd": "財報截止日期"
   },
   "stockMomentum": {
-    "horizon": {"shortTerm":"短線","standard":"主指標","mediumTerm":"中期"},
-    "level": {"oversold":"超賣","weak":"偏弱","neutral":"中性","strong":"偏強","overbought":"超買"},
-    "summary": {"insufficient":"RSI 歷史數據不足，暫時無法產生綜合判斷。","shortOversoldTrendHealthy":"短線已經超賣，但中期趨勢仍然健康。","shortOverboughtTrendHealthy":"短期升幅過快，但中期趨勢仍然健康。","broadlyOversold":"短中期動量普遍超賣，應等待企穩訊號，不宜只依賴 RSI。","broadlyOverbought":"動量普遍超買，短線追價風險較高。","weakening":"短線動量弱於中期趨勢，目前整體處於中性偏弱區域。","strengthening":"短線動量強於中期趨勢，目前整體處於中性偏強區域。","neutral":"三個週期的動量分化或整體處於中性。"}
+    "horizon": {
+      "shortTerm": "短線",
+      "standard": "主指標",
+      "mediumTerm": "中期"
+    },
+    "level": {
+      "oversold": "超賣",
+      "weak": "偏弱",
+      "neutral": "中性",
+      "strong": "偏強",
+      "overbought": "超買"
+    },
+    "summary": {
+      "insufficient": "RSI 歷史數據不足，暫時無法產生綜合判斷。",
+      "shortOversoldTrendHealthy": "短線已經超賣，但中期趨勢仍然健康。",
+      "shortOverboughtTrendHealthy": "短期升幅過快，但中期趨勢仍然健康。",
+      "broadlyOversold": "短中期動量普遍超賣，應等待企穩訊號，不宜只依賴 RSI。",
+      "broadlyOverbought": "動量普遍超買，短線追價風險較高。",
+      "weakening": "短線動量弱於中期趨勢，目前整體處於中性偏弱區域。",
+      "strengthening": "短線動量強於中期趨勢，目前整體處於中性偏強區域。",
+      "neutral": "三個週期的動量分化或整體處於中性。"
+    }
   },
   "Watched": "自選",
   "All": "全部",
@@ -37,10 +92,8 @@
   "RSI": "RSI",
   "Cash Per Share": "每股現金",
   "industry": "行業",
-
   "category": "類別",
   "SubCategory": "子類別",
-
   "Technology": "科技",
   "Energy": "能源",
   "Industrial": "工業",
@@ -52,7 +105,6 @@
   "Communications": "通訊",
   "Diversified": "多元化",
   "Government": "政府",
-
   "Electronic Compo-Semicon": "電子元件與半導體",
   "Electric-Integrated": "綜合電力",
   "Electric-Distribution": "電力配售",
@@ -67,7 +119,6 @@
   "Internet Content-Entmnt": "網路內容與娛樂",
   "Independ Power Producer": "獨立發電商",
   "E-Commerce/Services": "電子商務/服務",
-
   "Software": "軟體",
   "Oil&Gas": "石油與天然氣",
   "Metal Fabricate/Hardware": "金屬製品/五金",
@@ -140,7 +191,6 @@
   "Household Products/Wares": "家庭用品",
   "Distribution/Wholesale": "分銷/批發",
   "Multi-National": "跨國企業",
-
   "Computer Software": "電腦軟體",
   "Oil Comp-Integrated": "綜合石油公司",
   "Steel Pipe&Tube": "鋼管與鋼管製品",
@@ -480,7 +530,7 @@
   "Forestry": "林業",
   "Machinery-Electrical": "電機機械",
   "Publishing-Books": "出版-圖書",
-  "Chemicals-Diversified":"多元化化學品",
+  "Chemicals-Diversified": "多元化化學品",
   "Energy-Alternate Sources": "能源-替代能源",
   "Aerospace/Defense": "航空航太/國防",
   "Machinery-Electric Util": "機械-電力公用事業設備",
@@ -493,36 +543,382 @@
   "Diversified Banking Inst": "多元化銀行機構",
   "Mortgage Banks": "按揭銀行",
   "Finance-Mtge Loan/Banker": "金融-按揭貸款/經紀",
-  "stockType":"股票類型",
-  "shell":{"productName":"MarketScope","productSubtitle":"市場分析平台","navigation":"導覽","workspace":"工作空間","usMarket":"美國股票市場","overview":"市場總覽","marketIntelligence":"市場情報工作空間"},
-  "table":{"workspaceSubtitle":"搜尋、篩選及管理記錄","searchFieldSettings":"搜尋欄位設定","hiddenFieldHint":"已勾選的搜尋欄位將不會顯示。","addRow":"新增列"},
-  "common":{"clear":"清除","search":"搜尋","error":"錯誤","cancel":"取消","save":"儲存","saving":"儲存中……"},
-  "stockAnalysisDates":{"tradingDate":"交易日日期","secFilingDate":"SEC 申報日期","snapshotAsOfDate":"估值快照日期","nextEarningsDate":"預計財報公布日期","reportPeriod":{"Q1":"{{year}} 年第 1 季度財報","Q2":"{{year}} 年第 2 季度財報","Q3":"{{year}} 年第 3 季度財報","Q4":"{{year}} 年第 4 季度財報","FY":"{{year}} 年度財報","unknown":"{{year}} 年 {{period}} 財報","latest":"最新財報"}},
-  "watchlist":{"columns":{"watched":"自選","symbol":"股票代碼","stockType":"股票類型","conceptCode":"概念","industry":"產業","quoteDate":"報價日期","closePrice":"收盤價","pe":"市盈率","rsi":"RSI","cashPerShare":"每股現金"}},
-  "stockAnalysisValue":{"lossMaking":"虧損"},
-  "stockAnalysis":{"title":"{{symbol}} 股票分析","quoteDate":"行情日期","fundamentalDate":"財報日期","fundamentalUpdatedAt":"財報數據更新時間","backToWatchlist":"返回觀察列表","metrics":{"closePrice":"收盤價","cashPerShare":"每股現金","cashLikeAssetsPerShare":"每股現金及短期投資","debtPerShare":"每股債務","netCashPerShare":"每股現金減債務","netCashForValuationPerShare":"每股估值淨現金","ttmEps":"TTM 每股盈利"},"valuationSection":"估值與關注區間","buyRange":"關注買入區間（含安全邊際）","cashAdjustedFairValue":"淨現金調整後的合理價值情景","calculationDescription":"計算：使用 TTM 每股盈利，採用 {{low}}–{{high}} 倍目標市盈率，再加每股估值淨現金 {{netCash}}（淨負債時為負數）。關注區間以合理價值下沿加入 20% 安全邊際。","lossMakingDescription":"目前 TTM 每股盈利為 {{eps}}，公司處於虧損狀態，無法使用目標市盈率計算合理價值。建議結合 P/S、EV/Sales、現金水平及盈利改善趨勢進行估值。","pegWarning":"缺少可靠的 EPS 增長率，PEG 暫不提供，也不會用於調整目標倍數。","supportingAssessment":"輔助判斷","rsiMomentum":"RSI 動量","cashBuffer":"現金類資產與債務","cashBufferDescription":"每股現金及短期投資 {{cash}}，每股債務 {{debt}}，每股估值淨現金 {{netCash}}，約佔目前股價 {{percentage}}。","classification":"分類","disclaimer":"此區間是基於現有快照數據的規則模型，不是實時行情或投資建議。實際決策還應結合盈利增長、負債、現金流、行業週期和最新公告。","value":{"unavailable":"暫無","insufficientData":"資料不足","notMeaningful":"N/M","peNotApplicable":"P/E 不適用"},"valuation":{"buyZone":"進入關注買入區間","fairValue":"合理估值區間","overvalued":"估值偏高","lossMaking":"盈利為負，P/E 不適用"},"momentum":{"oversold":"超賣，留意反彈與基本面風險","overbought":"超買，短線追價風險較高","neutral":"動量中性"}},
-  "job":{"columns":{"taskCode":"工作代碼","description":"工作描述","taskGroup":"工作群組","active":"啟用狀態","scheduleTime":"執行排程","startDate":"開始時間","executionTime":"執行時間","lastExecStartTime":"最近執行開始時間","lastExecEndTime":"最近執行結束時間","executionResult":"執行結果","run":"執行"},"actions":{"create":"新增","run":"執行工作"},"status":{"active":"已啟用","inactive":"已停用"},"executionStatus":{"COMPLETED":"已完成","PARTIAL":"部分成功","FAILED":"失敗","RUNNING":"執行中"},"form":{"createTitle":"新增工作","editTitle":"編輯工作","saveFailed":"儲存失敗，請稍後再試。","saveSuccess":"工作已成功儲存！","selectOrEnter":"請選擇或輸入","jobPath":"工作類別路徑","jobPathPlaceholder":"例如 com.example.jobs.MyJobClass","status":"狀態","jobParams":"工作參數","jsonHint":"請以 JSON 格式輸入參數","frequency":"執行頻率","scheduleTime":"執行時間","startDate":"開始日期","endDateOptional":"結束日期（選填）","selectDays":"選擇星期","taskCodePlaceholder":"例如 SEC_FINANCIAL_FACT_DAILY"},"validation":{"taskGroupRequired":"請選擇或輸入工作群組","jobPathRequired":"工作類別路徑不能留空","validJson":"請輸入有效的 JSON 格式","frequencyRequired":"請選擇執行頻率","scheduleTimeRequired":"請選擇執行時間","startDateRequired":"請選擇開始日期","taskCodeRequired":"工作代碼不能留空","taskCodeFormat":"只可使用大寫英文字母、數字及底線（例如 SEC_FINANCIAL_FACT_DAILY）"},"frequency":{"daily":"每日","weekly":"每週","monthly":"每月"},"weekday":{"sun":"週日","mon":"週一","tue":"週二","wed":"週三","thu":"週四","fri":"週五","sat":"週六"},"description":{"PRICE_BASIS_EVENT_DAILY_SYNC":"同步並核驗 Massive 拆股及合股事件，支援股價與股份基準換算。","MASSIVE_HISTORICAL_IDENTITY_DAILY":"擷取並保存所需日期的 Massive 歷史證券身份資料，支援按當時資料進行財務及估值分析。","STOCK_DAILY":"更新已設定交易所的股票代碼清單及證券基礎資料。","STOCK_QUOTE_DAILY":"更新已設定交易所的每日股票行情數據。","MARKET_SENTIMENT_DAILY":"擷取並儲存每日市場情緒快照。","SEC_ETF_HOLDING_SYNC":"同步 SEC ETF 持倉數據。","TREASURY_DAILY_SYNC":"同步美國國債孳息率曲線數據。","MARKET_EVENT_DAILY_SYNC":"同步 BLS、聯儲局及業績日曆事件。","SEC_FINANCIAL_FACT_DAILY":"同步 SEC 公司財務事實數據並計算基本面快照。","STOCK_VALUATION_SNAPSHOT_DAILY":"使用最新行情及基本面數據計算每日股票估值快照。","STOCK_INDUSTRY_CLASSIFICATION_EXPORT":"匯出所有已啟用股票，AI 覆核產業分類","STOCK_INDUSTRY_CLASSIFICATION_IMPORT":"匯入 AI 完成的產業分類，更新股票產業分類資料"}},
-  "jobSchedule":{"dayOfMonth":"每月執行日期","dayOfMonthRequired":"請輸入每月執行日期","dayOfMonthRange":"請輸入 1 至 31","dailySummary":"每日 {{time}}","weeklySummary":"每{{days}} {{time}}","monthlySummary":"每月 {{day}} 日 {{time}}","hourlyAtMinute":"每小時 {{minute}} 分執行","everyMinutes":"每 {{count}} 分鐘執行","everyHoursAtMinute":"每 {{count}} 小時的 {{minute}} 分執行","weekdayRange":"{{from}}至{{to}}","listSeparator":"、"},
-  "languageSwitcher":{"label":"語言","english":"英文","traditionalChinese":"繁體中文","simplifiedChinese":"簡體中文"},
-  "menu":{"user":"使用者","stockAnalysis":"股票篩選","dataManagement":"數據管理","jobConfiguration":"工作設定","watchList":"觀察清單","unknown":"選單"},
+  "stockType": "股票類型",
+  "shell": {
+    "productName": "MarketScope",
+    "productSubtitle": "市場分析平台",
+    "navigation": "導覽",
+    "workspace": "工作空間",
+    "usMarket": "美國股票市場",
+    "overview": "市場總覽",
+    "marketIntelligence": "市場情報工作空間"
+  },
+  "table": {
+    "workspaceSubtitle": "搜尋、篩選及管理記錄",
+    "searchFieldSettings": "搜尋欄位設定",
+    "hiddenFieldHint": "已勾選的搜尋欄位將不會顯示。",
+    "addRow": "新增列"
+  },
+  "common": {
+    "clear": "清除",
+    "search": "搜尋",
+    "error": "錯誤",
+    "cancel": "取消",
+    "save": "儲存",
+    "saving": "儲存中……"
+  },
+  "stockAnalysisDates": {
+    "tradingDate": "交易日日期",
+    "secFilingDate": "SEC 申報日期",
+    "snapshotAsOfDate": "估值快照日期",
+    "nextEarningsDate": "預計財報公布日期",
+    "reportPeriod": {
+      "Q1": "{{year}} 年第 1 季度財報",
+      "Q2": "{{year}} 年第 2 季度財報",
+      "Q3": "{{year}} 年第 3 季度財報",
+      "Q4": "{{year}} 年第 4 季度財報",
+      "FY": "{{year}} 年度財報",
+      "unknown": "{{year}} 年 {{period}} 財報",
+      "latest": "最新財報"
+    }
+  },
+  "watchlist": {
+    "columns": {
+      "watched": "自選",
+      "symbol": "股票代碼",
+      "stockType": "股票類型",
+      "conceptCode": "概念",
+      "industry": "產業",
+      "quoteDate": "報價日期",
+      "closePrice": "收盤價",
+      "pe": "市盈率",
+      "rsi": "RSI",
+      "cashPerShare": "每股現金"
+    }
+  },
+  "stockAnalysisValue": {
+    "lossMaking": "虧損"
+  },
+  "stockAnalysis": {
+    "title": "{{symbol}} 股票分析",
+    "quoteDate": "行情日期",
+    "fundamentalDate": "財報日期",
+    "fundamentalUpdatedAt": "財報數據更新時間",
+    "backToWatchlist": "返回觀察列表",
+    "metrics": {
+      "closePrice": "收盤價",
+      "cashPerShare": "每股現金",
+      "cashLikeAssetsPerShare": "每股現金及短期投資",
+      "debtPerShare": "每股債務",
+      "netCashPerShare": "每股現金減債務",
+      "netCashForValuationPerShare": "每股估值淨現金",
+      "ttmEps": "TTM 每股盈利"
+    },
+    "valuationSection": "估值與關注區間",
+    "buyRange": "關注買入區間（含安全邊際）",
+    "cashAdjustedFairValue": "淨現金調整後的合理價值情景",
+    "calculationDescription": "計算：使用 TTM 每股盈利，採用 {{low}}–{{high}} 倍目標市盈率，再加每股估值淨現金 {{netCash}}（淨負債時為負數）。關注區間以合理價值下沿加入 20% 安全邊際。",
+    "lossMakingDescription": "目前 TTM 每股盈利為 {{eps}}，公司處於虧損狀態，無法使用目標市盈率計算合理價值。建議結合 P/S、EV/Sales、現金水平及盈利改善趨勢進行估值。",
+    "pegWarning": "缺少可靠的 EPS 增長率，PEG 暫不提供，也不會用於調整目標倍數。",
+    "supportingAssessment": "輔助判斷",
+    "rsiMomentum": "RSI 動量",
+    "cashBuffer": "現金類資產與債務",
+    "cashBufferDescription": "每股現金及短期投資 {{cash}}，每股債務 {{debt}}，每股估值淨現金 {{netCash}}，約佔目前股價 {{percentage}}。",
+    "classification": "分類",
+    "disclaimer": "此區間是基於現有快照數據的規則模型，不是實時行情或投資建議。實際決策還應結合盈利增長、負債、現金流、行業週期和最新公告。",
+    "value": {
+      "unavailable": "暫無",
+      "insufficientData": "資料不足",
+      "notMeaningful": "N/M",
+      "peNotApplicable": "P/E 不適用"
+    },
+    "valuation": {
+      "buyZone": "進入關注買入區間",
+      "fairValue": "合理估值區間",
+      "overvalued": "估值偏高",
+      "lossMaking": "盈利為負，P/E 不適用"
+    },
+    "momentum": {
+      "oversold": "超賣，留意反彈與基本面風險",
+      "overbought": "超買，短線追價風險較高",
+      "neutral": "動量中性"
+    }
+  },
+  "job": {
+    "columns": {
+      "taskCode": "工作代碼",
+      "description": "工作描述",
+      "taskGroup": "工作群組",
+      "active": "啟用狀態",
+      "scheduleTime": "執行排程",
+      "startDate": "開始時間",
+      "executionTime": "執行時間",
+      "lastExecStartTime": "最近執行開始時間",
+      "lastExecEndTime": "最近執行結束時間",
+      "executionResult": "執行結果",
+      "run": "執行"
+    },
+    "actions": {
+      "create": "新增",
+      "run": "執行工作"
+    },
+    "status": {
+      "active": "已啟用",
+      "inactive": "已停用"
+    },
+    "executionStatus": {
+      "COMPLETED": "已完成",
+      "PARTIAL": "部分成功",
+      "FAILED": "失敗",
+      "RUNNING": "執行中"
+    },
+    "form": {
+      "createTitle": "新增工作",
+      "editTitle": "編輯工作",
+      "saveFailed": "儲存失敗，請稍後再試。",
+      "saveSuccess": "工作已成功儲存！",
+      "selectOrEnter": "請選擇或輸入",
+      "jobPath": "工作類別路徑",
+      "jobPathPlaceholder": "例如 com.example.jobs.MyJobClass",
+      "status": "狀態",
+      "jobParams": "工作參數",
+      "jsonHint": "請以 JSON 格式輸入參數",
+      "frequency": "執行頻率",
+      "scheduleTime": "執行時間",
+      "startDate": "開始日期",
+      "endDateOptional": "結束日期（選填）",
+      "selectDays": "選擇星期",
+      "taskCodePlaceholder": "例如 SEC_FINANCIAL_FACT_DAILY"
+    },
+    "validation": {
+      "taskGroupRequired": "請選擇或輸入工作群組",
+      "jobPathRequired": "工作類別路徑不能留空",
+      "validJson": "請輸入有效的 JSON 格式",
+      "frequencyRequired": "請選擇執行頻率",
+      "scheduleTimeRequired": "請選擇執行時間",
+      "startDateRequired": "請選擇開始日期",
+      "taskCodeRequired": "工作代碼不能留空",
+      "taskCodeFormat": "只可使用大寫英文字母、數字及底線（例如 SEC_FINANCIAL_FACT_DAILY）"
+    },
+    "frequency": {
+      "daily": "每日",
+      "weekly": "每週",
+      "monthly": "每月"
+    },
+    "weekday": {
+      "sun": "週日",
+      "mon": "週一",
+      "tue": "週二",
+      "wed": "週三",
+      "thu": "週四",
+      "fri": "週五",
+      "sat": "週六"
+    },
+    "description": {
+      "PRICE_BASIS_EVENT_DAILY_SYNC": "同步並核驗 Massive 拆股及合股事件，支援股價與股份基準換算。",
+      "MASSIVE_HISTORICAL_IDENTITY_DAILY": "擷取並保存所需日期的 Massive 歷史證券身份資料，支援按當時資料進行財務及估值分析。",
+      "STOCK_DAILY": "更新已設定交易所的股票代碼清單及證券基礎資料。",
+      "STOCK_QUOTE_DAILY": "更新已設定交易所的每日股票行情數據。",
+      "MARKET_SENTIMENT_DAILY": "擷取並儲存每日市場情緒快照。",
+      "SEC_ETF_HOLDING_SYNC": "同步 SEC ETF 持倉數據。",
+      "TREASURY_DAILY_SYNC": "同步美國國債孳息率曲線數據。",
+      "MARKET_EVENT_DAILY_SYNC": "同步 BLS、聯儲局及業績日曆事件。",
+      "SEC_FINANCIAL_FACT_DAILY": "同步 SEC 公司財務事實數據並計算基本面快照。",
+      "STOCK_VALUATION_SNAPSHOT_DAILY": "使用最新行情及基本面數據計算每日股票估值快照。",
+      "STOCK_INDUSTRY_CLASSIFICATION_EXPORT": "匯出所有已啟用股票，AI 覆核產業分類",
+      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "匯入 AI 完成的產業分類，更新股票產業分類資料"
+    }
+  },
+  "jobSchedule": {
+    "dayOfMonth": "每月執行日期",
+    "dayOfMonthRequired": "請輸入每月執行日期",
+    "dayOfMonthRange": "請輸入 1 至 31",
+    "dailySummary": "每日 {{time}}",
+    "weeklySummary": "每{{days}} {{time}}",
+    "monthlySummary": "每月 {{day}} 日 {{time}}",
+    "hourlyAtMinute": "每小時 {{minute}} 分執行",
+    "everyMinutes": "每 {{count}} 分鐘執行",
+    "everyHoursAtMinute": "每 {{count}} 小時的 {{minute}} 分執行",
+    "weekdayRange": "{{from}}至{{to}}",
+    "listSeparator": "、"
+  },
+  "languageSwitcher": {
+    "label": "語言",
+    "english": "英文",
+    "traditionalChinese": "繁體中文",
+    "simplifiedChinese": "簡體中文"
+  },
+  "menu": {
+    "user": "使用者",
+    "stockAnalysis": "股票篩選",
+    "dataManagement": "數據管理",
+    "jobConfiguration": "工作設定",
+    "watchList": "觀察清單",
+    "unknown": "選單"
+  },
   "dashboard": {
-    "loading":"正在載入儀表板……","loadError":"無法載入儀表板","updatedAt":"更新時間","marketDate":"市場日期","dataSource":"數據來源","sourceLabel":"來源","currentAssessment":"目前判斷","indexValue":"指數值：{{value}}","etfSubtitle":"加入均線偏離與量能確認",
-    "section":{"marketStatus":"市場狀態","indexObservation":"指數層觀察","fearGreedFactors":"貪婪恐慌七因子","etfObservation":"ETF 觀察列表","priceVolumeRules":"量價判斷規則","signalMatrix":"信號矩陣","riskAlerts":"風險規則提醒","upcoming":"即將發生"},
-    "source":{"INTERNAL_MARKET_SNAPSHOT":"內部行情快照","CNN_FEAR_GREED":"CNN 貪婪恐慌指數","US_TREASURY":"美國財政部","CNN":"CNN","CNN_SENTIMENT_FACTOR":"CNN 情緒因子"},
-    "signal":{"FEAR_GREED":"貪婪恐慌指數","CNN_VIX_SCORE":"CNN VIX 情緒分數","CNN_PUT_CALL_SCORE":"CNN Put/Call 情緒分數","CNN_MARKET_BREADTH_SCORE":"CNN 市場廣度情緒分數"},
-    "sentiment":{"INSUFFICIENT_DATA":"數據不足","EXTREME_FEAR":"極度恐慌","FEAR":"恐慌","NEUTRAL":"中性","GREED":"貪婪","EXTREME_GREED":"極度貪婪"},
-    "index":{"SP500":"標普500","NASDAQ100":"納指100","PHLX_SEMICONDUCTOR":"費半指數","RUSSELL2000":"羅素2000"},
-    "indexNote":{"UP":"當日上漲","DOWN":"當日下跌","FLAT":"當日持平"},
-    "factor":{"MARKET_MOMENTUM":"市場動能","STOCK_PRICE_STRENGTH":"股價強度","STOCK_PRICE_BREADTH":"股價廣度","PUT_CALL_OPTIONS":"Put/Call 期權比","MARKET_VOLATILITY":"市場波動率","SAFE_HAVEN_DEMAND":"避險需求","JUNK_BOND_DEMAND":"垃圾債需求"},
-    "bias":{"INSUFFICIENT_DATA":"數據不足","HOT":"偏熱","WEAK":"偏弱","STRONG":"偏強","NEUTRAL_WEAK":"中性偏弱"},
-    "etfNote":{"RSI_HOT":"RSI 已進入偏熱區間","MA20_EXTENDED":"價格明顯偏離20日均線","HIGH_VOLUME":"成交量高於近5日平均","NORMAL":"指標處於常規區間"},
-    "table":{"symbol":"代碼","price":"價格","dailyChange":"日變動","assessment":"判斷","ma20Distance":"距20日均線","volumeRatio5d":"量比（5日）","note":"備註","source":"來源","time":"時間"},
-    "rules":{"maTitle":"均線偏離","maDescription":"距20日均線偏離度越高，代表價格離短中期均衡越遠。若同時 RSI 偏高，通常更接近短線過熱區。","volumeTitle":"量能確認","volumeDescription":"量比 = 目前成交量 / 過去5日平均成交量。若大於 1.2 且價格同步上漲，代表有更明顯的真實資金參與。","combinationTitle":"組合解讀","combinationDescription":"最強組合通常是「上漲 + 量比放大 + 偏離度上升」；最需小心的是「偏離度高，但量比不足」的追高狀態。"},
-    "messages":{"ETF_OVERHEATED":"{{ticker}}：RSI {{rsi}} 且高於20日均線 {{deviation}}，短線處於過熱區。","ETF_OVERSOLD":"{{ticker}}：RSI {{rsi}}，短線動能偏弱並進入超賣觀察區。","ETF_VOLUME_CONFIRMED":"{{ticker}}：價格上漲且量比達 {{volumeRatio}}，升勢獲成交量確認。","ETF_LOW_VOLUME_EXTENSION":"{{ticker}}：高於20日均線 {{deviation}}，但量比僅 {{volumeRatio}}，需留意縮量追高風險。","EXTREME_GREED":"CNN 貪婪恐慌指數為 {{score}}，市場情緒進入極度貪婪區。","EXTREME_FEAR":"CNN 貪婪恐慌指數為 {{score}}，市場情緒進入極度恐慌區。","NO_ALERTS":"目前未觸發過熱、超賣、放量上漲或縮量追高警示。","SUMMARY_WITH_SENTIMENT":"CNN 貪婪恐慌指數為 {{score}}；觀察 ETF 中有 {{up}} 個上漲、{{down}} 個下跌。","SUMMARY_WITHOUT_SENTIMENT":"CNN 情緒數據不足；觀察 ETF 中有 {{up}} 個上漲、{{down}} 個下跌。","DATE_UNAVAILABLE":"數據日期不足","MARKET_CLOSE":"{{date}} 收盤"},
-    "marketSummary":{"STRONG_BUT_OVERHEATED":"風險偏好偏強，但情緒已過熱","HOT_BUT_DIVERGING":"情緒偏熱，但價格動能出現分化","FEAR_WITH_RECOVERY":"恐慌情緒下出現價格修復","WEAK_AND_FEARFUL":"風險偏好偏弱，市場處於恐慌區","BULLISH_NON_EXTREME":"市場動能偏多，情緒尚未進入極端區","BEARISH":"市場動能偏弱，宜控制下行風險","DIVERGING":"市場方向分化，等待更明確信號"},
-    "execution":{"EXECUTION_BIAS":"執行傾向","HIGH_RISK":"多項風險條件同時成立，宜降低追價與高波動部位，等待 RSI、均線偏離或量能回復正常。","SELECTIVE":"部分風險條件已觸發，維持選擇性部署，新增部位應優先確認量能及均線偏離。","BULLISH":"ETF 動能整體偏多且未觸發主要風險條件，可維持偏多思路並設定風險界線。","DEFENSIVE":"ETF 動能整體偏弱且未見明確反轉確認，宜保守控制倉位並等待放量回升。","NEUTRAL":"目前數據不足或方向分化，宜維持中性倉位並等待更明確的量價信號。"},
-    "hongKongTime":"香港時間","noUpcomingEvents":"未來 14 天暫無已確認的市場催化事件。","eventCategory":{"MACRO":"宏觀","FED":"聯儲局","EARNINGS":"財報","TREASURY":"美債","DERIVATIVES":"衍生品","INDEX_REBALANCE":"指數調整","POLICY":"政策","OTHER":"其他"},
-    "eventLevel":{"HIGH":"高","MEDIUM":"中","LOW":"低"},"event":{"CPI":"消費者物價指數（CPI）","CORE_CPI":"核心消費者物價指數","PCE":"個人消費支出物價指數（PCE）","CORE_PCE":"核心 PCE 物價指數","EMPLOYMENT_SITUATION":"就業報告（非農及失業率）","NONFARM_PAYROLLS":"非農就業數據","NFP":"非農就業數據","UNEMPLOYMENT_RATE":"失業率","INITIAL_JOBLESS_CLAIMS":"首次申領失業救濟人數","JOBLESS_CLAIMS":"首次申領失業救濟人數","FACTORY_ORDERS":"工廠訂單","JOLTS":"JOLTS 職位空缺","ISM_MANUFACTURING":"ISM 製造業 PMI","ISM_SERVICES":"ISM 服務業 PMI","GDP":"本地生產總值（GDP）","RETAIL_SALES":"零售銷售","PPI":"生產者物價指數（PPI）","FOMC":"FOMC 利率決議","EARNINGS_REPORT":"{{symbol}} 業績公布","MONTHLY_OPEX":"月度期權到期日","QUARTERLY_OPEX":"季度期權到期日（三巫日）"},
+    "loading": "正在載入儀表板……",
+    "loadError": "無法載入儀表板",
+    "updatedAt": "更新時間",
+    "marketDate": "市場日期",
+    "dataSource": "數據來源",
+    "sourceLabel": "來源",
+    "currentAssessment": "目前判斷",
+    "indexValue": "指數值：{{value}}",
+    "etfSubtitle": "加入均線偏離與量能確認",
+    "section": {
+      "marketStatus": "市場狀態",
+      "indexObservation": "指數層觀察",
+      "fearGreedFactors": "貪婪恐慌七因子",
+      "etfObservation": "ETF 觀察列表",
+      "priceVolumeRules": "量價判斷規則",
+      "signalMatrix": "信號矩陣",
+      "riskAlerts": "風險規則提醒",
+      "upcoming": "即將發生"
+    },
+    "source": {
+      "INTERNAL_MARKET_SNAPSHOT": "內部行情快照",
+      "CNN_FEAR_GREED": "CNN 貪婪恐慌指數",
+      "US_TREASURY": "美國財政部",
+      "CNN": "CNN",
+      "CNN_SENTIMENT_FACTOR": "CNN 情緒因子"
+    },
+    "signal": {
+      "FEAR_GREED": "貪婪恐慌指數",
+      "CNN_VIX_SCORE": "CNN VIX 情緒分數",
+      "CNN_PUT_CALL_SCORE": "CNN Put/Call 情緒分數",
+      "CNN_MARKET_BREADTH_SCORE": "CNN 市場廣度情緒分數"
+    },
+    "sentiment": {
+      "INSUFFICIENT_DATA": "數據不足",
+      "EXTREME_FEAR": "極度恐慌",
+      "FEAR": "恐慌",
+      "NEUTRAL": "中性",
+      "GREED": "貪婪",
+      "EXTREME_GREED": "極度貪婪"
+    },
+    "index": {
+      "SP500": "標普500",
+      "NASDAQ100": "納指100",
+      "PHLX_SEMICONDUCTOR": "費半指數",
+      "RUSSELL2000": "羅素2000"
+    },
+    "indexNote": {
+      "UP": "當日上漲",
+      "DOWN": "當日下跌",
+      "FLAT": "當日持平"
+    },
+    "factor": {
+      "MARKET_MOMENTUM": "市場動能",
+      "STOCK_PRICE_STRENGTH": "股價強度",
+      "STOCK_PRICE_BREADTH": "股價廣度",
+      "PUT_CALL_OPTIONS": "Put/Call 期權比",
+      "MARKET_VOLATILITY": "市場波動率",
+      "SAFE_HAVEN_DEMAND": "避險需求",
+      "JUNK_BOND_DEMAND": "垃圾債需求"
+    },
+    "bias": {
+      "INSUFFICIENT_DATA": "數據不足",
+      "HOT": "偏熱",
+      "WEAK": "偏弱",
+      "STRONG": "偏強",
+      "NEUTRAL_WEAK": "中性偏弱"
+    },
+    "etfNote": {
+      "RSI_HOT": "RSI 已進入偏熱區間",
+      "MA20_EXTENDED": "價格明顯偏離20日均線",
+      "HIGH_VOLUME": "成交量高於近5日平均",
+      "NORMAL": "指標處於常規區間"
+    },
+    "table": {
+      "symbol": "代碼",
+      "price": "價格",
+      "dailyChange": "日變動",
+      "assessment": "判斷",
+      "ma20Distance": "距20日均線",
+      "volumeRatio5d": "量比（5日）",
+      "note": "備註",
+      "source": "來源",
+      "time": "時間"
+    },
+    "rules": {
+      "maTitle": "均線偏離",
+      "maDescription": "距20日均線偏離度越高，代表價格離短中期均衡越遠。若同時 RSI 偏高，通常更接近短線過熱區。",
+      "volumeTitle": "量能確認",
+      "volumeDescription": "量比 = 目前成交量 / 過去5日平均成交量。若大於 1.2 且價格同步上漲，代表有更明顯的真實資金參與。",
+      "combinationTitle": "組合解讀",
+      "combinationDescription": "最強組合通常是「上漲 + 量比放大 + 偏離度上升」；最需小心的是「偏離度高，但量比不足」的追高狀態。"
+    },
+    "messages": {
+      "ETF_OVERHEATED": "{{ticker}}：RSI {{rsi}} 且高於20日均線 {{deviation}}，短線處於過熱區。",
+      "ETF_OVERSOLD": "{{ticker}}：RSI {{rsi}}，短線動能偏弱並進入超賣觀察區。",
+      "ETF_VOLUME_CONFIRMED": "{{ticker}}：價格上漲且量比達 {{volumeRatio}}，升勢獲成交量確認。",
+      "ETF_LOW_VOLUME_EXTENSION": "{{ticker}}：高於20日均線 {{deviation}}，但量比僅 {{volumeRatio}}，需留意縮量追高風險。",
+      "EXTREME_GREED": "CNN 貪婪恐慌指數為 {{score}}，市場情緒進入極度貪婪區。",
+      "EXTREME_FEAR": "CNN 貪婪恐慌指數為 {{score}}，市場情緒進入極度恐慌區。",
+      "NO_ALERTS": "目前未觸發過熱、超賣、放量上漲或縮量追高警示。",
+      "SUMMARY_WITH_SENTIMENT": "CNN 貪婪恐慌指數為 {{score}}；觀察 ETF 中有 {{up}} 個上漲、{{down}} 個下跌。",
+      "SUMMARY_WITHOUT_SENTIMENT": "CNN 情緒數據不足；觀察 ETF 中有 {{up}} 個上漲、{{down}} 個下跌。",
+      "DATE_UNAVAILABLE": "數據日期不足",
+      "MARKET_CLOSE": "{{date}} 收盤"
+    },
+    "marketSummary": {
+      "STRONG_BUT_OVERHEATED": "風險偏好偏強，但情緒已過熱",
+      "HOT_BUT_DIVERGING": "情緒偏熱，但價格動能出現分化",
+      "FEAR_WITH_RECOVERY": "恐慌情緒下出現價格修復",
+      "WEAK_AND_FEARFUL": "風險偏好偏弱，市場處於恐慌區",
+      "BULLISH_NON_EXTREME": "市場動能偏多，情緒尚未進入極端區",
+      "BEARISH": "市場動能偏弱，宜控制下行風險",
+      "DIVERGING": "市場方向分化，等待更明確信號"
+    },
+    "execution": {
+      "EXECUTION_BIAS": "執行傾向",
+      "HIGH_RISK": "多項風險條件同時成立，宜降低追價與高波動部位，等待 RSI、均線偏離或量能回復正常。",
+      "SELECTIVE": "部分風險條件已觸發，維持選擇性部署，新增部位應優先確認量能及均線偏離。",
+      "BULLISH": "ETF 動能整體偏多且未觸發主要風險條件，可維持偏多思路並設定風險界線。",
+      "DEFENSIVE": "ETF 動能整體偏弱且未見明確反轉確認，宜保守控制倉位並等待放量回升。",
+      "NEUTRAL": "目前數據不足或方向分化，宜維持中性倉位並等待更明確的量價信號。"
+    },
+    "hongKongTime": "香港時間",
+    "noUpcomingEvents": "未來 14 天暫無已確認的市場催化事件。",
+    "eventCategory": {
+      "MACRO": "宏觀",
+      "FED": "聯儲局",
+      "EARNINGS": "財報",
+      "TREASURY": "美債",
+      "DERIVATIVES": "衍生品",
+      "INDEX_REBALANCE": "指數調整",
+      "POLICY": "政策",
+      "OTHER": "其他"
+    },
+    "eventLevel": {
+      "HIGH": "高",
+      "MEDIUM": "中",
+      "LOW": "低"
+    },
+    "event": {
+      "CPI": "消費者物價指數（CPI）",
+      "CORE_CPI": "核心消費者物價指數",
+      "PCE": "個人消費支出物價指數（PCE）",
+      "CORE_PCE": "核心 PCE 物價指數",
+      "EMPLOYMENT_SITUATION": "就業報告（非農及失業率）",
+      "NONFARM_PAYROLLS": "非農就業數據",
+      "NFP": "非農就業數據",
+      "UNEMPLOYMENT_RATE": "失業率",
+      "INITIAL_JOBLESS_CLAIMS": "首次申領失業救濟人數",
+      "JOBLESS_CLAIMS": "首次申領失業救濟人數",
+      "FACTORY_ORDERS": "工廠訂單",
+      "JOLTS": "JOLTS 職位空缺",
+      "ISM_MANUFACTURING": "ISM 製造業 PMI",
+      "ISM_SERVICES": "ISM 服務業 PMI",
+      "GDP": "本地生產總值（GDP）",
+      "RETAIL_SALES": "零售銷售",
+      "PPI": "生產者物價指數（PPI）",
+      "FOMC": "FOMC 利率決議",
+      "EARNINGS_REPORT": "{{symbol}} 業績公布",
+      "MONTHLY_OPEX": "月度期權到期日",
+      "QUARTERLY_OPEX": "季度期權到期日（三巫日）"
+    },
     "marketRegime": {
       "title": "大盤市況",
       "headwindBanner": "大盤處於{{regime}}逆風警戒，機會雷達已自動收緊至深度低估且基本面強勁之僅觀察名單，並暫停新增主動買入訊號。",
@@ -670,7 +1066,11 @@
     "sampleCount": "股類觀測數",
     "peerSampleCounts": "有效樣本：{{companies}} 家公司／{{samples}} 個股類觀測",
     "peerMethodDescription": "此範圍把同日同估值產業的 P25、中位數及 P75 倍數套用於本公司的已核驗財務數據。樣本包含本公司，各股類分別取樣。這是市場相對比較，不是內在價值估計或價格預測。",
-    "peerQuantiles": {"q25":"同業第 25 百分位","q50":"同業中位數","q75":"同業第 75 百分位"},
+    "peerQuantiles": {
+      "q25": "同業第 25 百分位",
+      "q50": "同業中位數",
+      "q75": "同業第 75 百分位"
+    },
     "valuationModel": "估值指標",
     "fairValueRange": "參考股價區間",
     "fairValueCentral": "中位倍數參考股價",
@@ -737,17 +1137,86 @@
     "marketAsOf": "市場比較日期",
     "marketReferenceUnavailable": "尚無同一日期且已核驗的同行市場比較。",
     "futu": {
-      "valuation": {"title": "富途市場估值觀察", "description": "富途提供的市場倍數與預測倍數，供對照參考。"},
-      "earnings": {"title": "富途盈利預期", "description": "富途按財政期間提供的預期數字。幣別及財政期間按來源資料顯示。"},
-      "valuationDetail": {"title": "富途歷史估值與同行比較", "description": "月度 P25、P50、P75 按每個完整月份的最後一筆觀察計算。歷史均值、標準差區間及目前倍數的歷史分位沿用富途摘要。", "peers": "富途同行正值倍數（可包含本股）", "plateRankValue": "第 {{rank}} 位／{{total}}"},
-      "morningstar": {"title": "晨星個股公允價", "description": "經富途取得的晨星個股估值及評級，供第三方對照。"},
+      "valuation": {
+        "title": "富途市場估值觀察",
+        "description": "富途提供的市場倍數與預測倍數，供對照參考。"
+      },
+      "earnings": {
+        "title": "富途盈利預期",
+        "description": "富途按財政期間提供的預期數字。幣別及財政期間按來源資料顯示。"
+      },
+      "valuationDetail": {
+        "title": "富途歷史估值與同行比較",
+        "description": "月度 P25、P50、P75 按每個完整月份的最後一筆觀察計算。歷史均值、標準差區間及目前倍數的歷史分位沿用富途摘要。",
+        "peers": "富途同行正值倍數（可包含本股）",
+        "plateRankValue": "第 {{rank}} 位／{{total}}"
+      },
+      "morningstar": {
+        "title": "晨星個股公允價",
+        "description": "經富途取得的晨星個股估值及評級，供第三方對照。"
+      },
       "lastKnown": "上次已知資料",
-      "columns": {"metric": "指標", "value": "市場倍數", "forwardValue": "預測倍數", "expectedValue": "預期數值", "providerSymbol": "來源代碼", "plateCode": "來源板塊", "observedAt": "取得時間", "status": "狀態", "fiscalPeriod": "財政期間", "periodType": "期間類型", "earningsDate": "財報日期", "publishType": "發佈時段", "sourceUpdatedAt": "來源更新時間", "valuationPercentile": "富途歷史分位", "averageValue": "富途歷史均值", "avgMinus1Stddev": "富途均值減一個標準差", "avgPlus1Stddev": "富途均值加一個標準差", "historicalMonths": "有效月度樣本數", "historyFrom": "月度樣本起始日", "historyThrough": "月度樣本截止日", "q25": "月度 P25", "median": "月度 P50", "q75": "月度 P75", "plateName": "富途產業", "plateAverage": "富途產業平均倍數", "plateRank": "富途產業排名", "fairValue": "公允價", "ratingType": "評級類型", "starRating": "星級", "uncertainty": "不確定性"},
-      "ratingTypes": {"QUALITATIVE": "質化", "QUANTITATIVE": "量化"},
-      "uncertaintyLevels": {"Low": "低", "Medium": "中", "High": "高", "Very High": "很高", "Extreme": "極高"},
-      "metrics": {"PE": "P/E", "PB": "P/B", "PS": "P/S", "EPS": "每股盈利（GAAP）", "REVENUE": "營收", "EBIT": "息稅前盈利"},
-      "periodTypes": {"QUARTERLY": "季度", "SEMIANNUAL": "半年度", "ANNUAL": "年度"},
-      "publishTypes": {"BEFORE_MARKET": "開市前", "AFTER_MARKET": "收市後", "INTRADAY": "交易時段內"}
+      "columns": {
+        "metric": "指標",
+        "value": "市場倍數",
+        "forwardValue": "預測倍數",
+        "expectedValue": "預期數值",
+        "providerSymbol": "來源代碼",
+        "plateCode": "來源板塊",
+        "observedAt": "取得時間",
+        "status": "狀態",
+        "fiscalPeriod": "財政期間",
+        "periodType": "期間類型",
+        "earningsDate": "財報日期",
+        "publishType": "發佈時段",
+        "sourceUpdatedAt": "來源更新時間",
+        "valuationPercentile": "富途歷史分位",
+        "averageValue": "富途歷史均值",
+        "avgMinus1Stddev": "富途均值減一個標準差",
+        "avgPlus1Stddev": "富途均值加一個標準差",
+        "historicalMonths": "有效月度樣本數",
+        "historyFrom": "月度樣本起始日",
+        "historyThrough": "月度樣本截止日",
+        "q25": "月度 P25",
+        "median": "月度 P50",
+        "q75": "月度 P75",
+        "plateName": "富途產業",
+        "plateAverage": "富途產業平均倍數",
+        "plateRank": "富途產業排名",
+        "fairValue": "公允價",
+        "ratingType": "評級類型",
+        "starRating": "星級",
+        "uncertainty": "不確定性"
+      },
+      "ratingTypes": {
+        "QUALITATIVE": "質化",
+        "QUANTITATIVE": "量化"
+      },
+      "uncertaintyLevels": {
+        "Low": "低",
+        "Medium": "中",
+        "High": "高",
+        "Very High": "很高",
+        "Extreme": "極高"
+      },
+      "metrics": {
+        "PE": "P/E",
+        "PB": "P/B",
+        "PS": "P/S",
+        "EPS": "每股盈利（GAAP）",
+        "REVENUE": "營收",
+        "EBIT": "息稅前盈利"
+      },
+      "periodTypes": {
+        "QUARTERLY": "季度",
+        "SEMIANNUAL": "半年度",
+        "ANNUAL": "年度"
+      },
+      "publishTypes": {
+        "BEFORE_MARKET": "開市前",
+        "AFTER_MARKET": "收市後",
+        "INTRADAY": "交易時段內"
+      }
     },
     "technicalIndicators": "技術指標及解說",
     "indicator": "指標／參數",
@@ -904,7 +1373,59 @@
       "ENTRY_EXPIRED": "這次新入場機會已超過有效期。",
       "NO_FIXED_TARGET": "缺少已核驗上方阻力，不能建立固定止盈目標。",
       "RR_BELOW_POLICY": "成本後風險報酬比未達交易規則要求。",
-      "MARKET_MEDIANS_UNAVAILABLE": "同行有效樣本或同日觀測不足。"
+      "MARKET_MEDIANS_UNAVAILABLE": "同行有效樣本或同日觀測不足。",
+      "NOT_APPLICABLE_FOR_ETF": "ETF／ETP 不適用單一公司財報與估值模型",
+      "ADR_RATIO_UNVERIFIED": "ADR 換股比例尚未核實，已攔截避免市值與股數錯位",
+      "ADR_SHARES_BASIS_UNVERIFIED": "ADR 股數基準異常待核實",
+      "FX_RATE_UNAVAILABLE": "缺少對應外幣官方匯率，暫不換算估值",
+      "FX_RATE_STALE": "官方外幣匯率已逾期逾 14 日，暫不採用",
+      "NON_POSITIVE_ADJ_FCF": "扣 SBC 後實質自由現金流非正（N.M.）",
+      "NON_POSITIVE_INVESTED_CAPITAL": "投入資本非正（N.M.）",
+      "NON_POSITIVE_TBV": "有形普通股帳面值非正（N.M.）",
+      "NON_POSITIVE_GROSS_PROFIT": "毛利非正（N.M.）",
+      "NON_POSITIVE_INTEREST_EXPENSE": "無計息利息費用（N.M.）",
+      "NON_POSITIVE_CURRENT_DEBT": "無一年內到期短期計息債務（無短期償債壓力）",
+      "DCF_NOT_APPLICABLE_TO_INDUSTRY": "銀行與保險業不適用自由現金流 DCF 模型",
+      "DCF_NOT_APPLICABLE_TO_REIT": "REITs 不適用標準自由現金流 DCF 模型",
+      "DCF_NON_POSITIVE_FCF": "基期自由現金流非正，DCF 模型不適用",
+      "DCF_INVALID_TERMINAL_SPREAD": "折現率與永續成長率利差無效",
+      "REVERSE_DCF_OUT_OF_RANGE": "市場隱含成長率超出合理反解區間（-30% 至 +100%）",
+      "GROSS_PROFIT_MISSING": "缺少 TTM 毛利資料",
+      "OPERATING_PROFIT_MISSING": "缺少 TTM 營業利益資料",
+      "SBC_MISSING": "缺少已核實的 SEC 股票薪酬（SBC）資料",
+      "INTEREST_EXPENSE_MISSING": "缺少 TTM 利息費用資料",
+      "GOODWILL_INTANGIBLES_MISSING": "缺少商譽與無形資產資料",
+      "CURRENT_DEBT_MISSING": "缺少一年內到期短期債務披露",
+      "SHAREHOLDER_RETURN_MISSING": "缺少完整現金股息與淨回購資料",
+      "PRETAX_OR_TAX_MISSING": "缺少稅前盈利或所得稅費用資料",
+      "EFFECTIVE_TAX_RATE_UNAVAILABLE": "無法計算有效稅率",
+      "DCF_DISCOUNT_RATE_UNAVAILABLE": "缺少 10Y 美債殖利率，無法建立折現率",
+      "SWUNG_TO_LOSS": "由盈轉虧",
+      "FORWARD_SWUNG_TO_LOSS": "預期由盈轉虧",
+      "TURNAROUND_FROM_LOSS": "由虧轉盈（基期虧損）",
+      "NON_POSITIVE_BASE_EPS": "基期虧損不適用",
+      "FCF_TURNED_NEGATIVE": "由正轉負",
+      "FCF_TURNAROUND_FROM_NEGATIVE": "由負轉正（基期為負）",
+      "NON_POSITIVE_NET_INCOME": "淨利非正不適用",
+      "PRIOR_COMPARABLE_PERIOD_MISSING": "缺少可比前期財報",
+      "REPORTING_CURRENCY_CHANGED": "跨期財報幣別變更",
+      "ACCOUNTING_STANDARDS_CHANGED": "跨期會計準則變更",
+      "SEC_FILING_SHARES_REQUIRED": "需獨立 SEC 申報股數",
+      "SHARE_BASIS_PERIOD_NOT_INDEPENDENT": "前後期股數申報非獨立年度區間",
+      "EPS_GROWTH_BELOW_PEG_THRESHOLD": "成長率低於 5% 不算 PEG",
+      "EPS_GROWTH_LOW_BASE_SPIKE": "單年低基期暴衝不算 PEG",
+      "EARNINGS_FORECAST_MISSING": "尚無市場預期資料",
+      "NO_UNREPORTED_FORECAST_PERIOD": "目前無合資格財期可供修正比較",
+      "ANNUAL_EARNINGS_FORECAST_MISSING": "缺少可用的未結束年度預期",
+      "FORECAST_FISCAL_PERIOD_UNVERIFIED": "財期結算日待核實",
+      "EARNINGS_FORECAST_STALE": "預期觀察已逾 45 天",
+      "FORECAST_REVISION_BASE_MISSING": "此財期缺少可比歷史基準",
+      "NON_POSITIVE_FORWARD_EPS": "預期虧損（N.M.）",
+      "NON_POSITIVE_FORWARD_REVENUE": "預期營收非正（N.M.）",
+      "FORWARD_EPS_GROWTH_BELOW_PEG_THRESHOLD": "預期成長低於 5% 不算 PEG",
+      "FORWARD_EPS_GROWTH_ABOVE_PEG_CAP": "預期成長逾 100% 不算 PEG",
+      "NON_POSITIVE_PRIOR_FORECAST_EPS": "基期預期非正（N.M.）",
+      "NON_POSITIVE_PRIOR_FORECAST_REVENUE": "基期預期非正（N.M.）"
     },
     "indicatorDefinitions": {
       "RSI14": "14 個日線週期的 Wilder RSI；反映動能，不預測股價。",
@@ -1008,13 +1529,15 @@
         "FAIR_UPPER": "位於參考帶上半部（合理偏上緣）",
         "MODERATELY_OVERVALUED": "高於市場參考上緣（估值偏貴）",
         "OVERVALUED_RISK": "顯著高於市場參考帶（高估風險）",
-        "INSUFFICIENT_EVIDENCE": "估值參考帶證據不足"
+        "INSUFFICIENT_EVIDENCE": "估值參考帶證據不足",
+        "NOT_APPLICABLE_FOR_ETF": "ETF／ETP 技術與資金分析模式（不適用財報估值）"
       },
       "backing": {
         "STRONG": "基本面支撐強勁",
         "MIXED": "基本面表現分化",
         "WEAKENING": "基本面轉弱警戒",
-        "INSUFFICIENT_DATA": "基本面比較待補"
+        "INSUFFICIENT_DATA": "基本面比較待補",
+        "NOT_APPLICABLE": "不適用單一公司財報"
       },
       "stances": {
         "ACCUMULATE_AT_SUPPORT": "估值偏低且具備結構支撐 · 可留意支撐區分批觀察",
@@ -1025,13 +1548,16 @@
         "CAUTION_OVEREXTENSION": "估值高於市場參考上緣 · 留意溢價收斂風險",
         "WAIT_FOR_MARKET_STABILIZATION": "大盤處於逆風環境 · 暫緩左側接刀，等待大盤止穩或右側確認",
         "WAIT_FOR_STABILIZATION": "技術破位待收復、低於年線或事件受限 · 等待止穩與條件明朗",
-        "INSUFFICIENT_EVIDENCE": "核心錨點不足 · 僅展示單項可用指標"
+        "INSUFFICIENT_EVIDENCE": "核心錨點不足 · 僅展示單項可用指標",
+        "ETF_TECHNICAL_BULLISH_SUPPORT": "ETF 處於週線多頭且站穩年線 · 可沿關鍵技術支撐與資金流分批觀察",
+        "ETF_TECHNICAL_NEUTRAL": "ETF 技術結構偏中性 · 建議結合支撐阻力、量能與大盤環境觀察"
       },
       "anchorSources": {
         "HISTORICAL_AND_PEER": "自身 5 年歷史 ＋ 同業市場（50/50 客觀合成）",
         "HISTORICAL_ONLY": "單源：自身 5 年歷史分位（同業不足或不適用）",
         "PEER_ONLY": "單源：同日同業市場分位（歷史有效樣本不足）",
-        "NONE": "尚無可換算之客觀市場價格錨點"
+        "NONE": "尚無可換算之客觀市場價格錨點",
+        "ETF_TECHNICAL_ONLY": "ETF 純技術結構與資金流模式"
       },
       "rightSideBasis": {
         "SPRING_RECLAIMED": "彈簧效應收回",
@@ -1057,7 +1583,9 @@
         "SHARE_DILUTION_YOY": "流通股數較去年同期淨增稀釋逾 3%",
         "VALUATION_ABOVE_UPPER_BAND": "現價高於客觀市場參考帶上緣",
         "BELOW_SMA200_DOWNTREND": "週線處於下降趨勢且日線收盤低於 SMA200 年線",
-        "ANCHOR_DIVERGENCE": "自身歷史中位價與同業中位價差距較大，請一併對照下方分項"
+        "ANCHOR_DIVERGENCE": "自身歷史中位價與同業中位價差距較大，請一併對照下方分項",
+        "MARGIN_COMPRESSION_CONSECUTIVE": "毛利率或營業利潤率連續兩季環比下滑（定價權或成本結構承壓）",
+        "LOW_INTEREST_COVERAGE": "利息保障倍數低於 3x，短期償債安全邊際偏低"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "強勢回踩試單（{{anchor}} {{anchorPrice}} {{currency}}）：建議 {{positionFraction}} 底倉試單，緊貼止損 {{suggestedStop}} {{currency}}",
@@ -1075,6 +1603,95 @@
       "pegBasis": {
         "TRAILING_EPS_CAGR_3Y": "按 3 年 EPS 複合成長率",
         "TRAILING_EPS_YOY": "按 1 年 EPS 年增率"
+      },
+      "sectionAria": "基本面成長與品質指標",
+      "periodMeta": "當期財報截至：{{periodEnd}}",
+      "priorYearPrefix": "對比去年同期：",
+      "threeYearPrefix": "三年前基期：",
+      "currencyPrefix": "財報幣別：",
+      "financialInstitutionNote": "銀行與保險業資產負債結構不適用自由現金流利潤率、淨負債／EBITDA 與非金融品質指標。",
+      "notes": {
+        "netCash": "淨現金",
+        "highLeverage": "偏高槓桿",
+        "netBuyback": "淨回購",
+        "netDilution": "淨稀釋",
+        "roughlyFlat": "基本持平"
+      },
+      "forwardPegBasis": {
+        "FORWARD_FY1_VS_TTM": "按 FY1 vs TTM",
+        "FORWARD_FY2_VS_FY1": "按 FY2 vs FY1"
+      },
+      "periodTypes": {
+        "ANNUAL": "年度",
+        "QUARTERLY": "單季"
+      },
+      "groups": {
+        "growthAndPeg": "成長動能與 PEG",
+        "profitabilityAndBalance": "獲利品質與資產負債結構",
+        "yieldsAndShareholder": "殖利率對照與股本變化"
+      },
+      "metrics": {
+        "revenueGrowthYoy": "TTM 營業收入年增率（YoY）",
+        "epsGrowthYoy": "TTM 每股盈利年增率（EPS YoY）",
+        "fcfGrowthYoy": "TTM 自由現金流年增率（FCF YoY）",
+        "revenueCagr3y": "3 年營收複合成長（CAGR）",
+        "epsCagr3y": "3 年 EPS 複合成長（CAGR）",
+        "roe": "普通股權益報酬率（ROE）",
+        "fcfMargin": "自由現金流利潤率（FCF Margin）",
+        "fcfConversion": "淨利現金轉換率（FCF / 淨利）",
+        "netDebtToEbitda": "淨負債／EBITDA",
+        "fcfYield": "自由現金流殖利率（FCF Yield）",
+        "earningsYield": "盈餘殖利率（Earnings Yield）",
+        "earningsYieldSpread10y": "盈餘殖利率減 10Y 美債",
+        "fcfYieldSpread10y": "FCF 殖利率減 10Y 美債",
+        "netShareChangeYoy": "流通股數年變化率（SEC 申報）"
+      },
+      "quality": {
+        "sectionTitle": "財務品質深化指標（SBC、毛利結構、ROIC 與償債覆蓋）",
+        "marginCompressionBadge": "毛利／營益率連兩季壓縮警戒",
+        "fcfCagr3y": "3 年 FCF 複合成長（CAGR）",
+        "roic": "投入資本回報率（ROIC）",
+        "pToTbv": "市價／有形淨值（P/TBV）",
+        "totalShareholderYield": "總股東回報率（股息＋淨回購）",
+        "sbcAndAdjFcfTitle": "SBC 稀釋與實質現金流",
+        "sbcTtm": "TTM 股票薪酬（SBC）",
+        "sbcToRevenue": "SBC 佔營收比",
+        "adjFcfTtm": "扣 SBC 實質自由現金流（Adj. FCF）",
+        "pToAdjFcf": "P / Adj. FCF",
+        "ruleOf40": "Rule of 40（營收 YoY ＋ FCF 率）",
+        "marginsAndEvTitle": "毛利率與營業利潤率趨勢",
+        "grossMargin": "TTM 毛利率（Gross Margin）",
+        "grossMarginYoyPpt": "毛利率年變動（YoY）",
+        "grossMarginQoqPpt": "毛利率季變動（QoQ）",
+        "operatingMargin": "TTM 營業利潤率（Operating Margin）",
+        "operatingMarginYoyPpt": "營業利潤率年變動（YoY）",
+        "operatingMarginQoqPpt": "營業利潤率季變動（QoQ）",
+        "capitalAndSolvencyTitle": "資本效率、成長倍數與償債安全",
+        "evToSales": "EV / Sales",
+        "evToGrossProfit": "EV / Gross Profit",
+        "nopat": "稅後營業淨利（NOPAT）",
+        "investedCapital": "投入資本（Invested Capital）",
+        "tangibleBookValue": "有形普通股淨值（TBV）",
+        "interestCoverage": "利息保障倍數（EBIT / 利息）",
+        "shortTermLiquidityCoverage": "短期流動性覆蓋（(現金＋OCF)/短債）"
+      },
+      "forward": {
+        "title": "前瞻估值與分析師預期修正",
+        "badge": "市場預期觀察（與已公布財報分軌）",
+        "valuationDatePrefix": "估值日：",
+        "targetPeriodPrefix": "年度預期財期：",
+        "obsDatePrefix": "觀察日 ",
+        "currencyPrefix": "預期幣別：",
+        "multiplesTitle": "前瞻估值倍數（未結束年度共識）",
+        "impliedEpsGrowth": "預期年度 EPS 隱含成長（vs TTM）",
+        "revisionsTitle": "同財期預期上修／下修幅度",
+        "epsRevision30d": "近 30 日預期 EPS 修正",
+        "epsRevision90d": "近 90 日預期 EPS 修正",
+        "revenueRevision30d": "近 30 日預期營收修正",
+        "revenueRevision90d": "近 90 日預期營收修正",
+        "providerTrailing30d": "來源 30 日前回溯基準",
+        "providerTrailing90d": "來源 90 日前回溯基準",
+        "vsDatePrefix": "對比 "
       }
     },
     "peerRelativeStrength": {
@@ -1097,12 +1714,69 @@
         "SECTOR_WEAK_COLLECTIVE_DECLINE": "板塊退潮、集體走弱（勿輕易接刀）",
         "NEUTRAL_INLINE": "與板塊及大盤表現大致同步"
       }
+    },
+    "etf": {
+      "pageTitleSuffix": "ETF 技術與資金分析",
+      "badge": "ETF／ETP",
+      "bannerNotice": "ETF／ETP 不適用單一公司財報與相對估值模型，已切換為純技術結構、支撐阻力、資金流、大盤強弱與免財報交易計畫模式。",
+      "referenceCloseLabel": "最新參考收盤價",
+      "valuationNotApplicableNote": "ETF／ETP 不適用單一企業財報估值倍數與 DCF 模型，請對照下方 K 線結構、支撐阻力、AVWAP、量能與交易計畫。"
+    },
+    "fxBanner": {
+      "adrVerifiedChip": "已核實 ADR（1:{{ratio}}）",
+      "adrUnverifiedChip": "未核實 ADR",
+      "adrUnverifiedNotice": "{{symbol}} 為美股 ADR，其換股比例尚未經核實（ADR_RATIO_UNVERIFIED），已安全攔截估值與 DCF 避免股數口徑錯位。",
+      "adrUsdNotice": "{{symbol}} 為已核實之 {{reportingCurrency}} 報表 ADR（無須匯率換算；換股比例 1 ADR = {{ratio}} 原股{{underlying}}）。",
+      "fxUnavailableNotice": "{{reportingCurrency}} 折合 {{targetCurrency}} 官方匯率缺失或過期，跨幣別估值與 DCF 已暫停計算。",
+      "convertedNotice": "非美元財報已按官方匯率換算至 {{targetCurrency}}：原始財報幣別 {{reportingCurrency}}，匯率 1 {{reportingCurrency}} = {{rate}} {{targetCurrency}}（基準日 {{rateDate}} · 來源 {{source}}）{{adrSuffix}}。",
+      "adrRatioSuffix": "；ADR 換股比例 1 ADR = {{ratio}} 原股{{underlying}}"
+    },
+    "dcf": {
+      "title": "兩階段 DCF 與 Reverse DCF 獨立內在價值對照",
+      "independentBadge": "獨立模型（不併入 [L, M, H]）",
+      "independentDisclaimer": "採用兩階段股權現金流折現（FCF 近似 FCFE，折現率 = 10Y 美債 + 5.0% ERP，永續成長 2.5%），嚴格獨立於客觀市場相對估值帶 [L, M, H] 與結論之外。",
+      "basisToggleLabel": "現金流口徑切換",
+      "basisStandard": "標準 FCF",
+      "basisSbcAdjusted": "扣 SBC 實質 FCF",
+      "unavailableNotice": "DCF 模型目前不可用（{{status}} · {{reason}}），不強行推算內在價值。",
+      "branchUnavailable": "{{basis}} 口徑不可用（{{status}} · {{reason}}）。",
+      "scenariosTitle": "三情境內在每股價值（單維度 Stage 1 成長率 ±3 ppt）",
+      "conservative": "保守情境（h - 3%）",
+      "base": "基準情境（h）",
+      "optimistic": "樂觀情境（h + 3%）",
+      "stage1Growth": "第 1–5 年年複合成長率：{{value}}",
+      "vsCurrentPrice": "較現價 {{value}}",
+      "impliedEquityValue": "隱含股權總值：{{value}}",
+      "reverseTitle": "Reverse DCF（市場隱含成長反推）",
+      "expectationStretchedBadge": "市場預期過度樂觀",
+      "impliedCagrLabel": "現價隱含第 1–5 年 FCF CAGR",
+      "benchmarkLabel": "對照基準成長率",
+      "expectationGapLabel": "隱含與基準落差",
+      "reverseStretchedHint": "現價隱含未來 5 年自由現金流成長高於歷史／預期基準逾 5 個百分點，須嚴格審視高預期風險。",
+      "reverseAlignedHint": "現價隱含成長率與歷史／預期基準落差在合理範圍內，仍須配合相對估值帶與技術結構綜合評估。",
+      "reverseNoBenchmarkHint": "目前缺少可比歷史或前瞻基準成長率，請獨立評估現價隱含成長率與企業基本面是否匹配。",
+      "reverseUnavailable": "Reverse DCF 反推不可用（{{status}} · {{reason}}）。",
+      "assumptions": {
+        "discountRate": "折現率 r：{{value}}",
+        "riskFree": "10Y 美債：{{value}}（{{date}}）",
+        "erp": "ERP：{{value}}",
+        "terminalGrowth": "永續成長 g：{{value}}",
+        "baseFcf": "基期 TTM FCF：{{value}}"
+      },
+      "benchmarkSources": {
+        "HISTORICAL_FCF_CAGR_3Y": "歷史 3Y FCF CAGR",
+        "HISTORICAL_REVENUE_CAGR_3Y": "歷史 3Y 營收 CAGR",
+        "FORWARD_EXPECTED_GROWTH": "市場前瞻預期成長",
+        "DEFAULT_GROWTH": "預設基準成長"
+      }
     }
   },
   "upload": {
     "title": "資料上傳",
     "type": "上傳功能",
-    "types": { "STOCK_INDUSTRY": "股票產業更新" },
+    "types": {
+      "STOCK_INDUSTRY": "股票產業更新"
+    },
     "typesLoading": "正在載入上傳功能…",
     "typesEmpty": "目前沒有可用的上傳功能。",
     "typesFailed": "無法載入上傳功能，請重新整理頁面再試。",
@@ -1337,5 +2011,15 @@
       "MARKET_REGIME_SHIFT": "大盤市況較上次簡報（{{previousTradeDate}}）由 {{previousRegime}} 切換至 {{currentRegime}}",
       "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盤簡報已就緒：嚴重 {{criticalCount}} · 警告 {{warningCount}} · 雷達精選 {{radarTop5Count}} 檔"
     }
+  },
+  "stockScreener": {
+    "assetTypeLabel": "資產類型",
+    "assetTypes": {
+      "STOCK": "股票（含 ADR）",
+      "ETF": "ETF／ETP",
+      "ALL": "全部資產"
+    },
+    "etfTechnicalChip": "ETF 技術分析",
+    "etfTechnicalStatus": "技術與資金模式"
   }
 }

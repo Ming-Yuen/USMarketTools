@@ -18,6 +18,7 @@ public final class TaskCode {
     public static final String STOCK_SPLIT_DAILY = "STOCK_SPLIT_DAILY";
     public static final String STOCK_VALUATION_DAILY = "STOCK_VALUATION_DAILY";
     public static final String SEC_FINANCIAL_FACTS_DAILY_SYNC = "SEC_FINANCIAL_FACTS_DAILY_SYNC";
+    public static final String FX_RATE_DAILY_SYNC = "FX_RATE_DAILY_SYNC";
 
     public static final Map<String, String> PREVIOUS_SCHEDULE_CODES = Map.of(
             SEC_FINANCIAL_FACTS_DAILY_SYNC, "SEC_SHARES_DAILY_SYNC",

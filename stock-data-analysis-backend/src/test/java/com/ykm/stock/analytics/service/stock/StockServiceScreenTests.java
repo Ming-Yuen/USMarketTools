@@ -290,6 +290,39 @@ class StockServiceScreenTests {
                 .contains("order by s.match_rank, s.symbol, s.figi");
     }
 
+    @Test
+    void filtersEtfAssetTypeAndMarksEtfValuationNotApplicable() throws Exception {
+        when(jdbc.queryForObject(anyString(), any(SqlParameterSource.class), eq(Long.class))).thenReturn(1L);
+        ResultSet qqq = row("F_QQQ", "QQQ");
+        when(qqq.getString("stock_type")).thenReturn("ETF");
+        when(qqq.getString("valuation_status")).thenReturn("NOT_APPLICABLE");
+        when(qqq.getString("reason_code")).thenReturn("NOT_APPLICABLE_FOR_ETF");
+        stubPage(qqq);
+
+        ScreenCriteria criteria = new ScreenCriteria(
+                null, null, null, null, null,
+                null, null, null, null, null, null, null, 0, 50, "ETF");
+        StockScreenResponse result = service.screen(criteria);
+
+        assertThat(result.items()).hasSize(1);
+        Item item = result.items().getFirst();
+        assertThat(item.symbol()).isEqualTo("QQQ");
+        assertThat(item.stockType()).isEqualTo("ETF");
+        assertThat(item.status()).isEqualTo("NOT_APPLICABLE");
+        assertThat(item.reasonCode()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
+
+        ArgumentCaptor<SqlParameterSource> params = ArgumentCaptor.forClass(SqlParameterSource.class);
+        verify(jdbc).queryForObject(anyString(), params.capture(), eq(Long.class));
+        @SuppressWarnings("unchecked")
+        List<String> boundTypes = (List<String>) params.getValue().getValue("stockTypes");
+        assertThat(boundTypes).containsExactlyInAnyOrder("ETF", "ETP");
+
+        assertThatThrownBy(() -> service.screen(new ScreenCriteria(
+                null, null, null, null, null,
+                null, null, null, null, null, null, null, 0, 50, "CRYPTO")))
+                .isInstanceOf(ResponseStatusException.class);
+    }
+
     private ResultSet row(String figi, String symbol) throws Exception {
         ResultSet row = mock(ResultSet.class);
         when(row.getString("figi")).thenReturn(figi);

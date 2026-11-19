@@ -71,6 +71,19 @@ export interface CustomPeerGroup {
   targetIssuerKey?: string | null;
 }
 
+export interface FxConversion {
+  converted: boolean;
+  reportingCurrency: string | null;
+  targetCurrency: string | null;
+  rateDate: string | null;
+  usdPerUnit: number | null;
+  fxSource: string | null;
+  adr: boolean;
+  adrRatio: number | null;
+  adrRatioVerified: boolean | null;
+  underlyingSymbol: string | null;
+}
+
 export interface ValuationResult {
   figi: string;
   valuationDate: string;
@@ -91,6 +104,7 @@ export interface ValuationResult {
   historicalReference: ValuationReference | null;
   peerReference: ValuationReference | null;
   industryAssumption: ValuationReference | null;
+  fxConversion?: FxConversion | null;
 }
 
 export interface FinancialValue {

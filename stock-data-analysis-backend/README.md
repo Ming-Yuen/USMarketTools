@@ -11,7 +11,8 @@
   - `submissions.zip`：同步 4 碼 `stock.sic`、每份 `accession` 的精確 `reportDate`、`acceptanceDateTime` 與近期定期申報日期（供平日財報增量篩選）。
   - `companyfacts.zip`：同步核心 `us-gaap` 與 `dei` 標籤，自 2014 年起按披露唯一鍵整份 CIK JSON 比對新增與修訂。
 - **富途 OpenD**：提供產業、概念、三大財務報表（損益表、資產負債表、現金流量表）、單季 EPS／營收預測、最新流通股數與原生估值快照，以及新股回補／週六全市場拆股對帳（`requestRehab`）。
-- **Alpha Vantage**：提供美股 USD 財報營運公司的年度共識預測（`EARNINGS_ESTIMATES`，含 FY1／FY2 EPS、營收與 30／90 日前 EPS 基準）；採查詢時按需同步、7 日 DB 快取與持久化每日配額熔斷保護（每日機會雷達等批次掃描嚴禁觸發外部 API，只能唯讀 PostgreSQL `stock_earnings_forecast` 既有快取）。
+- **Alpha Vantage**：提供美股 USD 財報營運公司的年度共識預測（`EARNINGS_ESTIMATES`，含 FY1／FY2 EPS、營收與 30／90 日前 EPS 基準）；採查詢時按需同步、7 日 DB 快取與持久化每日配額熔斷保護（每日機會雷達等批次掃描嚴禁觸發外部 API，只能唯讀 PostgreSQL `stock_earnings_forecast` 既有快取；非 USD 財報 ADR 嚴禁寫入以防混幣污染）。
+- **FRED H.10 官方日頻匯率**：提供 16 種主要外幣對美元官方匯率（`fx_rate_daily`），統一折算為「1 單位外幣折合美元（`usd_per_unit`）」，供全市場非美元報表普通股與已核實 ADR 進行估值與財務品質換算。
 
 ## 2. 業務資料表
 
@@ -26,7 +27,9 @@
 | `stock_concept` | `code` | 概念名稱及來源板塊碼 |
 | `stock_concept_mapping` | `(figi, concept_code)` | 股票目前所屬的多個概念 |
 | `industry_valuation_config` | `(industry_code, effective_at)` | 人工確認的產業估值模型、主要指標及可選倍數假設 |
-| `stock_financial_period` | `(figi, period_end)` | 標準化財季分母表：保存財季起訖、14 項財務原料、TTM 分母、EV 非市值調整項、期末流通股數／EPS 拆股基準與 SEC 定期披露可用日欄位 |
+| `stock_financial_period` | `(figi, period_end)` | 標準化財季分母表：保存財季起訖、14 項核心財務原料、TTM 分母、EV 非市值調整項、期末流通股數／EPS 拆股基準、SEC 定期披露可用日，以及財務品質深化欄位（毛利、營業利益、稅前盈利、所得稅、利息費用、SEC SBC、現金股息、普通股淨發行、商譽與無形資產、短期有息債務） |
+| `fx_rate_daily` | `(currency, rate_date)` | FRED H.10 官方日頻匯率表（`usd_per_unit`），供非美元財報公司與已核實 ADR 估值換算（超過 14 日標註 `FX_RATE_STALE`） |
+| `adr_share_ratio` | `symbol` | ADR 換股比例核實表（`1 ADR = adr_ratio 原股`，啟動冪等種子內建 19 檔權值 ADR，未核實者標註 `ADR_RATIO_UNVERIFIED` 安全攔截） |
 | `stock_valuation_latest` | `figi` | 最新已收市交易日的五項估值倍數、市值與規模分層（`market_cap_tier`）、三項財務品質指標（`revenue_growth_yoy`、`roe`、`fcf_margin`）、歷史分位數（`historical_percentile`）、客觀參考價帶（`fair_value_low`/`mid`/`high`）、基本面支撐（`fundamental_backing`）與估值定性（`verdict`）快照，供選股、雷達初篩與同業比較直接查詢 |
 | `daily_opportunity_radar` | `(radar_date, track_type, figi)` | 每日收市兩階段雙軌機會雷達快照（低估支撐低接 `VALUE_SUPPORT` 與強勢股趨勢回踩試單 `TREND_PULLBACK_STARTER`），保存收盤基準之第一目標價、成本後淨賺賠比、止損價、財報天數與板塊資金流狀態 |
 | `daily_opportunity_radar_run` | `radar_date` | 每日機會雷達發布紀錄（含零入選日、大盤市況與候選／發布檔數），確保當日首次完整發布後凍結快照，且零入選日不回退復活前一日名單 |
@@ -69,7 +72,11 @@
 - **金融機構模型對齊**：統一依 `industry_valuation_config`（`BANK`／`INSURANCE`）與 `stock.sic` 判定金融機構，正常計算 `P/E`、`P/B`，並將 `P/FCF`、`EV/EBITDA` 標為 `NOT_APPLICABLE`。
 - **多股類市值工程準則**：單一普通股採用扣除庫藏股後的流通在外股數（`outstandingShares`）；多股類公司最新估值採富途快照對應等值總市值，歷史市值倍數絕不將兩類等值市值重複相加，僅在最新等值總股數與同日拆股調整後之 SEC 申報總股數吻合（誤差 `<= 2%`，代表符合 `META`、`GOOGL` 等標準 1:1 經濟權結構）時沿用申報總股數計算，否則（如 `BRK.B` 1:1500）標記 `SHARE_CLASS_ECONOMIC_BASIS_UNVERIFIED`。
 - **拆股跨越期的 EPS 驗證**：跨越拆股日的歷史單季 EPS，僅在採拆股後提交之直接申報 EPS、拆股前原申報（期末至申報日間無拆股）按已知拆股因子對齊一致，或經同報期盈利與 SEC 加權平均稀釋股數（`WeightedAverageNumberOfDilutedSharesOutstanding`）驗證一致時放行，絕不用期末股本做數量級猜測。
-- **負值分母與外幣邊界**：負 EPS、負 FCF、負 EBITDA 或負普通股權益在 `stock_financial_period` 與前端財務面板保留真實負值（`AVAILABLE`），對應估值倍數標為 `NOT_APPLICABLE`（N.M.）且倍數為 `NULL`。財報原幣與股價幣別不同時維持 `REPORTING_CURRENCY_MISMATCH` 不自動匯兌。
+- **負值分母、外幣換算、ADR 與 ETF 邊界**：
+  - 負 EPS、負 FCF、負 EBITDA 或負普通股權益在 `stock_financial_period` 與前端財務面板保留真實負值（`AVAILABLE`），對應估值倍數標為 `NOT_APPLICABLE`（N.M.）且倍數為 `NULL`；針對負權益藍籌補齊 **ROIC（`NOPAT / Invested Capital`）**、SBC 實質自由現金流（`Adj. FCF = FCF - SBC`、`P/Adj. FCF`）、Total Shareholder Yield、毛利／營益率變動與連兩季壓縮警戒、EV/Sales、EV/Gross Profit、Rule of 40、P/TBV、Interest Coverage 與短期流動性覆蓋率。
+  - **獨立兩階段 DCF 與 Reverse DCF**：採股權現金流（FCF 近似 FCFE，折現率 = 10Y 美債 + 5.0% ERP，永續成長 2.5%）提供標準 FCF 與扣 SBC 實質 FCF 雙軌三情境估價及市場隱含成長反解，嚴格獨立於市場相對估值帶 `[L, M, H]` 與 `verdict` 之外；負 FCF、銀行／保險、REITs 與 ETF 優雅回傳 `NOT_APPLICABLE`。
+  - **非美元報表與 ADR**：依 `fx_rate_daily` 官方匯率折算至 USD 並於回應 `fxConversion` 標註匯率基準；已核實 ADR 依 `adr_share_ratio` 將原股數折算為 ADR 等值股數並採公司層級 P/E（`MarketCap_USD / NetIncome_USD`）消除每股與原股口徑錯位，未核實 ADR 攔截為 `ADR_RATIO_UNVERIFIED`（僅保留不依賴股份單位之原幣比率）；非 USD 財報 ADR 維持禁止寫入 Alpha Vantage 年度預測以防混幣污染。註：現行 `adr_share_ratio` 採單一現行有效比例，若個別 ADR 歷史曾變更過換股比例（如 `TM` 2021 年前後由 1:2 改為 1:10），舊期歷史估值仍以現行比例換算，後續批次可視需要擴充生效區間版本表。
+  - **ETF／ETP 路由**：`POST /analysis/report` 與 `GET /stock/screen?assetType=ETF` 支援 ETF／ETP，財報估值與 DCF 標示 `NOT_APPLICABLE_FOR_ETF`，跳過單一公司財報門鎖同時保留宏觀事件與大盤市況控管，完整輸出 K 線結構、支撐阻力、Volume Profile、AVWAP、資金流與技術交易計畫。
 
 ### 3.3 財季分母表與即時歷史估值
 
@@ -83,11 +90,12 @@
 
 | 方法／路徑 | 用途 |
 | --- | --- |
-| `GET /stock/screen` | 全市場追蹤中營運股票篩選與排序（關聯 `stock_valuation_latest`）；支援 `symbol`、`industry`、`conceptCode`、`marketCapTier`、`verdict`、財務品質與歷史分位數門檻及 `sortBy`/`sortDir`/`page`/`size` |
+| `GET /stock/screen` | 全市場追蹤中營運股票與 ETF 篩選與排序（關聯 `stock_valuation_latest`）；支援 `assetType`（`STOCK`\|`ETF`\|`ALL`）、`symbol`、`industry`、`conceptCode`、`marketCapTier`、`verdict`、財務品質與歷史分位數門檻及 `sortBy`/`sortDir`/`page`/`size` |
 | `PATCH /stock/{figi}/tracked` | 更新單一股票的人工追蹤開關 `{ "tracked": true \| false }` |
 | `POST /stock/tracked/batch` | 批量更新多檔股票的人工追蹤開關 `{ "figis": [...], "tracked": true \| false }` |
-| `POST /stock/classification` | 交易所、產業、概念、市值規模分層（`marketCapTiers`）、估值定性（`verdicts`）與支援排序欄位（`sortFields`）字典查詢 |
-| `POST /analysis/report` | 個股分析報告（回傳 `valuation`、規模分層／自訂對標同業參考、同日同業相對強弱 `peerRelativeStrength`、前瞻估值與預期修正觀察、`financials` 14 項指標、5 年月頻 `history`、技術支撐阻力、各交易計畫與強勢試單之倉位風險建議 `positionSizing`/`starterPositionSizing` 及執行摘要 `summary`） |
+| `POST /stock/classification` | 交易所、產業、概念、資產類型（`assetTypes`）、市值規模分層（`marketCapTiers`）、估值定性（`verdicts`）與支援排序欄位（`sortFields`）字典查詢 |
+| `POST /analysis/report` | 個股／ETF 分析報告（個股回傳 `valuation` 含 `fxConversion`、財務品質深化 `fundamentals`、獨立兩階段 `dcf`／Reverse DCF、同業參考與強弱、前瞻預期、14 項財務原料、5 年 `history`、技術結構與交易計畫及執行摘要 `summary`；ETF 回傳 `NOT_APPLICABLE_FOR_ETF` 與完整技術／資金分析及免財報交易計畫） |
+| `GET /valuation/adr-ratios`、`PUT /valuation/adr-ratios` | 查詢、人工核實／更新 ADR 換股比例對照表（`symbol` 由 JSON body 提供，設 `verified=false` 可撤銷核實），寫入後自動觸發該 ADR 財季分母重建與最新估值刷新 |
 | `GET /portfolio`、`PUT /portfolio/{figi}`、`DELETE /portfolio/{figi}` | 個人持倉／自選清單（含拆股對齊損益與 USD 板塊曝險彙總）查詢、新增更新與移除 |
 | `GET /portfolio/config`、`PUT /portfolio/config` | 讀寫 `sys_config` 內之總資金（USD）、單筆風險比例、單檔上限與單一板塊上限風控參數 |
 | `GET /portfolio/health` | 查詢持倉與自選股體檢警示卡（預設讀最新已發布收盤簡報快照，`live=true` 時按目前持倉純本地唯讀即時重算，不觸發外部 API 或寫通知） |
@@ -109,6 +117,7 @@
 | `taskCode` | 預設時間（香港） | 主要職責 |
 | --- | --- | --- |
 | `TREASURY_DAILY_SYNC` | 每日 05:00 | 美國財政部國債殖利率同步 |
+| `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率增量同步（寫入 `fx_rate_daily`） |
 | `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步 |
 | `STOCK_SPLIT_DAILY` | 每日 05:45 | 平日 Massive `/stocks/v1/splits` 增量同步；新股與週六富途 `requestRehab` 全量對帳 |
 | `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（回看最近 5 個交易日補漏） |
@@ -120,9 +129,11 @@
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
 | `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢及站內收盤簡報／提醒寫入（異常僅記警告日誌，絕不回滾上游估值、資金流與雷達快照） |
 
-### 舊版資料庫清理說明
+### 舊版資料庫清理與枚舉約束說明
 
-DEV 環境由 Hibernate `ddl-auto=update` 自動建立 `stock_financial_period` 與 `stock_valuation_latest`。已退役的 `stock_valuation_daily` 與 `financial_report_item_mapping` 已從程式碼與 ORM 移除；確認新鏈路驗收無誤後，可在已確認的目標資料庫手動執行清理：
+DEV 環境由 Hibernate `ddl-auto=update` 自動建立 `stock_financial_period`、`stock_valuation_latest`、`fx_rate_daily` 與 `adr_share_ratio`，並於 `DataInitializer` 啟動時自動清除既有 `stock_financial_period`／`stock_valuation_latest` 上因 Hibernate 舊版枚舉產生的 `*_reason*_check` 約束（避免新增 `ValuationReason` 如 `ADR_RATIO_UNVERIFIED`、`FX_RATE_UNAVAILABLE`、`FX_RATE_STALE` 時觸發 PostgreSQL `23514` 約束違規）。於 `ddl-auto=none` 的 UAT／PROD 升級前，須同步套用新表、擴充欄位並移除該兩表舊有 `*_reason*_check` 約束。
+
+已退役的 `stock_valuation_daily` 與 `financial_report_item_mapping` 已從程式碼與 ORM 移除；確認新鏈路驗收無誤後，可在已確認的目標資料庫手動執行清理：
 
 ```sql
 DROP TABLE IF EXISTS public.stock_valuation_daily;

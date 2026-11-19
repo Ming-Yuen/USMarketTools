@@ -5,6 +5,8 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisContext;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReportRequest;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.DcfValuationDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.MacroCautionDto;
@@ -18,6 +20,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PeerRelativeStren
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PositionSizingDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceStructureDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SourceFreshnessDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StockAnalysisReportDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistanceDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
@@ -26,6 +29,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
@@ -36,6 +40,7 @@ import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalcu
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService.PortfolioExposureSnapshot;
+import com.ykm.stock.analytics.service.valuation.DcfValuationCalculator;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService.ReportValuationBundle;
 import lombok.RequiredArgsConstructor;
@@ -69,8 +74,9 @@ public class StockAnalysisService {
     private final PortfolioManagementService portfolioManagementService;
     private final PositionSizingCalculator positionSizingCalculator;
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
+    private final DcfValuationCalculator dcfCalculator = new DcfValuationCalculator();
 
-    /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史、前瞻預期觀察、技術交易計畫與綜合估值摘要；不觸發外部下載或寫庫。 */
+    /** 只讀已入庫行情與財季分母即時組裝估值、財務品質、DCF／Reverse DCF、技術交易計畫與綜合摘要；ETF／ETP 走免財報技術分析路由。 */
     @Transactional(readOnly = true)
     public StockAnalysisReportDto analyze(AnalysisReportRequest request) {
         Stock stock = stocks.findById(request.figi())
@@ -84,6 +90,10 @@ public class StockAnalysisService {
         Instant cutoff = calendar.getSessionCloseAt(day);
         // 預設報告讀取目前已取得的觀察；歷史報告限定在所選交易日收市時間。
         Instant supplementalCutoff = request.valuationDate() == null ? readAt : cutoff;
+
+        if (SecurityTypePolicy.isEtfType(stock.getStockType())) {
+            return analyzeEtf(stock, request, day, cutoff, supplementalCutoff, readAt, horizon);
+        }
 
         String industryCode = industries.findAt(stock.getFigi(), cutoff).map(row -> row.getIndustry().getCode()).orElse(null);
         ReportValuationBundle bundle = stockValuations.evaluateForReport(stock, day, cutoff, supplementalCutoff, industryCode);
@@ -166,10 +176,155 @@ public class StockAnalysisService {
                     marketResult.value().relativeStrength()
             );
         }
+        DcfValuationDto dcf = evaluateDcf(stock, resolvedReportDate, latestPriceClose, bundle, observations, marketResult);
+
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),
                 structure, support, enrichedTradePlans, marketResult, observations, reasons,
-                bundle.fundamentals(), summary, peerRelativeStrength, starterPositionSizing);
+                bundle.fundamentals(), summary, peerRelativeStrength, starterPositionSizing,
+                stock.getStockType(), dcf);
+    }
+
+    /** ETF／ETP 專屬路由：跳過單一公司財報／估值／DCF／共識預測，完整輸出 K 線結構、支撐阻力、Volume Profile、AVWAP、CMF、相對 SPY 強弱與免財報交易計畫。 */
+    private StockAnalysisReportDto analyzeEtf(
+            Stock stock, AnalysisReportRequest request, LocalDate day, Instant cutoff,
+            Instant supplementalCutoff, Instant readAt, AnalysisHorizon horizon) {
+        LocalDate resolvedReportDate = day;
+        if (request.valuationDate() == null) {
+            LocalDate latestStored = prices.findLatestStoredQuoteDate(stock.getFigi(), day);
+            if (latestStored != null && latestStored.isBefore(day)) {
+                resolvedReportDate = latestStored;
+                cutoff = calendar.getSessionCloseAt(resolvedReportDate);
+            }
+        }
+        AnalysisContext initialContext = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
+        MetricResult<NormalizedPriceSeriesDto> price = prices.normalize(initialContext, resolvedReportDate.minusYears(5), resolvedReportDate);
+        BigDecimal latestPriceClose = null;
+        if (price.status() == MetricStatus.AVAILABLE && price.value() != null && !price.value().bars().isEmpty()) {
+            LocalDate lastBarDate = price.value().bars().getLast().sessionDate();
+            latestPriceClose = price.value().bars().getLast().close();
+            if (request.valuationDate() == null && lastBarDate != null && lastBarDate.isBefore(resolvedReportDate)) {
+                resolvedReportDate = lastBarDate;
+                cutoff = calendar.getSessionCloseAt(resolvedReportDate);
+            }
+        } else {
+            latestPriceClose = prices.findStoredClosePrice(stock.getFigi(), resolvedReportDate);
+        }
+        String industryCode = industries.findAt(stock.getFigi(), cutoff)
+                .map(row -> row.getIndustry().getCode()).orElse(null);
+        AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
+        ValuationResultDto etfValuation = ValuationResultDto.forEtf(
+                stock.getFigi(), resolvedReportDate, cutoff, latestPriceClose, stock.getCurrency(), readAt);
+        DcfValuationDto etfDcf = DcfValuationDto.unavailable(
+                MetricStatus.NOT_APPLICABLE.name(), "NOT_APPLICABLE_FOR_ETF",
+                resolvedReportDate, stock.getCurrency(), latestPriceClose);
+
+        MetricResult<PriceStructureDto> structure = unavailable("TECHNICAL_PRICE_MISSING");
+        MetricResult<SupportResistanceDto> support = unavailable("TECHNICAL_STRUCTURE_MISSING");
+        MetricResult<MarketContextDto> marketResult = unavailable("TECHNICAL_PRICE_MISSING");
+        MetricResult<TradePlanResultDto> tradePlans = unavailable("TECHNICAL_STRUCTURE_MISSING");
+        if (price.status() == MetricStatus.AVAILABLE) {
+            structure = structures.analyze(context, price.value());
+            marketResult = market.evaluate(context, price.value(), structure.value(), List.of(), true);
+            MarketContextDto marketValue = marketResult.status() == MetricStatus.AVAILABLE ? marketResult.value() : null;
+            if (structure.status() == MetricStatus.AVAILABLE) {
+                support = levels.analyze(context, price.value(), structure.value(), marketValue);
+            }
+            if (support.status() == MetricStatus.AVAILABLE) {
+                PlanConstraintDto constraint = marketValue != null ? marketValue.tradeConstraint() : null;
+                tradePlans = plans.build(context, price.value(), structure.value(), support.value(), constraint);
+            }
+        }
+        List<AnalysisReasonDto> reasons = new ArrayList<>(price.reasons());
+        MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculateForEtf(
+                horizon, latestPriceClose, stock.getCurrency(), structure, support, tradePlans, marketResult);
+
+        boolean historicalQuery = request.valuationDate() != null;
+        boolean quoteFellBack = !historicalQuery && !resolvedReportDate.equals(day);
+        SizingAttachment sizingAttachment = attachPositionSizing(
+                stock, industryCode, resolvedReportDate, readAt, historicalQuery, quoteFellBack,
+                latestPriceClose, tradePlans, summary, marketResult);
+
+        return new StockAnalysisReportDto(
+                stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
+                etfValuation, null, List.of(),
+                structure, support, sizingAttachment.tradePlans(), marketResult, null, reasons,
+                null, summary, null, sizingAttachment.starterPositionSizing(),
+                stock.getStockType(), etfDcf
+        );
+    }
+
+    private DcfValuationDto evaluateDcf(
+            Stock stock, LocalDate resolvedReportDate, BigDecimal latestPriceClose,
+            ReportValuationBundle bundle, FutuObservationsDto observations, MetricResult<MarketContextDto> marketResult) {
+        if (bundle == null) {
+            return DcfValuationDto.unavailable(MetricStatus.INSUFFICIENT_DATA.name(), "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE",
+                    resolvedReportDate, stock.getCurrency(), latestPriceClose);
+        }
+        StockFinancialPeriod matched = StockValuationService.matchPeriod(bundle.storedPeriods(), resolvedReportDate);
+        BigDecimal fxMult = bundle.fxRateToQuote() != null && bundle.fxRateToQuote().signum() > 0
+                ? bundle.fxRateToQuote() : BigDecimal.ONE;
+        BigDecimal fcfUsd = null;
+        if (matched != null && MetricStatus.AVAILABLE.name().equals(matched.getFreeCashFlowTtmStatus())
+                && matched.getFreeCashFlowTtm() != null) {
+            fcfUsd = matched.getFreeCashFlowTtm().multiply(fxMult, java.math.MathContext.DECIMAL128);
+        }
+        FundamentalSnapshotDto fundamentals = bundle.fundamentals();
+        BigDecimal adjFcfUsd = null;
+        if (fundamentals != null && fundamentals.adjFcfTtm() != null
+                && fundamentals.adjFcfTtm().status() == MetricStatus.AVAILABLE
+                && fundamentals.adjFcfTtm().value() != null) {
+            adjFcfUsd = fundamentals.adjFcfTtm().value().multiply(fxMult, java.math.MathContext.DECIMAL128);
+        }
+        BigDecimal tenYearPct = null;
+        LocalDate tenYearDate = null;
+        if (marketResult != null && marketResult.status() == MetricStatus.AVAILABLE && marketResult.value() != null
+                && marketResult.value().treasury() != null && marketResult.value().treasury().tenYear() != null
+                && marketResult.value().treasury().tenYear().status() == MetricStatus.AVAILABLE) {
+            tenYearPct = marketResult.value().treasury().tenYear().value();
+            SourceFreshnessDto tenYearFresh = marketResult.value().sourceFreshness() == null
+                    ? null : marketResult.value().sourceFreshness().get("TREASURY_10Y");
+            tenYearDate = tenYearFresh != null && tenYearFresh.dataDate() != null
+                    ? tenYearFresh.dataDate() : resolvedReportDate;
+        } else if ((marketResult == null || marketResult.status() != MetricStatus.AVAILABLE)
+                && ((fcfUsd != null && fcfUsd.signum() > 0) || (adjFcfUsd != null && adjFcfUsd.signum() > 0))) {
+            MarketContextService.TreasuryRateObservation directTenYear = market.resolveLatestTenYearYield(resolvedReportDate);
+            if (directTenYear != null) {
+                tenYearPct = directTenYear.tenYearPct();
+                tenYearDate = directTenYear.observationDate();
+            }
+        }
+        BigDecimal revCagr3y = extractMetricValue(fundamentals == null ? null : fundamentals.revenueCagr3y());
+        BigDecimal fcfCagr3y = extractMetricValue(fundamentals == null ? null : fundamentals.fcfCagr3y());
+        BigDecimal forwardGrowth = observations != null && observations.forward() != null
+                ? extractMetricValue(observations.forward().impliedEpsGrowth()) : null;
+        boolean reit = SecurityTypePolicy.isReitType(stock.getStockType())
+                || (bundle.valuation() != null && "REIT".equalsIgnoreCase(bundle.valuation().modelCode()));
+        BigDecimal priceForDcf = bundle.closePriceAtDay() != null ? bundle.closePriceAtDay() : latestPriceClose;
+        BigDecimal dcfMarketCap = bundle.dcfMarketCapAtDay() != null ? bundle.dcfMarketCapAtDay() : bundle.marketCapAtDay();
+
+        return dcfCalculator.calculate(new DcfValuationCalculator.Inputs(
+                resolvedReportDate,
+                stock.getCurrency(),
+                priceForDcf,
+                dcfMarketCap,
+                bundle.sharesAtDay(),
+                bundle.financialInstitution(),
+                reit,
+                false,
+                bundle.valuationBlockedReason(),
+                fcfUsd,
+                adjFcfUsd,
+                tenYearPct,
+                tenYearDate,
+                revCagr3y,
+                fcfCagr3y,
+                forwardGrowth
+        ));
+    }
+
+    private static BigDecimal extractMetricValue(MetricResult<BigDecimal> metric) {
+        return metric != null && metric.status() == MetricStatus.AVAILABLE ? metric.value() : null;
     }
 
     private record SizingAttachment(MetricResult<TradePlanResultDto> tradePlans, PositionSizingDto starterPositionSizing) {}

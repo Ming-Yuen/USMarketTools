@@ -14,6 +14,7 @@ import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.analysis.calculator.StockSplitCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.QuoteNormalizer;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,30 @@ public class QuoteNormalizationService {
     private final StockSplitRepository splits;
     private final StockStatusRepository statuses;
     private final MarketStatusService calendar;
+
+    /** 查詢指定標的截至 through（含）的最近一筆已入庫交易日，供 ETF 預設最新報告對齊本地行情水位。 */
+    @Transactional(readOnly = true)
+    public LocalDate findLatestStoredQuoteDate(String figi, LocalDate through) {
+        if (figi == null || figi.isBlank() || through == null) {
+            return null;
+        }
+        List<StockQuote> latest = quotes.findByFigiAndQuoteDateLessThanEqualOrderByQuoteDateDesc(figi, through, Limit.of(1));
+        return latest == null || latest.isEmpty() ? null : latest.getFirst().getQuoteDate();
+    }
+
+    /** 單日收盤價查詢（不依賴完整五年序列正規化），供技術序列缺口時仍保留 ETF 目標日參考收盤。 */
+    @Transactional(readOnly = true)
+    public BigDecimal findStoredClosePrice(String figi, LocalDate quoteDate) {
+        if (figi == null || figi.isBlank() || quoteDate == null) {
+            return null;
+        }
+        List<StockQuote> rows = quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(figi, quoteDate, quoteDate);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        BigDecimal close = rows.getLast().getClosePrice();
+        return close != null && close.signum() > 0 ? close : null;
+    }
 
     @Transactional(readOnly = true)
     public MetricResult<NormalizedPriceSeriesDto> normalize(AnalysisContext context, LocalDate from, LocalDate through) {

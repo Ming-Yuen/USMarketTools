@@ -78,6 +78,12 @@ public class SecFinancialFactsCalculator {
             "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
             "AccumulatedOtherComprehensiveIncomeLossNetOfTax",
             "GrossProfit", "CostOfGoodsAndServicesSold", "Assets", "Liabilities",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeTaxExpenseBenefit",
+            "InterestExpense", "InterestExpenseDebt",
+            "ShareBasedCompensation", "AllocatedShareBasedCompensationExpense",
+            "PaymentsOfDividendsCommonStock", "PaymentsOfDividends", "PaymentsForRepurchaseOfCommonStock",
+            "Goodwill", "IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet",
             "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic",
             "CommonStockSharesOutstanding");
 
@@ -604,7 +610,24 @@ public class SecFinancialFactsCalculator {
         }
 
         Flow profit = trailing(eligible, "OperatingIncomeLoss");
-        inputs.put(FinancialConcept.OPERATING_PROFIT, profit);
+        inputs.put(FinancialConcept.OPERATING_PROFIT, requireReportEnd(profit, incomeEnd, "OPERATING_PROFIT_MISSING"));
+        inputs.put(FinancialConcept.GROSS_PROFIT, requireReportEnd(trailing(eligible, "GrossProfit"), incomeEnd, "GROSS_PROFIT_MISSING"));
+        inputs.put(FinancialConcept.PRETAX_PROFIT, requireReportEnd(
+                trailing(eligible, "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"),
+                incomeEnd, "PRETAX_OR_TAX_MISSING"));
+        inputs.put(FinancialConcept.INCOME_TAX_EXPENSE, requireReportEnd(
+                trailing(eligible, "IncomeTaxExpenseBenefit"), incomeEnd, "PRETAX_OR_TAX_MISSING"));
+        inputs.put(FinancialConcept.INTEREST_EXPENSE_AS_REPORTED, requireReportEnd(
+                interestExpense(eligible, this::trailing), incomeEnd, "INTEREST_EXPENSE_MISSING"));
+        inputs.put(FinancialConcept.SBC, requireReportEnd(
+                sbc(eligible, this::trailing), cashFlowEnd != null ? cashFlowEnd : incomeEnd, "SBC_MISSING"));
+        inputs.put(FinancialConcept.CASH_DIVIDENDS_PAID, requireReportEnd(
+                cashDividendsPaid(eligible, this::trailing), cashFlowEnd, "SHAREHOLDER_RETURN_MISSING"));
+        inputs.put(FinancialConcept.COMMON_STOCK_REPURCHASE, requireReportEnd(
+                trailing(eligible, "PaymentsForRepurchaseOfCommonStock"), cashFlowEnd, "SHAREHOLDER_RETURN_MISSING"));
+        if (preferredEnd != null) {
+            inputs.put(FinancialConcept.GOODWILL_AND_INTANGIBLES, resolveSecGoodwillAndIntangibles(sameBalancePeriod, preferredEnd));
+        }
         inputs.put(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, depreciation);
         LocalDate ebitdaEnd = later(profit.periodEnd(), depreciation.periodEnd());
         Flow ebitda;
@@ -649,17 +672,67 @@ public class SecFinancialFactsCalculator {
         Map<FinancialConcept, Flow> inputs = new EnumMap<>(FinancialConcept.class);
         if (report.statementType() == 1) {
             inputs.put(FinancialConcept.REVENUE_AS_REPORTED, revenue(matching, this::reported, sic));
+            inputs.put(FinancialConcept.GROSS_PROFIT, reported(matching, "GrossProfit"));
             inputs.put(FinancialConcept.DILUTED_EPS, dilutedEps(matching, this::reported));
             inputs.put(FinancialConcept.NET_INCOME_COMMON, netIncomeCommon(matching, this::reported));
             inputs.put(FinancialConcept.OPERATING_PROFIT, reported(matching, "OperatingIncomeLoss"));
+            inputs.put(FinancialConcept.PRETAX_PROFIT, reported(matching,
+                    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"));
+            inputs.put(FinancialConcept.INCOME_TAX_EXPENSE, reported(matching, "IncomeTaxExpenseBenefit"));
+            inputs.put(FinancialConcept.INTEREST_EXPENSE_AS_REPORTED, interestExpense(matching, this::reported));
             inputs.put(FinancialConcept.INCOME_DEPRECIATION_AMORTIZATION, depreciationAndAmortization(matching, this::reported));
         } else if (report.statementType() == 3) {
             inputs.put(FinancialConcept.OPERATING_CASH_FLOW, operatingCashFlow(matching, this::reported));
             Flow capex = reported(matching, "PaymentsToAcquireProductiveAssets");
             if (capex.periodEnd() == null) capex = reported(matching, "PaymentsToAcquirePropertyPlantAndEquipment");
             inputs.put(FinancialConcept.CAPITAL_EXPENDITURE, capex);
+            inputs.put(FinancialConcept.SBC, sbc(matching, this::reported));
+            inputs.put(FinancialConcept.CASH_DIVIDENDS_PAID, cashDividendsPaid(matching, this::reported));
+            inputs.put(FinancialConcept.COMMON_STOCK_REPURCHASE, reported(matching, "PaymentsForRepurchaseOfCommonStock"));
         }
         return Map.copyOf(inputs);
+    }
+
+    private Flow sbc(List<SecFinancialFact> facts, BiFunction<List<SecFinancialFact>, String, Flow> read) {
+        Flow primary = read.apply(facts, "ShareBasedCompensation");
+        if (primary.value() != null || (primary.reason() != null && primary.reason().contains("CONFLICT"))) return primary;
+        return read.apply(facts, "AllocatedShareBasedCompensationExpense");
+    }
+
+    private Flow interestExpense(List<SecFinancialFact> facts, BiFunction<List<SecFinancialFact>, String, Flow> read) {
+        Flow primary = read.apply(facts, "InterestExpense");
+        if (primary.value() != null || (primary.reason() != null && primary.reason().contains("CONFLICT"))) return primary;
+        return read.apply(facts, "InterestExpenseDebt");
+    }
+
+    private Flow cashDividendsPaid(List<SecFinancialFact> facts, BiFunction<List<SecFinancialFact>, String, Flow> read) {
+        Flow common = read.apply(facts, "PaymentsOfDividendsCommonStock");
+        if (common.value() != null || (common.reason() != null && common.reason().contains("CONFLICT"))) return common;
+        return read.apply(facts, "PaymentsOfDividends");
+    }
+
+    private Flow resolveSecGoodwillAndIntangibles(List<SecFinancialFact> samePeriod, LocalDate end) {
+        if (end == null || samePeriod.isEmpty()) return missing("GOODWILL_INTANGIBLES_MISSING", end);
+        Flow goodwill = balance(samePeriod, "Goodwill");
+        Flow intangibles = balance(samePeriod, "IntangibleAssetsNetExcludingGoodwill");
+        if (goodwill.reason() != null && goodwill.reason().contains("CONFLICT")) return goodwill;
+        if (intangibles.reason() != null && intangibles.reason().contains("CONFLICT")) return intangibles;
+        List<Flow> used = new ArrayList<>();
+        BigDecimal total = BigDecimal.ZERO;
+        if (goodwill.value() != null) {
+            if (goodwill.value().signum() < 0) return missing("SEC_BALANCE_INPUT_MISSING", end);
+            total = total.add(goodwill.value());
+            used.add(goodwill);
+        }
+        if (intangibles.value() != null) {
+            if (intangibles.value().signum() < 0) return missing("SEC_BALANCE_INPUT_MISSING", end);
+            total = total.add(intangibles.value());
+            used.add(intangibles);
+        }
+        if (!used.isEmpty()) {
+            return combineWithNote(total, used, "Goodwill + Intangibles");
+        }
+        return missing("GOODWILL_INTANGIBLES_MISSING", end);
     }
 
     private Flow netIncomeCommon(List<SecFinancialFact> facts, BiFunction<List<SecFinancialFact>, String, Flow> read) {

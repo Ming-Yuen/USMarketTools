@@ -21,6 +21,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistance
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TargetDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
@@ -32,6 +33,7 @@ import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
@@ -51,6 +53,9 @@ import com.ykm.stock.analytics.service.analysis.MarketContextService.PreloadedMa
 import com.ykm.stock.analytics.service.analysis.calculator.ExecutionCostCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator.RadarEvaluationResult;
+import com.ykm.stock.analytics.service.market.FxRateService;
+import com.ykm.stock.analytics.service.market.FxRateService.FxRateLookup;
+import com.ykm.stock.analytics.service.market.FxRateService.FxResolution;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.valuation.ForwardValuationCalculator;
 import com.ykm.stock.analytics.service.valuation.ForwardValuationCalculator.SelectedRevisionTarget;
@@ -59,8 +64,8 @@ import com.ykm.stock.analytics.service.valuation.IndustryValuationProposalServic
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService.DayEpsResolution;
 import jakarta.persistence.EntityManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -87,7 +92,6 @@ import java.util.stream.Collectors;
  * 嚴禁於批次迴圈內呼叫 AnnualEarningsForecastSyncService 或任何外部 API。
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class DailyOpportunityRadarService {
     private static final MathContext MC = MathContext.DECIMAL128;
@@ -122,11 +126,95 @@ public class DailyOpportunityRadarService {
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactions;
     private final EntityManager entityManager;
+    private final FxRateService fxRateService;
+    private final AdrShareRatioRepository adrShareRatios;
 
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
     private final ForwardValuationCalculator forwardCalculator = new ForwardValuationCalculator();
     private final ExecutionCostCalculator costCalculator = new ExecutionCostCalculator();
+
+    public DailyOpportunityRadarService(
+            StockValuationLatestRepository latestValuations,
+            StockQuoteRepository quotes,
+            StockSplitRepository splits,
+            StockStatusRepository statuses,
+            StockFinancialPeriodRepository financialPeriods,
+            FinancialReportRepository financialReports,
+            StockEarningsForecastRepository forecasts,
+            MarketEventRepository marketEvents,
+            StockIndustryRepository industries,
+            SectorMoneyFlowDailyRepository sectorMoneyFlows,
+            DailyOpportunityRadarRepository radarRepository,
+            DailyOpportunityRadarRunRepository radarRunRepository,
+            QuoteNormalizationService quoteNormalization,
+            PriceStructureService priceStructures,
+            MarketContextService marketContextService,
+            SupportResistanceService supportResistanceService,
+            TradePlanService tradePlanService,
+            SignalTrackingService signalTrackingService,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            TransactionTemplate transactions,
+            EntityManager entityManager) {
+        this(latestValuations, quotes, splits, statuses, financialPeriods, financialReports, forecasts,
+                marketEvents, industries, sectorMoneyFlows, radarRepository, radarRunRepository,
+                quoteNormalization, priceStructures, marketContextService, supportResistanceService,
+                tradePlanService, signalTrackingService, calendar, dateTimeService, transactions, entityManager,
+                null, null);
+    }
+
+    @Autowired
+    public DailyOpportunityRadarService(
+            StockValuationLatestRepository latestValuations,
+            StockQuoteRepository quotes,
+            StockSplitRepository splits,
+            StockStatusRepository statuses,
+            StockFinancialPeriodRepository financialPeriods,
+            FinancialReportRepository financialReports,
+            StockEarningsForecastRepository forecasts,
+            MarketEventRepository marketEvents,
+            StockIndustryRepository industries,
+            SectorMoneyFlowDailyRepository sectorMoneyFlows,
+            DailyOpportunityRadarRepository radarRepository,
+            DailyOpportunityRadarRunRepository radarRunRepository,
+            QuoteNormalizationService quoteNormalization,
+            PriceStructureService priceStructures,
+            MarketContextService marketContextService,
+            SupportResistanceService supportResistanceService,
+            TradePlanService tradePlanService,
+            SignalTrackingService signalTrackingService,
+            MarketStatusService calendar,
+            DateTimeService dateTimeService,
+            TransactionTemplate transactions,
+            EntityManager entityManager,
+            FxRateService fxRateService,
+            AdrShareRatioRepository adrShareRatios) {
+        this.latestValuations = latestValuations;
+        this.quotes = quotes;
+        this.splits = splits;
+        this.statuses = statuses;
+        this.financialPeriods = financialPeriods;
+        this.financialReports = financialReports;
+        this.forecasts = forecasts;
+        this.marketEvents = marketEvents;
+        this.industries = industries;
+        this.sectorMoneyFlows = sectorMoneyFlows;
+        this.radarRepository = radarRepository;
+        this.radarRunRepository = radarRunRepository;
+        this.quoteNormalization = quoteNormalization;
+        this.priceStructures = priceStructures;
+        this.marketContextService = marketContextService;
+        this.supportResistanceService = supportResistanceService;
+        this.tradePlanService = tradePlanService;
+        this.signalTrackingService = signalTrackingService;
+        this.calendar = calendar;
+        this.dateTimeService = dateTimeService;
+        this.transactions = transactions;
+        this.entityManager = entityManager;
+        this.fxRateService = fxRateService;
+        this.adrShareRatios = adrShareRatios;
+    }
 
     private record CandidateRow(StockValuationLatest valuation, Stock stock, boolean valueTrack, boolean starterTrack) {}
 
@@ -178,13 +266,13 @@ public class DailyOpportunityRadarService {
         List<String> valueVerdicts = headwindRegime ? List.of("DEEP_UNDERVALUED") : VALUE_VERDICTS;
         List<String> valueBackings = headwindRegime ? List.of("STRONG") : VALUE_BACKINGS;
         List<Object[]> rawValue = latestValuations.findValueRadarCandidates(
-                radarDate, earningsCutoff, obsCutoff, SecurityTypePolicy.OPERATING_STOCK_TYPES, valueVerdicts, valueBackings);
+                radarDate, earningsCutoff, obsCutoff, SecurityTypePolicy.VALUATION_STOCK_TYPES, valueVerdicts, valueBackings);
 
         List<Object[]> rawStarter = headwindRegime || globalRegime == MarketRegime.CORRECTION
                 ? List.of()
                 : latestValuations.findStarterRadarCandidates(
                         radarDate, earningsCutoff, minAnnualObsDate, maxAnnualObsDate, obsCutoff,
-                        SecurityTypePolicy.OPERATING_STOCK_TYPES);
+                        SecurityTypePolicy.VALUATION_STOCK_TYPES);
 
         Map<String, CandidateRow> candidateMap = new LinkedHashMap<>();
         for (Object[] tuple : rawValue) {
@@ -240,6 +328,8 @@ public class DailyOpportunityRadarService {
                 knownReportsByFigi.computeIfAbsent(r.figi(), k -> new ArrayList<>())
                         .add(new KnownReportPeriod(r.periodEnd(), r.periodType(), r.fiscalYear(), r.period(), r.observedAt()));
             }
+            FxRateLookup batchFxLookup = preloadBatchFx(periodsByFigi, radarDate);
+            Map<String, AdrShareRatio> batchAdrBySymbol = preloadBatchAdrRatios(batch);
 
             for (CandidateRow candidate : batch) {
                 evaluateCandidate(
@@ -252,6 +342,8 @@ public class DailyOpportunityRadarService {
                         forecastsByFigi.getOrDefault(candidate.valuation().getFigi(), List.of()),
                         periodsByFigi.getOrDefault(candidate.valuation().getFigi(), List.of()),
                         knownReportsByFigi.getOrDefault(candidate.valuation().getFigi(), List.of()),
+                        batchFxLookup,
+                        batchAdrBySymbol,
                         published
                 );
             }
@@ -312,6 +404,8 @@ public class DailyOpportunityRadarService {
             List<StockEarningsForecast> stockForecasts,
             List<StockFinancialPeriod> stockPeriods,
             List<KnownReportPeriod> knownReports,
+            FxRateLookup batchFxLookup,
+            Map<String, AdrShareRatio> batchAdrBySymbol,
             List<DailyOpportunityRadar> out) {
         StockValuationLatest v = candidate.valuation();
         Stock s = candidate.stock();
@@ -365,14 +459,27 @@ public class DailyOpportunityRadarService {
         BigDecimal evalPrice = v.getClosePrice() != null && v.getClosePrice().signum() > 0 ? v.getClosePrice() : latestClose;
         StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, radarDate);
         String splitError = StockValuationService.splitSyncError(status);
-        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(s.getCurrency(), status, matchedPeriod, stockSplits, radarDate);
+        boolean isAdr = SecurityTypePolicy.isAdrType(s.getStockType());
+        AdrShareRatio adrRatio = isAdr && s.getSymbol() != null
+                ? batchAdrBySymbol.get(s.getSymbol().trim().toUpperCase(Locale.ROOT)) : null;
+        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
+                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
+        if (isAdr && !verifiedAdr) {
+            return;
+        }
+        FxResolution fxRes = resolveFxForCandidate(batchFxLookup, matchedPeriod, s.getCurrency(), radarDate);
+        BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
+        String valuationBlockedReason = fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null;
+        DayEpsResolution epsResolution = verifiedAdr
+                ? new DayEpsResolution(null, null)
+                : StockValuationService.resolveDayEps(s.getCurrency(), status, matchedPeriod, stockSplits, radarDate, fxRateToQuote);
         BigDecimal epsAtDay = epsResolution.epsAtDay();
         String peReason = v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 stockPeriods, matchedPeriod, stockSplits, radarDate, s.getCurrency(),
                 evalPrice, v.getMarketCap(), null, epsAtDay, peReason, v.getPe(),
-                financialInstitution, splitError));
+                financialInstitution, splitError, fxRateToQuote, valuationBlockedReason, verifiedAdr));
         FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
                 radarDate, obsCutoff, maxAnnualObsDate, s.getCurrency(), evalPrice, v.getMarketCap(),
                 epsAtDay, peReason, stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
@@ -672,6 +779,62 @@ public class DailyOpportunityRadarService {
             return null;
         }
         return mid.subtract(price, MC).divide(mid, 6, RoundingMode.HALF_UP);
+    }
+
+    private FxRateLookup preloadBatchFx(Map<String, List<StockFinancialPeriod>> periodsByFigi, LocalDate radarDate) {
+        if (fxRateService == null || periodsByFigi == null || periodsByFigi.isEmpty() || radarDate == null) {
+            return FxRateLookup.EMPTY;
+        }
+        java.util.Set<String> currencies = new java.util.LinkedHashSet<>();
+        for (List<StockFinancialPeriod> list : periodsByFigi.values()) {
+            for (StockFinancialPeriod p : list) {
+                if (p != null && p.getReportingCurrency() != null && !p.getReportingCurrency().isBlank()
+                        && !"USD".equalsIgnoreCase(p.getReportingCurrency().trim())) {
+                    currencies.add(p.getReportingCurrency().trim().toUpperCase(Locale.ROOT));
+                }
+            }
+        }
+        if (currencies.isEmpty()) {
+            return FxRateLookup.EMPTY;
+        }
+        return fxRateService.preload(currencies, radarDate, radarDate);
+    }
+
+    private Map<String, AdrShareRatio> preloadBatchAdrRatios(List<CandidateRow> batch) {
+        if (adrShareRatios == null || batch == null || batch.isEmpty()) {
+            return Map.of();
+        }
+        List<String> adrSymbols = new ArrayList<>();
+        for (CandidateRow row : batch) {
+            if (row != null && row.stock() != null && SecurityTypePolicy.isAdrType(row.stock().getStockType())
+                    && row.stock().getSymbol() != null && !row.stock().getSymbol().isBlank()) {
+                adrSymbols.add(row.stock().getSymbol().trim().toUpperCase(Locale.ROOT));
+            }
+        }
+        if (adrSymbols.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, AdrShareRatio> out = new HashMap<>();
+        for (AdrShareRatio ratio : adrShareRatios.findBySymbolIn(adrSymbols)) {
+            if (ratio != null && ratio.getSymbol() != null) {
+                out.put(ratio.getSymbol().trim().toUpperCase(Locale.ROOT), ratio);
+            }
+        }
+        return out;
+    }
+
+    private FxResolution resolveFxForCandidate(FxRateLookup fxLookup, StockFinancialPeriod matchedPeriod,
+                                               String quoteCurrency, LocalDate radarDate) {
+        if (matchedPeriod == null || matchedPeriod.getReportingCurrency() == null || quoteCurrency == null) {
+            return null;
+        }
+        if (matchedPeriod.getReportingCurrency().trim().equalsIgnoreCase(quoteCurrency.trim())) {
+            return FxResolution.identity(quoteCurrency.trim().toUpperCase(Locale.ROOT));
+        }
+        if (fxLookup == null) {
+            return null;
+        }
+        return fxLookup.resolve(matchedPeriod.getReportingCurrency(), quoteCurrency, radarDate);
     }
 
     private BigDecimal scale4(BigDecimal value) {

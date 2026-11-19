@@ -40,6 +40,33 @@ public class MarketContextService {
     private final QuoteNormalizationService quotes;
     private final MarketStatusService calendar;
 
+    /** 單一交易日之 10Y 美債殖利率觀測（百分比數值與實際觀測日），供五年行情缺口時 DCF 獨立讀取。 */
+    public record TreasuryRateObservation(BigDecimal tenYearPct, LocalDate observationDate) {}
+
+    /** 單獨查詢截至 reportDate 之最新有效 10Y 美債殖利率（容許最多 3 個交易日延遲），避免五年 OHLCV 缺口誤判為缺利率。 */
+    @Transactional(readOnly = true)
+    public TreasuryRateObservation resolveLatestTenYearYield(LocalDate reportDate) {
+        if (reportDate == null) {
+            return null;
+        }
+        List<TreasuryParYieldDaily> rows = treasuries.findByObservationDateBetweenOrderByObservationDateAsc(
+                reportDate.minusDays(21), reportDate);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            TreasuryParYieldDaily row = rows.get(i);
+            if (row != null && row.getTenYear() != null && row.getObservationDate() != null) {
+                int lag = Math.max(0, calendar.getTradingDays(row.getObservationDate(), reportDate).size() - 1);
+                if (lag <= 3) {
+                    return new TreasuryRateObservation(row.getTenYear(), row.getObservationDate());
+                }
+                return null;
+            }
+        }
+        return null;
+    }
+
     /** 預載之共用大盤背景（SPY/QQQ 基準序列、情緒、利率與宏觀事件），供兩階段雷達與儀表板零重複 DB 查詢共用。 */
     public record PreloadedMarketData(
             LocalDate through,
@@ -123,6 +150,14 @@ public class MarketContextService {
     @Transactional(readOnly = true)
     public MetricResult<MarketContextDto> evaluate(AnalysisContext context, NormalizedPriceSeriesDto stockPrice,
                                                    PriceStructureDto structures, List<MarketEvent> pastEarnings) {
+        return evaluate(context, stockPrice, structures, pastEarnings, false);
+    }
+
+    /** skipCompanyEarningsLock=true 專供 ETF／ETP 使用：僅讀取全市場宏觀事件（FOMC／CPI／非農），跳過公司財報事件門鎖。 */
+    @Transactional(readOnly = true)
+    public MetricResult<MarketContextDto> evaluate(AnalysisContext context, NormalizedPriceSeriesDto stockPrice,
+                                                   PriceStructureDto structures, List<MarketEvent> pastEarnings,
+                                                   boolean skipCompanyEarningsLock) {
         if (stockPrice == null || stockPrice.bars().isEmpty()) return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                 AnalysisReasonDto.of("PRICE_REQUIRED", "MARKET_CONTEXT", "需要行情資料。"));
         if (stockPrice.quality() != MetricStatus.AVAILABLE) return MetricResult.unavailable(stockPrice.quality(),
@@ -133,9 +168,12 @@ public class MarketContextService {
         MetricResult<NormalizedPriceSeriesDto> spy = benchmark(context, "SPY", from, through);
         MetricResult<NormalizedPriceSeriesDto> qqq = benchmark(context, "QQQ", from, through);
         Map<String, List<Observation>> inputs = loadInputs(through);
-        List<MarketEvent> knownEvents = events.findVisible(context.figi(), context.analysisAsOf().atZone(NY).toLocalDate().minusDays(10),
-                context.analysisAsOf().atZone(NY).toLocalDate().plusDays(20), context.observationCutoff());
-        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents);
+        LocalDate anchorDay = context.analysisAsOf().atZone(NY).toLocalDate();
+        List<MarketEvent> knownEvents = skipCompanyEarningsLock
+                ? events.findVisibleMarketWide(anchorDay.minusDays(10), anchorDay.plusDays(20), context.observationCutoff())
+                : events.findVisible(context.figi(), anchorDay.minusDays(10), anchorDay.plusDays(20), context.observationCutoff());
+        List<MarketEvent> effectivePastEarnings = skipCompanyEarningsLock ? List.of() : pastEarnings;
+        return evaluateCore(context, stockPrice, structures, effectivePastEarnings, spy, qqq, inputs, knownEvents);
     }
 
     private MetricResult<MarketContextDto> evaluateCore(

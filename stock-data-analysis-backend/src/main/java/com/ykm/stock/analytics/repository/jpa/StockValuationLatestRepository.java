@@ -15,7 +15,7 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
 
     List<StockValuationLatest> findByFigiIn(Collection<String> figis);
 
-    /** 讀取同產業、同估值交易日且有效持續追蹤股票的最新估值快照，附帶原始發行人鍵 coalesce(cik, figi) 供同業去重。 */
+    /** 讀取同產業、同估值交易日且有效持續追蹤股票的最新估值快照（即時排除未核實 ADR），附帶原始發行人鍵 coalesce(cik, figi) 供同業去重。 */
     @Query("""
             select case when s.cik is not null and s.cik <> '' then s.cik else s.figi end, v
             from StockValuationLatest v
@@ -24,12 +24,14 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
               and v.valuationDate = :valuationDate
               and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
               and s.tracked = true
+              and (upper(coalesce(s.stockType, '')) <> 'ADR'
+                   or exists (select 1 from AdrShareRatio ar where ar.symbol = upper(s.symbol) and ar.verified = true and ar.adrRatio > 0))
             order by s.figi asc
             """)
     List<Object[]> findActiveTrackedPeerSnapshots(@Param("industryCode") String industryCode,
                                                   @Param("valuationDate") LocalDate valuationDate);
 
-    /** 批次讀取多產業與多估值交易日的有效追蹤股快照，供兩階段批次刷新計算同業參考與 verdict。 */
+    /** 批次讀取多產業與多估值交易日的有效追蹤股快照（即時排除未核實 ADR），供兩階段批次刷新計算同業參考與 verdict。 */
     @Query("""
             select case when s.cik is not null and s.cik <> '' then s.cik else s.figi end, v
             from StockValuationLatest v
@@ -38,12 +40,14 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
               and v.valuationDate in :valuationDates
               and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
               and s.tracked = true
+              and (upper(coalesce(s.stockType, '')) <> 'ADR'
+                   or exists (select 1 from AdrShareRatio ar where ar.symbol = upper(s.symbol) and ar.verified = true and ar.adrRatio > 0))
             order by s.figi asc
             """)
     List<Object[]> findActiveTrackedPeerSnapshotsIn(@Param("industryCodes") Collection<String> industryCodes,
                                                     @Param("valuationDates") Collection<LocalDate> valuationDates);
 
-    /** 讀取自訂對標清單中有效且持續追蹤、估值日吻合之對手快照與原始發行人鍵。 */
+    /** 讀取自訂對標清單中有效且持續追蹤、估值日吻合之對手快照與原始發行人鍵（即時排除未核實 ADR）。 */
     @Query("""
             select case when s.cik is not null and s.cik <> '' then s.cik else s.figi end, v
             from StockValuationLatest v
@@ -52,6 +56,8 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
               and v.valuationDate in :valuationDates
               and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
               and s.tracked = true
+              and (upper(coalesce(s.stockType, '')) <> 'ADR'
+                   or exists (select 1 from AdrShareRatio ar where ar.symbol = upper(s.symbol) and ar.verified = true and ar.adrRatio > 0))
             order by s.figi asc
             """)
     List<Object[]> findActiveTrackedCustomPeerSnapshots(@Param("peerFigis") Collection<String> peerFigis,

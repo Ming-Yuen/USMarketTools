@@ -1250,7 +1250,7 @@ public class StockValuationService {
             String marketCapTier = resolveMarketCapTier(stock.getCurrency(), marketCap);
             BigDecimal histPercentile = historicalRef != null && "AVAILABLE".equals(historicalRef.status())
                     ? historicalRef.currentPercentile() : null;
-            boolean currentLoss = isCurrentTtmEpsNonPositive(matched, status, stockValDate);
+            boolean currentLoss = isCurrentTtmLoss(matched, status, stockValDate, adrCtx.adr(), adrCtx.verified());
             String fundamentalBacking = ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
 
             StockValuationLatest snapshot = new StockValuationLatest();
@@ -1855,21 +1855,27 @@ public class StockValuationService {
         String modelCode = modelCtx == null ? IndustryValuationProposalService.MODEL_NON_FINANCIAL : modelCtx.modelCode();
         boolean financialInstitution = modelCtx != null && modelCtx.financialInstitution();
         AdrContext effectiveAdr = adrCtx != null ? adrCtx : AdrContext.nonAdr();
+        FxConversionDto adrBaseMeta = effectiveAdr.adr()
+                ? new FxConversionDto(false, period == null ? null : period.getReportingCurrency(), quoteCurrency,
+                        null, null, null, true, effectiveAdr.verified() ? effectiveAdr.ratio() : null,
+                        effectiveAdr.verified(), effectiveAdr.underlyingSymbol())
+                : null;
 
         if (quote == null || quote.getClosePrice() == null) {
-            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, null, "CLOSING_PRICE_MISSING");
+            ValuationResultDto missingPrice = unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, null, "CLOSING_PRICE_MISSING");
+            return adrBaseMeta != null ? missingPrice.withFxConversion(adrBaseMeta) : missingPrice;
         }
         if (quote.getClosePrice().signum() <= 0) {
-            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "CLOSING_PRICE_INVALID");
+            ValuationResultDto invalidPrice = unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "CLOSING_PRICE_INVALID");
+            return adrBaseMeta != null ? invalidPrice.withFxConversion(adrBaseMeta) : invalidPrice;
         }
         if (effectiveAdr.adr() && !effectiveAdr.verified()) {
-            FxConversionDto unverifiedFx = new FxConversionDto(false, period == null ? null : period.getReportingCurrency(),
-                    quoteCurrency, null, null, null, true, null, false, null);
             return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "ADR_RATIO_UNVERIFIED")
-                    .withFxConversion(unverifiedFx);
+                    .withFxConversion(adrBaseMeta);
         }
         if (period == null) {
-            return unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
+            ValuationResultDto noPeriod = unavailableDayResult(figi, day, cutoff, calculatedAt, industryCode, modelCode, quoteCurrency, quote.getClosePrice(), "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
+            return adrBaseMeta != null ? noPeriod.withFxConversion(adrBaseMeta) : noPeriod;
         }
 
         String reportingCurrency = period.getReportingCurrency();
@@ -4298,15 +4304,34 @@ public class StockValuationService {
         return lowVal.add(highVal.subtract(lowVal, MC).multiply(weight, MC), MC).setScale(4, RoundingMode.HALF_UP);
     }
 
-    private boolean isCurrentTtmEpsNonPositive(StockFinancialPeriod matched, StockStatus status, LocalDate day) {
-        if (matched == null || matched.getEpsTtm() == null || !MetricStatus.AVAILABLE.name().equals(matched.getEpsTtmStatus())) {
+    /**
+     * 判定當期 TTM 是否為虧損（普通股／已核實 ADR／未核實 ADR 三態分流）：
+     * 1. 未核實 ADR 直接回 false（維持阻斷語意，不混用未核實口徑）；
+     * 2. 已核實 ADR 優先採公司層級 netIncomeCommonTtm <= 0（與公司口徑 P/E 一致）；
+     * 3. 普通股優先採拆股已對齊之 epsTtm <= 0，缺 epsTtm 時回退公司層級 netIncomeCommonTtm <= 0。
+     */
+    public static boolean isCurrentTtmLoss(StockFinancialPeriod matched, StockStatus status, LocalDate day,
+                                           boolean adr, boolean verifiedAdr) {
+        if (matched == null) {
             return false;
         }
-        String splitError = splitSyncError(status);
-        if (splitError != null && matched.getEpsShareBasisDate() != null && !matched.getEpsShareBasisDate().equals(day)) {
+        if (adr && !verifiedAdr) {
             return false;
         }
-        return matched.getEpsTtm().signum() <= 0;
+        if (adr) {
+            if (matched.getNetIncomeCommonTtm() != null && MetricStatus.AVAILABLE.name().equals(matched.getNetIncomeCommonTtmStatus())) {
+                return matched.getNetIncomeCommonTtm().signum() <= 0;
+            }
+        }
+        if (matched.getEpsTtm() != null && MetricStatus.AVAILABLE.name().equals(matched.getEpsTtmStatus())) {
+            String splitError = splitSyncError(status);
+            if (splitError == null || matched.getEpsShareBasisDate() == null || matched.getEpsShareBasisDate().equals(day)) {
+                return matched.getEpsTtm().signum() <= 0;
+            }
+        }
+        return matched.getNetIncomeCommonTtm() != null
+                && MetricStatus.AVAILABLE.name().equals(matched.getNetIncomeCommonTtmStatus())
+                && matched.getNetIncomeCommonTtm().signum() <= 0;
     }
 
     private void populateLatestEntity(

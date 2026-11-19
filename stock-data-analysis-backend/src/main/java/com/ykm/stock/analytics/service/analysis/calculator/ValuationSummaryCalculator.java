@@ -385,7 +385,11 @@ public class ValuationSummaryCalculator {
             verdict = classifyPriceAgainstBand(price, band.low(), band.mid(), band.high());
         }
 
-        String fundamentalBacking = evaluateFundamentalBacking(fundamentals, financials);
+        boolean isAdr = valuation.fxConversion() != null && Boolean.TRUE.equals(valuation.fxConversion().adr());
+        boolean adrVerified = isAdr && Boolean.TRUE.equals(valuation.fxConversion().adrRatioVerified())
+                && !"ADR_RATIO_UNVERIFIED".equals(valuation.reasonCode());
+        boolean currentLoss = isCurrentTrailingLoss(financials, isAdr, adrVerified);
+        String fundamentalBacking = evaluateFundamentalBacking(fundamentals, currentLoss);
         ForwardTrapSignals forwardTrap = extractForwardTrapSignals(futuObservations);
         YieldSpreadSelection yieldSpread = computeYieldSpreadVs10y(fundamentals, marketContext);
 
@@ -452,7 +456,7 @@ public class ValuationSummaryCalculator {
                 confirmationPending, supportZone != null, rightSideConfirmedForCorrection, trendPullbackStarter);
 
         List<SummaryFlagDto> risks = buildRiskFlags(
-                verdict, fundamentals, financials, forwardTrap, band, weeklyTrend, aboveSma200,
+                verdict, fundamentals, currentLoss, forwardTrap, band, weeklyTrend, aboveSma200,
                 eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim, macroCaution, primaryDiagnosis);
         List<WatchItemDto> watchItems = buildWatchItems(
                 verdict, stance, fundamentalBacking, forwardTrap.anyTrap(), band, supportZone,
@@ -703,11 +707,32 @@ public class ValuationSummaryCalculator {
         );
     }
 
+    /**
+     * 依普通股／已核實 ADR／未核實 ADR 三態判定當期 TTM 是否為非正盈利（虧損）：
+     * 未核實 ADR 直接回 false；已核實 ADR 優先採公司層級 netIncomeCommonTtm；普通股優先採 epsTtm，缺項時回退 netIncomeCommonTtm。
+     */
+    public static boolean isCurrentTrailingLoss(FinancialsDto financials, boolean adr, boolean verifiedAdr) {
+        if (financials == null) {
+            return false;
+        }
+        if (adr && !verifiedAdr) {
+            return false;
+        }
+        boolean netIncomeAvailable = financials.netIncomeCommonTtm() != null
+                && "AVAILABLE".equals(financials.netIncomeCommonTtm().status())
+                && financials.netIncomeCommonTtm().value() != null;
+        if (adr && netIncomeAvailable) {
+            return financials.netIncomeCommonTtm().value().signum() <= 0;
+        }
+        if (financials.epsTtm() != null && "AVAILABLE".equals(financials.epsTtm().status())
+                && financials.epsTtm().value() != null) {
+            return financials.epsTtm().value().signum() <= 0;
+        }
+        return netIncomeAvailable && financials.netIncomeCommonTtm().value().signum() <= 0;
+    }
+
     public static String evaluateFundamentalBacking(FundamentalSnapshotDto f, FinancialsDto financials) {
-        boolean currentLoss = financials != null && financials.epsTtm() != null
-                && "AVAILABLE".equals(financials.epsTtm().status())
-                && financials.epsTtm().value() != null && financials.epsTtm().value().signum() <= 0;
-        return evaluateFundamentalBacking(f, currentLoss);
+        return evaluateFundamentalBacking(f, isCurrentTrailingLoss(financials, false, false));
     }
 
     /** 供估值快照批次刷新與單股摘要共用之基本面支撐度判定。 */
@@ -1461,7 +1486,7 @@ public class ValuationSummaryCalculator {
     private List<SummaryFlagDto> buildRiskFlags(
             String verdict,
             FundamentalSnapshotDto f,
-            FinancialsDto financials,
+            boolean currentLoss,
             ForwardTrapSignals forwardTrap,
             FairValueBandDto band,
             String weeklyTrend,
@@ -1520,8 +1545,7 @@ public class ValuationSummaryCalculator {
         }
         if (f != null && hasReason(f.epsGrowthYoy(), "SWUNG_TO_LOSS")) {
             candidates.add(new SummaryFlagDto("SWUNG_TO_LOSS", "HIGH", Map.of()));
-        } else if (financials != null && financials.epsTtm() != null && "AVAILABLE".equals(financials.epsTtm().status())
-                && financials.epsTtm().value() != null && financials.epsTtm().value().signum() <= 0) {
+        } else if (currentLoss) {
             candidates.add(new SummaryFlagDto("NEGATIVE_TRAILING_EARNINGS", "MEDIUM", Map.of()));
         }
         if (f != null && !f.financialInstitution()) {

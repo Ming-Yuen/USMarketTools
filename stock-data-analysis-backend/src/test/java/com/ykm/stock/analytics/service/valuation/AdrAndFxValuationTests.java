@@ -275,6 +275,84 @@ class AdrAndFxValuationTests {
         assertThat(SecurityTypePolicy.isAnalyzableType("ADR")).isTrue();
     }
 
+    @Test
+    void isCurrentTtmLossRespectsThreeStateAdrPrecedence() {
+        StockStatus st = syncedStatus("FIGI_LOSS");
+        StockFinancialPeriod adrLoss = new StockFinancialPeriod();
+        adrLoss.setNetIncomeCommonTtm(new BigDecimal("-1000000"));
+        adrLoss.setNetIncomeCommonTtmStatus(MetricStatus.AVAILABLE.name());
+        adrLoss.setEpsTtm(new BigDecimal("1.50"));
+        adrLoss.setEpsTtmStatus(MetricStatus.AVAILABLE.name());
+        adrLoss.setEpsShareBasisDate(DAY);
+
+        // 已核實 ADR 優先採公司層級 netIncomeCommonTtm；未核實 ADR 維持阻斷不判定
+        assertThat(StockValuationService.isCurrentTtmLoss(adrLoss, st, DAY, true, true)).isTrue();
+        assertThat(StockValuationService.isCurrentTtmLoss(adrLoss, st, DAY, true, false)).isFalse();
+        // 普通股優先採 epsTtm（+1.50 > 0 -> false）；缺 epsTtm 時回退 netIncomeCommonTtm <= 0 -> true
+        assertThat(StockValuationService.isCurrentTtmLoss(adrLoss, st, DAY, false, false)).isFalse();
+        adrLoss.setEpsTtmStatus(MetricStatus.UNVERIFIED.name());
+        assertThat(StockValuationService.isCurrentTtmLoss(adrLoss, st, DAY, false, false)).isTrue();
+    }
+
+    @Test
+    void missingClosePricePreservesAdrVerificationMetadataForSummaryLossEvaluation() {
+        Stock unverifiedAdr = adrStock("FIGI_MISS_UNV", "MUNV");
+        StockStatus st = syncedStatus("FIGI_MISS_UNV");
+        StockFinancialPeriod lossPeriod = new StockFinancialPeriod();
+        lossPeriod.setFigi("FIGI_MISS_UNV");
+        lossPeriod.setPeriodStart(LocalDate.of(2026, 7, 1));
+        lossPeriod.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        lossPeriod.setAvailableAt(CLOSE.minusSeconds(86400 * 5L));
+        lossPeriod.setReportingCurrency("USD");
+        lossPeriod.setRevenueTtm(new BigDecimal("100000000"));
+        lossPeriod.setRevenueTtmStatus(MetricStatus.AVAILABLE.name());
+        lossPeriod.setNetIncomeCommonTtm(new BigDecimal("-50000000"));
+        lossPeriod.setNetIncomeCommonTtmStatus(MetricStatus.AVAILABLE.name());
+        lossPeriod.setEpsTtm(new BigDecimal("-1.00"));
+        lossPeriod.setEpsTtmStatus(MetricStatus.AVAILABLE.name());
+        lossPeriod.setEpsShareBasisDate(LocalDate.of(2026, 9, 30));
+
+        when(statuses.findById("FIGI_MISS_UNV")).thenReturn(Optional.of(st));
+        when(quotes.findByFigiAndQuoteDateBetweenOrderByQuoteDateAsc(any(), any(), any())).thenReturn(List.of());
+        when(periods.findByFigiOrderByPeriodEndAsc("FIGI_MISS_UNV")).thenReturn(List.of(lossPeriod));
+        when(adrRepo.findById("MUNV")).thenReturn(Optional.empty());
+
+        ReportValuationBundle bundle = service.evaluateForReport(unverifiedAdr, DAY, CLOSE, CLOSE, null);
+        assertThat(bundle.valuation().reasonCode()).isEqualTo("CLOSING_PRICE_MISSING");
+        assertThat(bundle.valuation().fxConversion()).isNotNull();
+        assertThat(bundle.valuation().fxConversion().adr()).isTrue();
+        assertThat(bundle.valuation().fxConversion().adrRatioVerified()).isFalse();
+
+        com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator summaryCalc =
+                new com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator();
+        com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto summary = summaryCalc.calculate(
+                com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon.POSITION,
+                bundle.valuation(), bundle.financials(), bundle.fundamentals(), null, null, null, null, null).value();
+        assertThat(summary.risks())
+                .extracting(com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.SummaryFlagDto::code)
+                .doesNotContain("NEGATIVE_TRAILING_EARNINGS");
+    }
+
+    @Test
+    void adrShareRatioControllerReturnsUnifiedMessageJsonOnResponseStatusException() throws Exception {
+        AdrShareRatioService ratioService = new AdrShareRatioService(adrRepo, dateTime);
+        when(adrRepo.findById("UNKNOWN")).thenReturn(Optional.empty());
+        com.ykm.stock.analytics.controller.AdrShareRatioController controller =
+                new com.ykm.stock.analytics.controller.AdrShareRatioController(ratioService, stocks, service);
+        org.springframework.test.web.servlet.MockMvc mvc =
+                org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/valuation/adr-ratios/UNKNOWN"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isNotFound())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.message").value("ADR_RATIO_NOT_FOUND"));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/valuation/adr-ratios")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"symbol\":\"TSM\",\"adrRatio\":0,\"verified\":true}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.message").value("ADR_RATIO_MUST_BE_POSITIVE"));
+    }
+
     private Stock adrStock(String figi, String symbol) {
         Stock s = new Stock();
         s.setFigi(figi);

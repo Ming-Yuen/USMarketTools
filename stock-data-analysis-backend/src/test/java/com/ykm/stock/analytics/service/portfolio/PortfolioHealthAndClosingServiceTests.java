@@ -939,6 +939,114 @@ class PortfolioHealthAndClosingServiceTests {
         assertThat(starterOnlyRes.referenceTarget2()).isNull();
     }
 
+    @Test
+    void etfHoldingAndWatchlistSkipValuationGapAndUseEtfTechnicalSummary() {
+        PortfolioItem etfHolding = portfolioItem("F_QQQ", PortfolioItem.TYPE_HOLDING, "20", "480", LocalDate.of(2026, 6, 1));
+        PortfolioItem etfWatch = portfolioItem("F_SPY", PortfolioItem.TYPE_WATCHLIST, null, null, null);
+        when(itemRepo.findAllByOrderByItemTypeAscUpdatedAtDescFigiAsc()).thenReturn(List.of(etfHolding, etfWatch));
+
+        Stock qqq = stock("F_QQQ", "QQQ", "USD");
+        qqq.setStockType("ETF");
+        Stock spy = stock("F_SPY", "SPY", "USD");
+        spy.setStockType("ETP");
+        when(stockRepo.findAllById(anyCollection())).thenReturn(List.of(qqq, spy));
+        when(statusRepo.findAllById(anyCollection())).thenReturn(List.of(splitStatus("F_QQQ"), splitStatus("F_SPY")));
+        when(splitRepo.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of());
+        when(industryRepo.findByFigisAt(anyCollection(), any())).thenReturn(List.of());
+        when(latestValRepo.findByFigiIn(anyCollection())).thenReturn(List.of());
+        when(briefingRepo.findTopByTradeDateBeforeOrderByTradeDateDesc(DAY)).thenReturn(Optional.empty());
+
+        // 即使資料表誤含事件，ETF 持倉也不應觸發公司財報倒數
+        MarketEvent strayEvent = new MarketEvent();
+        strayEvent.setFigi("F_QQQ");
+        strayEvent.setEventType("EARNINGS");
+        strayEvent.setStatus("SCHEDULED");
+        strayEvent.setEventDate(DAY.plusDays(2));
+        when(eventRepo.findVisibleEarningsForFigis(anyCollection(), any())).thenReturn(List.of(strayEvent));
+
+        when(quoteRepo.findQuoteBarsOrdered(anyCollection(), any(), any())).thenReturn(List.of(
+                barRow("F_QQQ", PRIOR_DAY, "508"), barRow("F_QQQ", DAY, "512"),
+                barRow("F_SPY", PRIOR_DAY, "580"), barRow("F_SPY", DAY, "585")
+        ));
+
+        MetricResult<BigDecimal> naMetric = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of());
+        MarketSnapshotDto snap = new MarketSnapshotDto(MarketRegime.RISK_ON, naMetric, naMetric, naMetric, DAY, NOW, List.of(), List.of());
+        when(marketContextService.preloadMarketData(DAY, NOW)).thenReturn(new PreloadedMarketData(
+                DAY, NOW, null, null, Map.of(), List.of(),
+                MetricResult.available(snap), MetricResult.available(new BigDecimal("14.5"))));
+
+        when(quoteNorm.normalizeFromLoaded(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            Stock st = inv.getArgument(3);
+            NormalizedBarDto curBar = new NormalizedBarDto(DAY,
+                    new BigDecimal("510"), new BigDecimal("514"), new BigDecimal("509"), new BigDecimal("512"),
+                    MetricResult.available(BigDecimal.valueOf(10_000_000)), NOW, NOW, NOW, NOW, null, "B1");
+            PriceBasisDescriptor desc = new PriceBasisDescriptor("B1", "STORED", PriceAdjustment.SPLIT_ADJUSTED,
+                    DAY, null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, st.getCurrency(), true, null);
+            return MetricResult.available(new NormalizedPriceSeriesDto(
+                    st.getFigi(), "DAILY", List.of(curBar), desc, null, MetricStatus.AVAILABLE, List.of(), "H1"));
+        });
+        when(priceStructures.analyze(any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            StructureTrendDto up = new StructureTrendDto(TrendState.UPTREND, NOW, PriceRelation.HH, PriceRelation.HL, List.of(), NOW);
+            TimeframeStructureDto daily = new TimeframeStructureDto(AnalysisTimeframe.DAILY, s.bars(),
+                    null, List.of(), List.of(), null, null, MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            TimeframeStructureDto weekly = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, s.bars(),
+                    null, List.of(), List.of(), null, null, MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            return MetricResult.available(new PriceStructureDto(s.figi(), "B1", DAY, List.of(daily, weekly), List.of(), List.of()));
+        });
+        when(marketContextService.evaluateWithPreloaded(any(), any(), any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new MarketContextDto(
+                        null, null, MetricResult.available(snap), List.of(),
+                        new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()),
+                        List.of(), List.of(),
+                        new MomentumAnalysisDto(Map.of("SMA200", MetricResult.available(new BigDecimal("470"))), naMetric, List.of()),
+                        null, null, null, Map.of(), MetricResult.available(new BigDecimal("14.5")))));
+
+        LevelZoneDto etfSupport = new LevelZoneDto(
+                "Z_ETF", AnalysisTimeframe.WEEKLY, new BigDecimal("495"), new BigDecimal("502"),
+                ZoneRole.SUPPORT, new BigDecimal("78"), NOW, 2, NOW, ZoneState.ACTIVE,
+                new BigDecimal("498.5"), new BigDecimal("6"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("78"),
+                1, NOW, null, List.of(), List.of(), 2, 0, 5,
+                BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, false, List.of());
+        when(supportResistanceService.analyze(any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new SupportResistanceDto(
+                        List.of(etfSupport), List.of(), List.of(), List.of(), List.of(), List.of(), null, List.of())));
+        TradePlanDto etfPlan = new TradePlanDto(
+                "P_ETF", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                new PriceRangeDto(new BigDecimal("495"), new BigDecimal("502"), "B1"),
+                EntryMethod.ZONE_LIMIT, "trigger",
+                new StopRuleDto(new BigDecimal("490.00"), new BigDecimal("492.00"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("6"), AnalysisTimeframe.WEEKLY, NOW, List.of(), new BigDecimal("6")),
+                List.of(new TargetDto(new BigDecimal("540"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "R1", "r1", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("502"), new BigDecimal("490"),
+                        new BigDecimal("12"), new BigDecimal("38"), new BigDecimal("3.1"),
+                        new BigDecimal("12"), new BigDecimal("38"), new BigDecimal("3.1"),
+                        new BigDecimal("28"), new BigDecimal("-22"))),
+                TradePlanStatus.WAITING_TRIGGER, List.of(),
+                "Z_ETF", 1, AnalysisTimeframe.WEEKLY, NOW, null, List.of());
+        when(tradePlanService.build(any(), any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new TradePlanResultDto(List.of(etfPlan), new BigDecimal("512"), DAY,
+                        MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, List.of(), List.of()), List.of(), List.of(), true)));
+
+        PortfolioHealthSummaryDto summary = healthService.evaluate(DAY, NOW, PortfolioHealthCheckService.SOURCE_MODE_CLOSING_SNAPSHOT).summary();
+
+        assertThat(summary.completeCoverage()).isTrue();
+        assertThat(summary.structureHealthy()).isTrue();
+        assertThat(summary.coverageWarnings()).isEmpty();
+        assertThat(summary.watchlistOpportunities()).isEmpty();
+        assertThat(summary.holdings()).hasSize(1);
+        HoldingHealthItemDto qqqRes = summary.holdings().getFirst();
+        assertThat(qqqRes.verdict()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
+        assertThat(qqqRes.fundamentalBacking()).isEqualTo("NOT_APPLICABLE");
+        assertThat(qqqRes.stance()).isEqualTo("ETF_TECHNICAL_BULLISH_SUPPORT");
+        assertThat(qqqRes.dataGapReasons()).isEmpty();
+        assertThat(qqqRes.nextEarningsDate()).isNull();
+        assertThat(qqqRes.referenceProtectiveStop()).isEqualByComparingTo("490.0000");
+        assertThat(qqqRes.referenceTarget1()).isEqualByComparingTo("540.0000");
+        org.mockito.Mockito.verify(marketContextService).evaluateWithPreloaded(
+                any(), any(), any(), org.mockito.ArgumentMatchers.eq(List.of()), org.mockito.ArgumentMatchers.eq(List.of()), any());
+    }
+
     private PortfolioItem portfolioItem(String figi, String type, String shares, String avgCost, LocalDate basisDate) {
         PortfolioItem item = new PortfolioItem();
         item.setFigi(figi);
@@ -958,6 +1066,7 @@ class PortfolioHealthAndClosingServiceTests {
         s.setSymbol(symbol);
         s.setLongName(symbol + " Corp");
         s.setCurrency(currency);
+        s.setStockType("Common Stock");
         return s;
     }
 

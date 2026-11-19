@@ -333,7 +333,7 @@ public class PortfolioManagementService {
                                         k -> new SectorAccumulator(industryCode, industryName));
                                 acc.holdingCount++;
                                 acc.marketValueUsd = acc.marketValueUsd.add(rawMarketValue, MC);
-                            } else {
+                            } else if (stock == null || !com.ykm.stock.analytics.service.analysis.SecurityTypePolicy.isEtfType(stock.getStockType())) {
                                 coverageWarnings.add("INDUSTRY_UNCLASSIFIED:" + symbol);
                             }
                         } else {

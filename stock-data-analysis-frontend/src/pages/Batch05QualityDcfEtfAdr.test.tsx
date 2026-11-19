@@ -278,6 +278,93 @@ describe("Batch 05: Real tri-lingual i18n, DCF/Reverse DCF, Financial Quality, E
     expect(screen.getByText(/No comparable historical or forward growth benchmark is available yet/)).toBeInTheDocument();
   });
 
+  test("DcfValuationPanel translates HISTORICAL_REV_CAGR_3Y across all 3 locales and LOW_INTEREST_COVERAGE aligns to 2x", async () => {
+    const revCagrDcf: DcfValuation = {
+      status: "AVAILABLE",
+      reasonCode: null,
+      methodologyNote: null,
+      valuationDate: "2026-11-19",
+      currency: "USD",
+      currentPrice: 120,
+      marketCapUsd: 12000000000,
+      sharesAtDay: 100000000,
+      riskFreeRate: 0.045,
+      riskFreeRateDate: "2026-11-18",
+      equityRiskPremium: 0.05,
+      discountRate: 0.095,
+      terminalGrowthRate: 0.025,
+      historicalRevenueCagr3y: 0.14,
+      historicalFcfCagr3y: null,
+      forwardExpectedGrowth: null,
+      growthBasisNote: null,
+      standardFcf: {
+        basis: "STANDARD_FCF",
+        status: "AVAILABLE",
+        reasonCode: null,
+        baseFcfUsd: 500000000,
+        baseStage1GrowthRate: 0.14,
+        conservative: { stage1GrowthRate: 0.11, intrinsicEquityValue: 10000000000, intrinsicPricePerShare: 100, upsideDownsidePct: -0.17 },
+        base: { stage1GrowthRate: 0.14, intrinsicEquityValue: 12000000000, intrinsicPricePerShare: 120, upsideDownsidePct: 0 },
+        optimistic: { stage1GrowthRate: 0.17, intrinsicEquityValue: 14500000000, intrinsicPricePerShare: 145, upsideDownsidePct: 0.21 },
+        reverseDcf: {
+          status: "AVAILABLE",
+          reasonCode: null,
+          impliedStage1GrowthRate: 0.14,
+          benchmarkGrowthRate: 0.14,
+          benchmarkGrowthSource: "HISTORICAL_REV_CAGR_3Y",
+          expectationGapPpt: 0,
+          expectationStretched: false,
+        },
+      },
+      sbcAdjustedFcf: null,
+    };
+
+    const expectations: Array<{ lng: "zh-HK" | "zh-CN" | "en"; expectedLabel: string; fallbackLabel: string }> = [
+      { lng: "zh-HK", expectedLabel: "歷史 3Y 營收 CAGR", fallbackLabel: "預設保守基準（5%）" },
+      { lng: "zh-CN", expectedLabel: "历史 3Y 营收 CAGR", fallbackLabel: "默认保守基准（5%）" },
+      { lng: "en", expectedLabel: "3Y Historical Revenue CAGR", fallbackLabel: "Default Conservative Baseline (5%)" },
+    ];
+
+    const fallbackDcf: DcfValuation = {
+      ...revCagrDcf,
+      standardFcf: {
+        ...revCagrDcf.standardFcf!,
+        reverseDcf: {
+          ...revCagrDcf.standardFcf!.reverseDcf!,
+          benchmarkGrowthRate: null,
+          benchmarkGrowthSource: "DEFAULT_CONSERVATIVE_FALLBACK",
+          expectationGapPpt: null,
+          expectationStretched: false,
+        },
+      },
+    };
+
+    for (const { lng, expectedLabel, fallbackLabel } of expectations) {
+      const inst = await createRealI18n(lng);
+      const { rerender, unmount } = render(
+        <I18nextProvider i18n={inst}>
+          <DcfValuationPanel dcf={revCagrDcf} />
+        </I18nextProvider>
+      );
+      expect(screen.getByText(new RegExp(expectedLabel))).toBeInTheDocument();
+      expect(screen.queryByText(/HISTORICAL_REV_CAGR_3Y/)).not.toBeInTheDocument();
+
+      rerender(
+        <I18nextProvider i18n={inst}>
+          <DcfValuationPanel dcf={fallbackDcf} />
+        </I18nextProvider>
+      );
+      expect(screen.getByText(fallbackLabel, { exact: false })).toBeInTheDocument();
+      expect(screen.queryByText(/DEFAULT_CONSERVATIVE_FALLBACK/)).not.toBeInTheDocument();
+
+      // 驗證 LOW_INTEREST_COVERAGE 門檻文案對齊 2x（不含誤寫 3x）
+      const riskText = String(inst.t("analysisReport.executiveSummary.risks.LOW_INTEREST_COVERAGE"));
+      expect(riskText).toContain("2x");
+      expect(riskText).not.toContain("3x");
+      unmount();
+    }
+  });
+
   test("FundamentalsPanel renders Batch 05 quality metrics (SBC, Adj FCF, ROIC, Margin Compression, Interest Coverage)", async () => {
     const inst = await createRealI18n("en");
     const snapshot: FundamentalSnapshot = {

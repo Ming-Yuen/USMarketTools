@@ -1576,7 +1576,7 @@
         "SUPPORT_HIGH_RISK_BREAKDOWN": "關鍵支撐已觸發高機率真破位診斷，須嚴格執行止損紀律",
         "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "股價已跌穿保護止損或低於入場區，須先收復止穩",
         "SWUNG_TO_LOSS": "TTM 每股盈利較去年同期由盈轉虧",
-        "NEGATIVE_TRAILING_EARNINGS": "當期 TTM 每股盈利為負（虧損狀態）",
+        "NEGATIVE_TRAILING_EARNINGS": "當期 TTM 盈利非正（虧損狀態）",
         "NEGATIVE_FCF_BURN": "當期 TTM 自由現金流為負（現金消耗）",
         "HIGH_LEVERAGE_DEBT_EBITDA": "淨負債／EBITDA 偏高，財務槓桿壓力較大",
         "REVENUE_CONTRACTION": "TTM 營業收入較去年同期衰退",
@@ -1585,7 +1585,7 @@
         "BELOW_SMA200_DOWNTREND": "週線處於下降趨勢且日線收盤低於 SMA200 年線",
         "ANCHOR_DIVERGENCE": "自身歷史中位價與同業中位價差距較大，請一併對照下方分項",
         "MARGIN_COMPRESSION_CONSECUTIVE": "毛利率或營業利潤率連續兩季環比下滑（定價權或成本結構承壓）",
-        "LOW_INTEREST_COVERAGE": "利息保障倍數低於 3x，短期償債安全邊際偏低"
+        "LOW_INTEREST_COVERAGE": "高槓桿（淨負債／EBITDA 逾 4x）且利息保障倍數低於 2x，償債安全邊際偏低"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "強勢回踩試單（{{anchor}} {{anchorPrice}} {{currency}}）：建議 {{positionFraction}} 底倉試單，緊貼止損 {{suggestedStop}} {{currency}}",
@@ -1765,8 +1765,10 @@
       },
       "benchmarkSources": {
         "HISTORICAL_FCF_CAGR_3Y": "歷史 3Y FCF CAGR",
+        "HISTORICAL_REV_CAGR_3Y": "歷史 3Y 營收 CAGR",
         "HISTORICAL_REVENUE_CAGR_3Y": "歷史 3Y 營收 CAGR",
         "FORWARD_EXPECTED_GROWTH": "市場前瞻預期成長",
+        "DEFAULT_CONSERVATIVE_FALLBACK": "預設保守基準（5%）",
         "DEFAULT_GROWTH": "預設基準成長"
       }
     }

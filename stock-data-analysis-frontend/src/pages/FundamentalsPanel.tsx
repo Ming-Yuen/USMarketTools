@@ -298,7 +298,7 @@ export function FundamentalsPanel({ fundamentals, summary, forward }: {
                 <MetricRow label={t("analysisReport.fundamentals.quality.nopat", { defaultValue: "稅後營業淨利（NOPAT）" })} metric={fundamentals.nopat} mode="amount" currency={repCcy} />
                 <MetricRow label={t("analysisReport.fundamentals.quality.investedCapital", { defaultValue: "投入資本（Invested Capital）" })} metric={fundamentals.investedCapital} mode="amount" currency={repCcy} />
                 <MetricRow label={t("analysisReport.fundamentals.quality.tangibleBookValue", { defaultValue: "有形普通股淨值（TBV）" })} metric={fundamentals.tangibleBookValue} mode="amount" currency={repCcy} />
-                <MetricRow label={t("analysisReport.fundamentals.quality.interestCoverage", { defaultValue: "利息保障倍數（EBIT / 利息）" })} metric={fundamentals.interestCoverage} mode="multiple" warnBelow={3} />
+                <MetricRow label={t("analysisReport.fundamentals.quality.interestCoverage", { defaultValue: "利息保障倍數（EBIT / 利息）" })} metric={fundamentals.interestCoverage} mode="multiple" warnBelow={2} />
                 <MetricRow label={t("analysisReport.fundamentals.quality.shortTermLiquidityCoverage", { defaultValue: "短期流動性覆蓋（(現金＋OCF)/短債）" })} metric={fundamentals.shortTermLiquidityCoverage} mode="multiple" warnBelow={1} />
               </Stack>
             </Grid>

@@ -8,7 +8,9 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosis
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryMethod;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EntryPermission;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.EventRiskDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FxConversionDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto.ForwardMetrics;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
@@ -758,6 +760,69 @@ class ValuationSummaryCalculatorTests {
                 richMarketContext(MarketRegime.CORRECTION, "4.10", null, null, "140", null, null, null, null, null,
                         EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false)).value();
         assertThat(sandyExpired.stance()).isEqualTo("WAIT_FOR_MARKET_STABILIZATION");
+    }
+
+    @Test
+    void verifiedLossMakingAdrTriggersWeakeningAndLowInterestCoverageRespects2xThreshold() {
+        FxConversionDto verifiedAdrFx = new FxConversionDto(
+                true, "CNY", "USD", DAY, new BigDecimal("0.14"), "FRED", true, new BigDecimal("8"), true, "9988.HK");
+        ValuationResultDto adrVal = new ValuationResultDto(
+                "FIGI_ADR", DAY, CLOSE, "FUTU_AND_SEC_FINANCIAL_FACTS", "TECH", "NON_FINANCIAL_OPERATING", "PS",
+                "AVAILABLE", null,
+                new ValuationResultDto.Metrics(
+                        ValuationResultDto.value(null, "NON_POSITIVE_EPS"),
+                        ValuationResultDto.value(new BigDecimal("2.0"), null),
+                        ValuationResultDto.value(new BigDecimal("3.0"), null),
+                        ValuationResultDto.value(new BigDecimal("18.0"), null),
+                        ValuationResultDto.value(null, "NON_POSITIVE_EBITDA")),
+                new BigDecimal("50.00"), "USD", CLOSE, CLOSE, CLOSE, "SEC_FILING_SHARES", DAY,
+                null, null, null, verifiedAdrFx);
+
+        FinancialsDto.FinancialValue unavailEps = FinancialsDto.FinancialValue.unavailable(
+                "UNVERIFIED", "SEC_SHARE_CLASS_EPS_UNVERIFIED", null, null, DAY, CLOSE);
+        FinancialsDto.FinancialValue lossNetIncome = FinancialsDto.FinancialValue.available(
+                new BigDecimal("-500000000"), "TTM Net Income", DAY.minusYears(1), DAY, CLOSE);
+        FinancialsDto adrFinancials = new FinancialsDto(
+                DAY, CLOSE, "CNY", null, lossNetIncome, unavailEps,
+                null, null, null, null, null, null, null, null, null, null, null);
+
+        MetricResult<BigDecimal> na = MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, AnalysisReasonDto.of("NA", "TEST", "NA"));
+        // 淨負債/EBITDA = 4.5 > 4.0，利息保障 = 1.8 < 2.0 -> 觸發 LOW_INTEREST_COVERAGE
+        FundamentalSnapshotDto lowCovFundamentals = new FundamentalSnapshotDto(
+                DAY, DAY.minusYears(1), DAY.minusYears(3), "CNY", false,
+                MetricResult.available(new BigDecimal("0.05")), na, na, na, na, na, null,
+                na, MetricResult.available(new BigDecimal("0.06")), na,
+                MetricResult.available(new BigDecimal("4.5")), na, na, na,
+                na, na, na, na, na, na, na, na, na, na, na, na, false, na, na, na, na, na, na, na, na,
+                MetricResult.available(new BigDecimal("1.8")), na);
+
+        InvestmentSummaryDto adrSummary = calculator.calculate(
+                AnalysisHorizon.POSITION, adrVal, adrFinancials, lowCovFundamentals, null,
+                structure(TrendState.SIDEWAYS, "50"), null, null,
+                marketContext("4.20", "48", EntryPermission.ALLOW, false)).value();
+        assertThat(adrSummary.fundamentalBacking()).isEqualTo("WEAKENING");
+        assertThat(adrSummary.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("NEGATIVE_TRAILING_EARNINGS", "LOW_INTEREST_COVERAGE");
+
+        // 利息保障 = 2.5 (>= 2.0) 即使淨負債/EBITDA = 4.5 也只觸發 HIGH_LEVERAGE_DEBT_EBITDA，不應觸發 LOW_INTEREST_COVERAGE
+        FundamentalSnapshotDto midCovFundamentals = new FundamentalSnapshotDto(
+                DAY, DAY.minusYears(1), DAY.minusYears(3), "CNY", false,
+                MetricResult.available(new BigDecimal("0.05")), na, na, na, na, na, null,
+                na, MetricResult.available(new BigDecimal("0.06")), na,
+                MetricResult.available(new BigDecimal("4.5")), na, na, na,
+                na, na, na, na, na, na, na, na, na, na, na, na, false, na, na, na, na, na, na, na, na,
+                MetricResult.available(new BigDecimal("2.5")), na);
+        InvestmentSummaryDto midCovSummary = calculator.calculate(
+                AnalysisHorizon.POSITION, adrVal, adrFinancials, midCovFundamentals, null,
+                structure(TrendState.SIDEWAYS, "50"), null, null,
+                marketContext("4.20", "48", EntryPermission.ALLOW, false)).value();
+        assertThat(midCovSummary.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("HIGH_LEVERAGE_DEBT_EBITDA")
+                .doesNotContain("LOW_INTEREST_COVERAGE");
+
+        // 未核實 ADR 維持阻斷語意，isCurrentTrailingLoss 不混用未核實口徑
+        assertThat(ValuationSummaryCalculator.isCurrentTrailingLoss(adrFinancials, true, false)).isFalse();
+        assertThat(ValuationSummaryCalculator.isCurrentTrailingLoss(adrFinancials, true, true)).isTrue();
     }
 
     private MetricResult<PriceStructureDto> pullbackDailyStructure(

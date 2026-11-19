@@ -1125,7 +1125,7 @@
         "SUPPORT_HIGH_RISK_BREAKDOWN": "High-risk support breakdown diagnosed; enforce stop discipline",
         "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "Protective stop breached or price below zone; reclaim required first",
         "SWUNG_TO_LOSS": "Trailing TTM EPS swung from profit to loss YoY",
-        "NEGATIVE_TRAILING_EARNINGS": "Trailing TTM EPS is non-positive",
+        "NEGATIVE_TRAILING_EARNINGS": "Trailing TTM earnings are non-positive",
         "NEGATIVE_FCF_BURN": "Trailing TTM free cash flow is non-positive",
         "HIGH_LEVERAGE_DEBT_EBITDA": "Elevated Net Debt / EBITDA leverage",
         "REVENUE_CONTRACTION": "Trailing TTM revenue contracted YoY",
@@ -1134,7 +1134,7 @@
         "BELOW_SMA200_DOWNTREND": "Weekly downtrend with daily close below SMA200",
         "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices",
         "MARGIN_COMPRESSION_CONSECUTIVE": "Gross or operating margin declined for two consecutive quarters",
-        "LOW_INTEREST_COVERAGE": "Interest coverage below 3x indicates tight debt-servicing buffer"
+        "LOW_INTEREST_COVERAGE": "High leverage (Net Debt / EBITDA > 4x) with interest coverage below 2x indicates tight debt-servicing buffer"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "Trend pullback starter ({{anchor}} {{anchorPrice}} {{currency}}): {{positionFraction}} tranche, tight stop {{suggestedStop}} {{currency}}",
@@ -1314,8 +1314,10 @@
       },
       "benchmarkSources": {
         "HISTORICAL_FCF_CAGR_3Y": "3Y Historical FCF CAGR",
+        "HISTORICAL_REV_CAGR_3Y": "3Y Historical Revenue CAGR",
         "HISTORICAL_REVENUE_CAGR_3Y": "3Y Historical Revenue CAGR",
         "FORWARD_EXPECTED_GROWTH": "Forward Consensus Growth",
+        "DEFAULT_CONSERVATIVE_FALLBACK": "Default Conservative Baseline (5%)",
         "DEFAULT_GROWTH": "Default Baseline Growth"
       }
     }

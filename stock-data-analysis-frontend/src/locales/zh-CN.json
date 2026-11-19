@@ -1576,7 +1576,7 @@
         "SUPPORT_HIGH_RISK_BREAKDOWN": "关键支撑已触发高概率真破位诊断，须严格执行止损纪律",
         "PROTECTIVE_STOP_OR_RECLAIM_PENDING": "股价已跌穿保护止损或低于入场区，须先收复企稳",
         "SWUNG_TO_LOSS": "TTM 每股盈利较去年同期由盈转亏",
-        "NEGATIVE_TRAILING_EARNINGS": "当期 TTM 每股盈利为负（亏损状态）",
+        "NEGATIVE_TRAILING_EARNINGS": "当期 TTM 盈利非正（亏损状态）",
         "NEGATIVE_FCF_BURN": "当期 TTM 自由现金流为负（现金消耗）",
         "HIGH_LEVERAGE_DEBT_EBITDA": "净负债／EBITDA 偏高，财务杠杆压力较大",
         "REVENUE_CONTRACTION": "TTM 营业收入较去年同期衰退",
@@ -1585,7 +1585,7 @@
         "BELOW_SMA200_DOWNTREND": "周线处于下降趋势且日线收盘低于 SMA200 年线",
         "ANCHOR_DIVERGENCE": "自身历史中位价与同行中位价差距较大，请一并对照下方分项",
         "MARGIN_COMPRESSION_CONSECUTIVE": "毛利率或营业利润率连续两季环比下滑（定价权或成本结构承压）",
-        "LOW_INTEREST_COVERAGE": "利息保障倍数低于 3x，短期偿债安全边际偏低"
+        "LOW_INTEREST_COVERAGE": "高杠杆（净负债／EBITDA 逾 4x）且利息保障倍数低于 2x，偿债安全边际偏低"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "强势回踩试单（{{anchor}} {{anchorPrice}} {{currency}}）：建议 {{positionFraction}} 底仓试单，紧贴止损 {{suggestedStop}} {{currency}}",
@@ -1765,8 +1765,10 @@
       },
       "benchmarkSources": {
         "HISTORICAL_FCF_CAGR_3Y": "历史 3Y FCF CAGR",
+        "HISTORICAL_REV_CAGR_3Y": "历史 3Y 营收 CAGR",
         "HISTORICAL_REVENUE_CAGR_3Y": "历史 3Y 营收 CAGR",
         "FORWARD_EXPECTED_GROWTH": "市场前瞻预期成长",
+        "DEFAULT_CONSERVATIVE_FALLBACK": "默认保守基准（5%）",
         "DEFAULT_GROWTH": "默认基准成长"
       }
     }

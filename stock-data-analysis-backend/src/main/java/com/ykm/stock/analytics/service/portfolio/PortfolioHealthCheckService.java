@@ -11,6 +11,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosis
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto.ForwardMetrics;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.InvestmentSummaryDto.TrendPullbackStarterDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
@@ -376,7 +377,7 @@ public class PortfolioHealthCheckService {
                             k -> new SectorExposureAccumulator(pre.industryCode(), pre.industryName()));
                     acc.holdingCount++;
                     acc.marketValueUsd = acc.marketValueUsd.add(pre.rawMarketValue(), MC);
-                } else {
+                } else if (!SecurityTypePolicy.isEtfType(pre.stock().getStockType())) {
                     coverageWarningsSet.add("INDUSTRY_UNCLASSIFIED:" + sym);
                 }
             } else {
@@ -663,40 +664,49 @@ public class PortfolioHealthCheckService {
         String symbol = stock != null ? stock.getSymbol() : figi;
         String stockName = stock != null ? stock.getLongName() : null;
         String currency = stock != null ? stock.getCurrency() : null;
+        boolean isEtf = stock != null && SecurityTypePolicy.isEtfType(stock.getStockType());
         List<PortfolioAlertDto> alerts = new ArrayList<>();
         List<String> gaps = new ArrayList<>(pre.dataGapReasons());
 
-        // 1. 財報事件（即使缺少當日行情，已知 0–7 日曆日尚未發生的財報仍照常提醒；即時重算跨日後以紐約觀察日為倒數基準）
-        List<MarketEvent> stockEarnings = loaded.earningsByFigi().getOrDefault(figi, List.of());
-        LocalDate obsNyDate = obsCutoff != null ? obsCutoff.atZone(MarketStatusService.NY_ZONE).toLocalDate() : targetDate;
-        LocalDate earningsBaseDate = obsNyDate.isAfter(targetDate) ? obsNyDate : targetDate;
-        MarketEvent upcomingEarnings = findUpcomingOrTodayEarnings(stockEarnings, earningsBaseDate, obsCutoff);
-        LocalDate nextEarningsDate = upcomingEarnings != null ? upcomingEarnings.getEventDate() : null;
-        Integer daysToEarnings = nextEarningsDate == null ? null : (int) ChronoUnit.DAYS.between(earningsBaseDate, nextEarningsDate);
-        String bufferLevel = classifyEarningsBuffer(pre.unrealizedPnlPct());
+        // 1. 財報事件（ETF／ETP 無單一公司財報，跳過財報倒數；一般股票即使缺當日行情，已知 0–7 日曆日尚未發生的財報仍照常提醒）
+        List<MarketEvent> stockEarnings = isEtf ? List.of() : loaded.earningsByFigi().getOrDefault(figi, List.of());
+        LocalDate nextEarningsDate = null;
+        Integer daysToEarnings = null;
+        String bufferLevel = null;
+        if (!isEtf) {
+            LocalDate obsNyDate = obsCutoff != null ? obsCutoff.atZone(MarketStatusService.NY_ZONE).toLocalDate() : targetDate;
+            LocalDate earningsBaseDate = obsNyDate.isAfter(targetDate) ? obsNyDate : targetDate;
+            MarketEvent upcomingEarnings = findUpcomingOrTodayEarnings(stockEarnings, earningsBaseDate, obsCutoff);
+            nextEarningsDate = upcomingEarnings != null ? upcomingEarnings.getEventDate() : null;
+            daysToEarnings = nextEarningsDate == null ? null : (int) ChronoUnit.DAYS.between(earningsBaseDate, nextEarningsDate);
+            bufferLevel = classifyEarningsBuffer(pre.unrealizedPnlPct());
 
-        if (upcomingEarnings != null && daysToEarnings != null && daysToEarnings >= 0 && daysToEarnings <= EARNINGS_COUNTDOWN_DAYS) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("eventDate", nextEarningsDate.toString());
-            payload.put("daysToEarnings", daysToEarnings);
-            payload.put("timingCode", resolveEarningsTimingCode(upcomingEarnings));
-            payload.put("bufferLevel", bufferLevel);
-            if (pre.unrealizedPnlPct() != null) {
-                payload.put("unrealizedPnlPct", pre.unrealizedPnlPct());
+            if (upcomingEarnings != null && daysToEarnings != null && daysToEarnings >= 0 && daysToEarnings <= EARNINGS_COUNTDOWN_DAYS) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("eventDate", nextEarningsDate.toString());
+                payload.put("daysToEarnings", daysToEarnings);
+                payload.put("timingCode", resolveEarningsTimingCode(upcomingEarnings));
+                payload.put("bufferLevel", bufferLevel);
+                if (pre.unrealizedPnlPct() != null) {
+                    payload.put("unrealizedPnlPct", pre.unrealizedPnlPct());
+                }
+                alerts.add(new PortfolioAlertDto(
+                        InAppNotification.SEVERITY_WARNING,
+                        InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        ALERT_HOLDING_EARNINGS_COUNTDOWN,
+                        figi, symbol, stockName, payload
+                ));
             }
-            alerts.add(new PortfolioAlertDto(
-                    InAppNotification.SEVERITY_WARNING,
-                    InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
-                    ALERT_HOLDING_EARNINGS_COUNTDOWN,
-                    figi, symbol, stockName, payload
-            ));
         }
 
         // 若當日行情缺失，無法進行當日技術與收盤比較，保留已產出之財報警示與缺口原因
         List<QuoteBarRow> rawQuotes = loaded.quotesByFigi().get(figi);
         boolean hasTargetDayBar = pre.evalDate() != null && targetDate.equals(pre.evalDate()) && pre.closePrice() != null;
         if (!hasTargetDayBar || stock == null) {
-            return buildHoldingResult(pre, symbol, stockName, currency, null, null, null, null,
+            String missingVerdict = isEtf ? "NOT_APPLICABLE_FOR_ETF" : null;
+            String missingBacking = isEtf ? "NOT_APPLICABLE" : null;
+            String missingStance = isEtf ? "INSUFFICIENT_DATA" : null;
+            return buildHoldingResult(pre, symbol, stockName, currency, missingVerdict, missingBacking, missingStance, null,
                     null, null, null, null, null, nextEarningsDate, daysToEarnings, bufferLevel, alerts, gaps);
         }
 
@@ -714,12 +724,12 @@ public class PortfolioHealthCheckService {
         if (price.status() == MetricStatus.AVAILABLE && price.value() != null && !price.value().bars().isEmpty()) {
             structure = priceStructures.analyze(context, price.value());
             if (structure.status() == MetricStatus.AVAILABLE && structure.value() != null) {
-                List<MarketEvent> pastEarnings = stockEarnings.stream()
+                List<MarketEvent> pastEarnings = isEtf ? List.of() : stockEarnings.stream()
                         .filter(ev -> ev.getEventDate() != null && !ev.getEventDate().isAfter(targetDate))
                         .toList();
                 LocalDate winFrom = targetDate.minusDays(10);
                 LocalDate winTo = targetDate.plusDays(20);
-                List<MarketEvent> windowEvents = stockEarnings.stream()
+                List<MarketEvent> windowEvents = isEtf ? List.of() : stockEarnings.stream()
                         .filter(ev -> ev.getEventDate() != null && !ev.getEventDate().isBefore(winFrom) && !ev.getEventDate().isAfter(winTo))
                         .toList();
                 marketResult = marketContextService.evaluateWithPreloaded(
@@ -742,53 +752,80 @@ public class PortfolioHealthCheckService {
             gaps.add("TECHNICAL_SERIES_UNAVAILABLE");
         }
 
-        // 3. 純記憶體組裝基本面、前瞻共識與綜合判定（0 次外部 API）；僅當日最新估值才可引用 verdict／fairValue
-        StockValuationLatest v = pre.valuation();
-        boolean valuationFresh = v != null && targetDate.equals(v.getValuationDate());
-        if (v == null) {
-            gaps.add("VALUATION_MISSING");
-        } else if (v.getValuationDate() != null && !valuationFresh) {
-            gaps.add("VALUATION_STALE");
-        }
+        // 3. 純記憶體組裝基本面、前瞻共識與綜合判定（0 次外部 API）；ETF／ETP 走純技術摘要且不產生 VALUATION_MISSING 缺口
         BigDecimal evalPrice = pre.closePrice();
-        List<StockFinancialPeriod> stockPeriods = loaded.periodsByFigi().getOrDefault(figi, List.of());
-        List<KnownReportPeriod> knownReports = loaded.knownReportsByFigi().getOrDefault(figi, List.of());
-        List<StockEarningsForecast> stockForecasts = loaded.forecastsByFigi().getOrDefault(figi, List.of());
+        StockValuationLatest v = pre.valuation();
+        boolean valuationFresh = false;
+        String resolvedVerdict;
+        String resolvedBacking;
+        String resolvedStance;
+        boolean forwardValueTrap = false;
+        TrendPullbackStarterDto resolvedStarter = null;
 
-        StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, targetDate);
-        String splitError = StockValuationService.splitSyncError(pre.status());
-        boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
-        AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
-                ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
-        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
-                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
-        FxResolution fxRes = resolveFxForStock(loaded.fxLookup(), matchedPeriod, stock.getCurrency(), targetDate);
-        BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
-        String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
-                : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
-        DayEpsResolution epsResolution = (isAdr)
-                ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
-                : StockValuationService.resolveDayEps(stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate, fxRateToQuote);
-        String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
-        boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
-        FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
-                stockPeriods, matchedPeriod, stockSplits, targetDate, stock.getCurrency(),
-                evalPrice, valuationFresh ? v.getMarketCap() : null, null, epsResolution.epsAtDay(), peReason,
-                valuationFresh ? v.getPe() : null, financialInstitution, splitError,
-                fxRateToQuote, valuationBlockedReason, verifiedAdr));
-        FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
-                targetDate, obsCutoff, maxAnnualObsDate, stock.getCurrency(), evalPrice,
-                valuationFresh ? v.getMarketCap() : null, epsResolution.epsAtDay(), peReason,
-                stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
+        if (isEtf) {
+            MetricResult<InvestmentSummaryDto> etfSummary = summaryCalculator.calculateForEtf(
+                    AnalysisHorizon.POSITION, evalPrice, currency, structure, support, tradePlans, marketResult);
+            if (etfSummary.status() == MetricStatus.AVAILABLE && etfSummary.value() != null) {
+                resolvedVerdict = etfSummary.value().verdict();
+                resolvedBacking = etfSummary.value().fundamentalBacking();
+                resolvedStance = etfSummary.value().stance();
+            } else {
+                resolvedVerdict = "NOT_APPLICABLE_FOR_ETF";
+                resolvedBacking = "NOT_APPLICABLE";
+                resolvedStance = "INSUFFICIENT_DATA";
+            }
+        } else {
+            valuationFresh = v != null && targetDate.equals(v.getValuationDate());
+            if (v == null) {
+                gaps.add("VALUATION_MISSING");
+            } else if (v.getValuationDate() != null && !valuationFresh) {
+                gaps.add("VALUATION_STALE");
+            }
+            List<StockFinancialPeriod> stockPeriods = loaded.periodsByFigi().getOrDefault(figi, List.of());
+            List<KnownReportPeriod> knownReports = loaded.knownReportsByFigi().getOrDefault(figi, List.of());
+            List<StockEarningsForecast> stockForecasts = loaded.forecastsByFigi().getOrDefault(figi, List.of());
 
-        String verdict = valuationFresh && v.getVerdict() != null ? v.getVerdict() : "INSUFFICIENT_EVIDENCE";
-        String backing = valuationFresh && v.getFundamentalBacking() != null
-                ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, false);
-        BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
+            StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, targetDate);
+            String splitError = StockValuationService.splitSyncError(pre.status());
+            boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
+            AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
+                    ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
+            boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
+                    && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
+            FxResolution fxRes = resolveFxForStock(loaded.fxLookup(), matchedPeriod, stock.getCurrency(), targetDate);
+            BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
+            String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
+                    : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
+            DayEpsResolution epsResolution = (isAdr)
+                    ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
+                    : StockValuationService.resolveDayEps(stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate, fxRateToQuote);
+            String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
+            boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
+            FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
+                    stockPeriods, matchedPeriod, stockSplits, targetDate, stock.getCurrency(),
+                    evalPrice, valuationFresh ? v.getMarketCap() : null, null, epsResolution.epsAtDay(), peReason,
+                    valuationFresh ? v.getPe() : null, financialInstitution, splitError,
+                    fxRateToQuote, valuationBlockedReason, verifiedAdr));
+            FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
+                    targetDate, obsCutoff, maxAnnualObsDate, stock.getCurrency(), evalPrice,
+                    valuationFresh ? v.getMarketCap() : null, epsResolution.epsAtDay(), peReason,
+                    stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
 
-        RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
-                AnalysisHorizon.POSITION, evalPrice, verdict, bandLow, backing,
-                fundamentalsDto, futuObs, structure, support, tradePlans, marketResult);
+            String verdict = valuationFresh && v.getVerdict() != null ? v.getVerdict() : "INSUFFICIENT_EVIDENCE";
+            boolean currentLoss = StockValuationService.isCurrentTtmLoss(matchedPeriod, pre.status(), targetDate, isAdr, verifiedAdr);
+            String backing = valuationFresh && v.getFundamentalBacking() != null
+                    ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
+            BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
+
+            RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
+                    AnalysisHorizon.POSITION, evalPrice, verdict, bandLow, backing,
+                    fundamentalsDto, futuObs, structure, support, tradePlans, marketResult);
+            resolvedVerdict = eval.verdict();
+            resolvedBacking = eval.fundamentalBacking();
+            resolvedStance = eval.stance();
+            forwardValueTrap = eval.forwardValueTrap();
+            resolvedStarter = eval.trendPullbackStarter();
+        }
 
         // 僅當同一持倉生命週期（positionId 一致）才承接上一份簡報的事前止損與 T1/T2，避免平倉重買誤沿用舊基準
         PriorHoldingReference effectivePriorRef = (priorRef != null
@@ -922,48 +959,50 @@ public class PortfolioHealthCheckService {
             }
         }
 
-        // 5. 基本面惡化警戒（WEAKENING / CAUTION_VALUE_TRAP / 前瞻陷阱）
-        if ("WEAKENING".equals(eval.fundamentalBacking())) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("fundamentalBacking", eval.fundamentalBacking());
-            payload.put("verdict", eval.verdict());
-            alerts.add(new PortfolioAlertDto(
-                    InAppNotification.SEVERITY_WARNING,
-                    InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
-                    ALERT_HOLDING_FUNDAMENTAL_WEAKENING,
-                    figi, symbol, stockName, payload
-            ));
-        }
-        if ("CAUTION_VALUE_TRAP".equals(eval.stance()) || eval.forwardValueTrap()) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("stance", eval.stance());
-            payload.put("forwardValueTrap", eval.forwardValueTrap());
-            alerts.add(new PortfolioAlertDto(
-                    InAppNotification.SEVERITY_WARNING,
-                    InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
-                    ALERT_HOLDING_VALUE_TRAP,
-                    figi, symbol, stockName, payload
-            ));
-        }
+        // 5. 基本面惡化警戒（WEAKENING / CAUTION_VALUE_TRAP / 前瞻陷阱；ETF／ETP 跳過）
+        if (!isEtf) {
+            if ("WEAKENING".equals(resolvedBacking)) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("fundamentalBacking", resolvedBacking);
+                payload.put("verdict", resolvedVerdict);
+                alerts.add(new PortfolioAlertDto(
+                        InAppNotification.SEVERITY_WARNING,
+                        InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        ALERT_HOLDING_FUNDAMENTAL_WEAKENING,
+                        figi, symbol, stockName, payload
+                ));
+            }
+            if ("CAUTION_VALUE_TRAP".equals(resolvedStance) || forwardValueTrap) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("stance", resolvedStance);
+                payload.put("forwardValueTrap", forwardValueTrap);
+                alerts.add(new PortfolioAlertDto(
+                        InAppNotification.SEVERITY_WARNING,
+                        InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        ALERT_HOLDING_VALUE_TRAP,
+                        figi, symbol, stockName, payload
+                ));
+            }
 
-        // 6. 高估分批止盈提醒（OVERVALUED_RISK：close > fairValueHigh * 1.15，限當日最新估值）
-        if (valuationFresh && "OVERVALUED_RISK".equals(eval.verdict())) {
-            boolean inProfit = pre.unrealizedPnlPct() != null && pre.unrealizedPnlPct().signum() > 0;
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("closePrice", evalPrice.setScale(4, RoundingMode.HALF_UP));
-            if (v.getFairValueHigh() != null) {
-                payload.put("fairValueHigh", v.getFairValueHigh().setScale(4, RoundingMode.HALF_UP));
+            // 6. 高估分批止盈提醒（OVERVALUED_RISK：close > fairValueHigh * 1.15，限當日最新估值）
+            if (valuationFresh && "OVERVALUED_RISK".equals(resolvedVerdict)) {
+                boolean inProfit = pre.unrealizedPnlPct() != null && pre.unrealizedPnlPct().signum() > 0;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("closePrice", evalPrice.setScale(4, RoundingMode.HALF_UP));
+                if (v.getFairValueHigh() != null) {
+                    payload.put("fairValueHigh", v.getFairValueHigh().setScale(4, RoundingMode.HALF_UP));
+                }
+                payload.put("inProfit", inProfit);
+                if (pre.unrealizedPnlPct() != null) {
+                    payload.put("unrealizedPnlPct", pre.unrealizedPnlPct());
+                }
+                alerts.add(new PortfolioAlertDto(
+                        InAppNotification.SEVERITY_INFO,
+                        InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        ALERT_HOLDING_OVERVALUED_PROFIT_TAKING,
+                        figi, symbol, stockName, payload
+                ));
             }
-            payload.put("inProfit", inProfit);
-            if (pre.unrealizedPnlPct() != null) {
-                payload.put("unrealizedPnlPct", pre.unrealizedPnlPct());
-            }
-            alerts.add(new PortfolioAlertDto(
-                    InAppNotification.SEVERITY_INFO,
-                    InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
-                    ALERT_HOLDING_OVERVALUED_PROFIT_TAKING,
-                    figi, symbol, stockName, payload
-            ));
         }
 
         // 7. 上方目標達標（收盤價 >= 事前對齊 T2 / T1）或無事前目標但進入強阻力區
@@ -1027,7 +1066,7 @@ public class PortfolioHealthCheckService {
 
         // 8. 記錄當日有效參考止損與 T1/T2（優先近端有效計畫，再回退近端週線支撐並疊加第二軌試單緊貼止損），作為隔日收盤體檢之事前基準
         SupportResistanceDto supportValue = support.status() == MetricStatus.AVAILABLE ? support.value() : null;
-        HoldingReferenceSelection nextRef = resolveHoldingReference(planList, supportValue, eval.trendPullbackStarter(), evalPrice);
+        HoldingReferenceSelection nextRef = resolveHoldingReference(planList, supportValue, resolvedStarter, evalPrice);
         TradePlanDto matchedPlan = nextRef.matchedPlan();
         BigDecimal nextRefStop = nextRef.protectiveStop();
         String nextRefStopSource = nextRef.stopSource();
@@ -1051,7 +1090,7 @@ public class PortfolioHealthCheckService {
 
         return buildHoldingResult(
                 pre, symbol, stockName, currency,
-                eval.verdict(), eval.fundamentalBacking(), eval.stance(), diagCode,
+                resolvedVerdict, resolvedBacking, resolvedStance, diagCode,
                 nextRefStop, nextRefStopSource, nextT1, nextT2, nextTargetsDate,
                 nextEarningsDate, daysToEarnings, bufferLevel, alerts, gaps
         );
@@ -1074,11 +1113,23 @@ public class PortfolioHealthCheckService {
             return null;
         }
         Stock stock = loaded.stocksByFigi().get(figi);
+        // 自選買點通知僅適用估值支撐與前瞻成長回踩雙軌，嚴格僅放行支援公司估值之證券類型（排除 ETF／ETP 與未知類型）
+        if (stock == null || !SecurityTypePolicy.supportsValuation(stock.getStockType())) {
+            return null;
+        }
+        boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
+        AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
+                ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
+        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
+                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
+        if (isAdr && !verifiedAdr) {
+            return null;
+        }
         StockStatus status = loaded.statusByFigi().get(figi);
         StockValuationLatest v = loaded.valuationByFigi().get(figi);
         boolean valuationFresh = v != null && targetDate.equals(v.getValuationDate());
         List<QuoteBarRow> rawQuotes = loaded.quotesByFigi().get(figi);
-        if (stock == null || rawQuotes == null || rawQuotes.isEmpty() || !targetDate.equals(rawQuotes.getLast().quoteDate())) {
+        if (rawQuotes == null || rawQuotes.isEmpty() || !targetDate.equals(rawQuotes.getLast().quoteDate())) {
             return null;
         }
         List<StockSplit> stockSplits = loaded.splitsByFigi().getOrDefault(figi, List.of());
@@ -1120,17 +1171,12 @@ public class PortfolioHealthCheckService {
         List<StockEarningsForecast> stockForecasts = loaded.forecastsByFigi().getOrDefault(figi, List.of());
         StockFinancialPeriod matchedPeriod = StockValuationService.matchPeriod(stockPeriods, targetDate);
         String splitError = StockValuationService.splitSyncError(status);
-        boolean isAdr = SecurityTypePolicy.isAdrType(stock.getStockType());
-        AdrShareRatio adrRatio = isAdr && stock.getSymbol() != null
-                ? loaded.adrBySymbol().get(stock.getSymbol().trim().toUpperCase(java.util.Locale.ROOT)) : null;
-        boolean verifiedAdr = isAdr && adrRatio != null && adrRatio.isVerified()
-                && adrRatio.getAdrRatio() != null && adrRatio.getAdrRatio().signum() > 0;
         FxResolution fxRes = resolveFxForStock(loaded.fxLookup(), matchedPeriod, stock.getCurrency(), targetDate);
         BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
-        String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
-                : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
+        String valuationBlockedReason = fxRes != null && !fxRes.isUsable() && fxRes.reason() != null
+                ? fxRes.reason().name() : null;
         DayEpsResolution epsResolution = (isAdr)
-                ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
+                ? new DayEpsResolution(null, null)
                 : StockValuationService.resolveDayEps(stock.getCurrency(), status, matchedPeriod, stockSplits, targetDate, fxRateToQuote);
         String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
@@ -1145,8 +1191,9 @@ public class PortfolioHealthCheckService {
                 stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
 
         String verdict = valuationFresh && v.getVerdict() != null ? v.getVerdict() : "INSUFFICIENT_EVIDENCE";
+        boolean currentLoss = StockValuationService.isCurrentTtmLoss(matchedPeriod, status, targetDate, isAdr, verifiedAdr);
         String backing = valuationFresh && v.getFundamentalBacking() != null
-                ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, false);
+                ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
         BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
 
         RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(

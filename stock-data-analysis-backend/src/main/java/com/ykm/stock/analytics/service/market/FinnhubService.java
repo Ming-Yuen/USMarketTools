@@ -132,4 +132,19 @@ public class FinnhubService {
         return get("/calendar/earnings", Map.of("from", from, "to", to),
                 new ParameterizedTypeReference<EarningsCalendarResponse>() {});
     }
+
+    public boolean isConfigured() {
+        return finnhubProperties != null && finnhubProperties.getApiKey() != null && !finnhubProperties.getApiKey().isBlank();
+    }
+
+    /** 取得單股指定日期區間公司新聞（備援即時新聞通道）。 */
+    public List<Map<String, Object>> getCompanyNews(String symbol, LocalDate from, LocalDate to) {
+        if (!isConfigured()) {
+            throw new IllegalStateException("FINNHUB_API_KEY_REQUIRED");
+        }
+        List<Map<String, Object>> result = get("/company-news",
+                Map.of("symbol", symbol, "from", from.toString(), "to", to.toString()),
+                new ParameterizedTypeReference<List<Map<String, Object>>>() {});
+        return result == null ? List.of() : result;
+    }
 }

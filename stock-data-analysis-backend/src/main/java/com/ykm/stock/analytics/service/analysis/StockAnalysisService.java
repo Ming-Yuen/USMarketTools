@@ -27,6 +27,11 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.InsiderSummaryDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.OptionsSummaryDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.ReportEnhancementHighlightsDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.ShortInterestSummaryDto;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
@@ -37,7 +42,11 @@ import com.ykm.stock.analytics.service.analysis.StockObservationService.ForwardO
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator.SizingInputs;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
+import com.ykm.stock.analytics.service.enhancement.OptionsEnhancementService;
+import com.ykm.stock.analytics.service.enhancement.SecInsiderAndInstitutionalService;
+import com.ykm.stock.analytics.service.enhancement.ShortInterestService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService.PortfolioExposureSnapshot;
 import com.ykm.stock.analytics.service.valuation.DcfValuationCalculator;
@@ -73,6 +82,12 @@ public class StockAnalysisService {
     private final SectorMoneyFlowService sectorMoneyFlowService;
     private final PortfolioManagementService portfolioManagementService;
     private final PositionSizingCalculator positionSizingCalculator;
+    @Autowired(required = false)
+    private OptionsEnhancementService optionsEnhancementService;
+    @Autowired(required = false)
+    private SecInsiderAndInstitutionalService insiderAndInstitutionalService;
+    @Autowired(required = false)
+    private ShortInterestService shortInterestService;
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final DcfValuationCalculator dcfCalculator = new DcfValuationCalculator();
 
@@ -177,12 +192,14 @@ public class StockAnalysisService {
             );
         }
         DcfValuationDto dcf = evaluateDcf(stock, resolvedReportDate, latestPriceClose, bundle, observations, marketResult);
+        ReportEnhancementHighlightsDto enhancements = loadReadOnlyEnhancements(
+                stock, resolvedReportDate, latestPriceClose, enrichedTradePlans, summary, marketResult, false);
 
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),
                 structure, support, enrichedTradePlans, marketResult, observations, reasons,
                 bundle.fundamentals(), summary, peerRelativeStrength, starterPositionSizing,
-                stock.getStockType(), dcf);
+                stock.getStockType(), dcf, enhancements);
     }
 
     /** ETF／ETP 專屬路由：跳過單一公司財報／估值／DCF／共識預測，完整輸出 K 線結構、支撐阻力、Volume Profile、AVWAP、CMF、相對 SPY 強弱與免財報交易計畫。 */
@@ -245,13 +262,77 @@ public class StockAnalysisService {
                 stock, industryCode, resolvedReportDate, readAt, historicalQuery, quoteFellBack,
                 latestPriceClose, tradePlans, summary, marketResult);
 
+        ReportEnhancementHighlightsDto etfEnhancements = loadReadOnlyEnhancements(
+                stock, resolvedReportDate, latestPriceClose, sizingAttachment.tradePlans(), summary, marketResult, true);
+
         return new StockAnalysisReportDto(
                 stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 etfValuation, null, List.of(),
                 structure, support, sizingAttachment.tradePlans(), marketResult, null, reasons,
                 null, summary, null, sizingAttachment.starterPositionSizing(),
-                stock.getStockType(), etfDcf
+                stock.getStockType(), etfDcf, etfEnhancements
         );
+    }
+
+    /** 純資料庫唯讀掛載 06_Enhancement 籌碼亮點（0 次新增外部 API 呼叫，嚴格截斷於 resolvedReportDate 防穿越）。 */
+    private ReportEnhancementHighlightsDto loadReadOnlyEnhancements(
+            Stock stock, LocalDate resolvedReportDate, BigDecimal latestClose,
+            MetricResult<TradePlanResultDto> tradePlans,
+            MetricResult<InvestmentSummaryDto> summary,
+            MetricResult<MarketContextDto> marketResult,
+            boolean isEtf) {
+        if (optionsEnhancementService == null && insiderAndInstitutionalService == null && shortInterestService == null) {
+            return null;
+        }
+        CreditSpreadSummaryDto creditSpread = marketResult != null && marketResult.status() == MetricStatus.AVAILABLE
+                && marketResult.value() != null ? marketResult.value().creditSpread() : null;
+        BigDecimal activeStop = extractActiveProtectiveStop(tradePlans);
+        OptionsSummaryDto options = optionsEnhancementService == null ? null
+                : optionsEnhancementService.readAt(stock, resolvedReportDate, activeStop, latestClose);
+        String verdict = summary != null && summary.status() == MetricStatus.AVAILABLE && summary.value() != null
+                ? summary.value().verdict() : null;
+        String fundamentalBacking = summary != null && summary.status() == MetricStatus.AVAILABLE && summary.value() != null
+                ? summary.value().fundamentalBacking() : null;
+        InsiderSummaryDto insiders = (!isEtf && insiderAndInstitutionalService != null)
+                ? insiderAndInstitutionalService.evaluateInsiders(stock, resolvedReportDate, verdict) : null;
+        boolean resistanceBreakout = isResistanceBreakout(summary);
+        ShortInterestSummaryDto shortInterest = shortInterestService == null ? null
+                : shortInterestService.evaluateStock(stock, resolvedReportDate, fundamentalBacking, resistanceBreakout);
+        return new ReportEnhancementHighlightsDto(
+                creditSpread,
+                options,
+                insiders != null && insiders.insiderBuyUndervaluedConfirm(),
+                insiders == null ? 0 : insiders.codePBuyCount60d(),
+                insiders == null ? 0 : insiders.codePDistinctInsiders60d(),
+                insiders == null ? null : insiders.codePTotalValueUsd60d(),
+                shortInterest
+        );
+    }
+
+    private BigDecimal extractActiveProtectiveStop(MetricResult<TradePlanResultDto> tradePlans) {
+        if (tradePlans == null || tradePlans.status() != MetricStatus.AVAILABLE || tradePlans.value() == null) {
+            return null;
+        }
+        for (TradePlanDto plan : tradePlans.value().plans()) {
+            if (plan != null && plan.stop() != null && plan.stop().protectivePrice() != null
+                    && plan.stop().protectivePrice().signum() > 0
+                    && (plan.status() == TradePlanStatus.ACTIVE || plan.status() == TradePlanStatus.WAITING_TRIGGER)) {
+                return plan.stop().protectivePrice();
+            }
+        }
+        return null;
+    }
+
+    private boolean isResistanceBreakout(MetricResult<InvestmentSummaryDto> summary) {
+        if (summary == null || summary.status() != MetricStatus.AVAILABLE || summary.value() == null) {
+            return false;
+        }
+        InvestmentSummaryDto v = summary.value();
+        boolean trendStrong = "UPTREND".equalsIgnoreCase(v.weeklyTrend()) && Boolean.TRUE.equals(v.aboveSma200());
+        boolean confirmedBreakout = "CONFIRMED_RETEST".equalsIgnoreCase(v.rightSideConfirmationBasis())
+                || "SPRING_RECLAIMED".equalsIgnoreCase(v.rightSideConfirmationBasis())
+                || (v.trendPullbackStarter() != null && v.trendPullbackStarter().eligible());
+        return trendStrong && confirmedBreakout;
     }
 
     private DcfValuationDto evaluateDcf(

@@ -146,6 +146,16 @@ public class DashboardResponse {
         private boolean headwindActive;
         private boolean correctionActive;
         private String asOfDate;
+        private BigDecimal hyOasPct;
+        private String hyOasDate;
+        private BigDecimal hyOasDeltaVsPrior20Bps;
+        private String hyOasStatus;
+        private boolean hyOasAlertActive;
+
+        public MarketRegimeBanner(String regime, BigDecimal vixClose, boolean headwindActive,
+                                  boolean correctionActive, String asOfDate) {
+            this(regime, vixClose, headwindActive, correctionActive, asOfDate, null, null, null, null, false);
+        }
     }
 
     @Data
@@ -254,5 +264,24 @@ public class DashboardResponse {
         private Integer daysToNextEarnings;
         private BigDecimal sectorCmf20d;
         private String sectorFlowState;
+        private boolean insiderBuyUndervaluedConfirm;
+
+        public OpportunityRadarItem(
+                String figi, String symbol, String stockName, String currency, String trackType,
+                String industryCode, String industryName, String marketCapTier, String verdict,
+                String fundamentalBacking, String stance, boolean headwindWatchOnly, boolean macroCautionActive,
+                BigDecimal closePrice, BigDecimal fairValueLow, BigDecimal fairValueMid, BigDecimal fairValueHigh,
+                BigDecimal discountToMid, BigDecimal forwardPeg, BigDecimal forwardPe, BigDecimal revenueGrowthYoy,
+                String forwardGrowthBasis, BigDecimal supportLower, BigDecimal supportUpper, BigDecimal supportDistancePct,
+                String pullbackAnchor, BigDecimal pullbackAnchorPrice, BigDecimal protectiveStop, BigDecimal firstTargetPrice,
+                BigDecimal netRiskReward, String planStatus, String positionFraction, String nextEarningsDate,
+                Integer daysToNextEarnings, BigDecimal sectorCmf20d, String sectorFlowState) {
+            this(figi, symbol, stockName, currency, trackType, industryCode, industryName, marketCapTier, verdict,
+                    fundamentalBacking, stance, headwindWatchOnly, macroCautionActive, closePrice, fairValueLow,
+                    fairValueMid, fairValueHigh, discountToMid, forwardPeg, forwardPe, revenueGrowthYoy,
+                    forwardGrowthBasis, supportLower, supportUpper, supportDistancePct, pullbackAnchor,
+                    pullbackAnchorPrice, protectiveStop, firstTargetPrice, netRiskReward, planStatus,
+                    positionFraction, nextEarningsDate, daysToNextEarnings, sectorCmf20d, sectorFlowState, false);
+        }
     }
 }

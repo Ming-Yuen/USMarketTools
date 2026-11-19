@@ -17,6 +17,7 @@ import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
+import com.ykm.stock.analytics.service.enhancement.SecCustomTagMappingService;
 import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import jakarta.persistence.EntityManager;
@@ -25,6 +26,7 @@ import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -61,6 +63,8 @@ public class SecFinancialFactsDailySyncJob implements Job {
     private final DateTimeService clock;
     private final SecIssuerHistory issuerHistory;
     private final StockValuationService stockValuationService;
+    @Autowired(required = false)
+    private ObjectProvider<SecCustomTagMappingService> customTagMappingServiceProvider;
 
     public SecFinancialFactsDailySyncJob(StockRepository stocks, SecFinancialFactRepository facts,
                                          StockStatusRepository statuses, SecCompanyFactsArchive archives,
@@ -130,10 +134,15 @@ public class SecFinancialFactsDailySyncJob implements Job {
                     JsonNode company = archive.read(cik);
                     Instant observedAt = clock.now();
                     List<SecFinancialFact> downloaded = converter.convert(cik, company, observedAt, BACKFILL_START, filingMetadata);
+                    SecCustomTagMappingService customTagService = customTagMappingServiceProvider == null
+                            ? null : customTagMappingServiceProvider.getIfAvailable();
                     if (downloaded.isEmpty()) {
                         empty++;
-                        if (syncSicOnlyIfChanged(issuerStocks, resolvedSic)) {
+                        boolean sicChanged = syncSicOnlyIfChanged(issuerStocks, resolvedSic);
+                        int customChanges = runCustomTagSyncSafely(customTagService, cik, company);
+                        if (sicChanged || customChanges > 0) {
                             modifiedFigis.addAll(figis);
+                            modifiedFigis.addAll(predecessorDependents.getOrDefault(cik, List.of()));
                         }
                         continue;
                     }
@@ -142,6 +151,11 @@ public class SecFinancialFactsDailySyncJob implements Job {
                         changedCount += outcome.factChanges();
                     }
                     if (outcome != null && outcome.valuationNeedsRebuild()) {
+                        modifiedFigis.addAll(figis);
+                        modifiedFigis.addAll(predecessorDependents.getOrDefault(cik, List.of()));
+                    }
+                    int customChanges = runCustomTagSyncSafely(customTagService, cik, company);
+                    if (customChanges > 0) {
                         modifiedFigis.addAll(figis);
                         modifiedFigis.addAll(predecessorDependents.getOrDefault(cik, List.of()));
                     }
@@ -248,5 +262,18 @@ public class SecFinancialFactsDailySyncJob implements Job {
         entityManager.flush();
         int factChanges = inserts.size() + updates.size();
         return new SaveOutcome(factChanges, factChanges > 0 || sicNeedsUpdate);
+    }
+
+    private int runCustomTagSyncSafely(SecCustomTagMappingService customTagService, String cik, JsonNode company) {
+        if (customTagService == null) {
+            return 0;
+        }
+        try {
+            return customTagService.syncConfirmedMappingsForCik(cik, company);
+        } catch (RuntimeException ex) {
+            log.warn("SEC confirmed custom tag sync failed (isolated from standard SEC facts) | cik={} reason={}",
+                    cik, ex.getMessage());
+            return 0;
+        }
     }
 }

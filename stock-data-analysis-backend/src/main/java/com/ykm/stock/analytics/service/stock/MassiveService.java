@@ -1,5 +1,6 @@
 package com.ykm.stock.analytics.service.stock;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.util.concurrent.RateLimiter;
 import com.ykm.stock.analytics.config.MassiveSubscription;
 import com.ykm.stock.analytics.model.dto.massive.response.MassiveSplit;
@@ -9,6 +10,7 @@ import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerListRespo
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.retry.annotation.Backoff;
@@ -16,20 +18,24 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Massive 提供股票主檔；拆股事件由 Futu 復權資料提供。 */
+/** Massive 提供股票主檔、雙週做空餘額、CUSIP 對照與新聞備援；拆股事件由 Futu 復權資料提供。 */
 @Service
 @Slf4j
 public class MassiveService {
@@ -37,6 +43,23 @@ public class MassiveService {
     private final URI baseUri;
     private final String apiKey;
     private final RateLimiter rateLimiter;
+
+    public record MassiveShortInterestRow(
+            String ticker,
+            LocalDate settlementDate,
+            Long shortInterest,
+            Long avgDailyVolume,
+            BigDecimal daysToCover
+    ) {}
+
+    public record MassiveNewsRow(
+            String id,
+            String title,
+            String description,
+            String publisher,
+            String articleUrl,
+            Instant publishedUtc
+    ) {}
 
     public MassiveService(@Value("${massive.baseUrl:https://api.massive.com}") String baseUrl,
                           @Value("${massive.apiKey:${MASSIVE_API_KEY:}}") String apiKey,
@@ -118,9 +141,141 @@ public class MassiveService {
         return request(nextUri, type);
     }
 
+    public boolean isConfigured() {
+        return !apiKey.isBlank();
+    }
+
+    /** 批次拉取指定結算日（含）以後之官方雙週做空餘額，逐頁翻至 next_url 耗盡。 */
+    public List<MassiveShortInterestRow> getShortInterestFrom(LocalDate settlementDateFrom) {
+        if (settlementDateFrom == null) {
+            throw new IllegalArgumentException("MASSIVE_SHORT_INTEREST_DATE_REQUIRED");
+        }
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("settlement_date.gte", settlementDateFrom.toString());
+        query.put("sort", "settlement_date.asc");
+        query.put("limit", "1000");
+        return fetchShortInterestPages(get("/stocks/v1/short-interest", query, JsonNode.class), 100);
+    }
+
+    /** 單股按需拉取最近數期官方雙週做空餘額（最新結算日優先）。 */
+    public List<MassiveShortInterestRow> getShortInterestForTicker(String ticker, int limit) {
+        if (ticker == null || ticker.isBlank()) {
+            return List.of();
+        }
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("ticker", ticker.trim().toUpperCase());
+        query.put("sort", "settlement_date.desc");
+        query.put("limit", String.valueOf(Math.max(1, Math.min(limit, 20))));
+        return fetchShortInterestPages(get("/stocks/v1/short-interest", query, JsonNode.class), 1);
+    }
+
+    /** 依 9 碼 CUSIP 與選用報告日定點查詢 Massive 證券識別（回傳 composite_figi / share_class_figi），供 13F 精準對照。 */
+    public List<MassiveTickerDetails> getTickersByCusip(String cusip, LocalDate reportDate) {
+        if (cusip == null || cusip.isBlank()) {
+            return List.of();
+        }
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cusip", cusip.trim().toUpperCase());
+        query.put("market", "stocks");
+        query.put("locale", "us");
+        query.put("limit", "10");
+        if (reportDate != null) {
+            query.put("date", reportDate.toString());
+        }
+        MassiveTickerListResponse response = get("/v3/reference/tickers", query, MassiveTickerListResponse.class);
+        if (response == null || response.getResults() == null) {
+            return List.of();
+        }
+        return response.getResults();
+    }
+
+    /** 備援單股新聞查詢（不爬外部原文）。 */
+    public List<MassiveNewsRow> getCompanyNews(String ticker, Instant publishedAfter, int limit) {
+        if (ticker == null || ticker.isBlank()) {
+            return List.of();
+        }
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("ticker", ticker.trim().toUpperCase());
+        query.put("order", "desc");
+        query.put("sort", "published_utc");
+        query.put("limit", String.valueOf(Math.max(1, Math.min(limit, 50))));
+        if (publishedAfter != null) {
+            query.put("published_utc.gte", publishedAfter.toString());
+        }
+        JsonNode root = get("/v2/reference/news", query, JsonNode.class);
+        if (root == null || !root.path("results").isArray()) {
+            return List.of();
+        }
+        List<MassiveNewsRow> rows = new ArrayList<>();
+        for (JsonNode item : root.path("results")) {
+            String title = item.path("title").asText("").trim();
+            String pubStr = item.path("published_utc").asText("").trim();
+            if (title.isEmpty() || pubStr.isEmpty()) {
+                continue;
+            }
+            Instant pub;
+            try {
+                pub = Instant.parse(pubStr);
+            } catch (Exception ex) {
+                continue;
+            }
+            rows.add(new MassiveNewsRow(
+                    item.path("id").asText("").trim(),
+                    title,
+                    item.path("description").asText("").trim(),
+                    item.path("publisher").path("name").asText("").trim(),
+                    item.path("article_url").asText("").trim(),
+                    pub
+            ));
+        }
+        return rows;
+    }
+
+    private List<MassiveShortInterestRow> fetchShortInterestPages(JsonNode firstPage, int maxPages) {
+        List<MassiveShortInterestRow> rows = new ArrayList<>();
+        Set<String> seenUrls = new HashSet<>();
+        JsonNode page = firstPage;
+        for (int i = 0; i < maxPages && page != null; i++) {
+            JsonNode results = page.path("results");
+            if (results.isArray()) {
+                for (JsonNode item : results) {
+                    String ticker = item.path("ticker").asText("").trim();
+                    String dateStr = item.path("settlement_date").asText("").trim();
+                    if (ticker.isEmpty() || dateStr.isEmpty() || !item.path("short_interest").isNumber()) {
+                        continue;
+                    }
+                    LocalDate settlement;
+                    try {
+                        settlement = LocalDate.parse(dateStr);
+                    } catch (Exception ex) {
+                        continue;
+                    }
+                    long shortShares = item.path("short_interest").longValue();
+                    Long avgVol = item.path("avg_daily_volume").isNumber() ? item.path("avg_daily_volume").longValue() : null;
+                    BigDecimal dtc = item.path("days_to_cover").isNumber() ? item.path("days_to_cover").decimalValue() : null;
+                    rows.add(new MassiveShortInterestRow(ticker, settlement, shortShares, avgVol, dtc));
+                }
+            }
+            String nextUrl = page.path("next_url").asText("").trim();
+            if (nextUrl.isEmpty() || !seenUrls.add(nextUrl)) {
+                break;
+            }
+            page = next(nextUrl, JsonNode.class);
+        }
+        return rows;
+    }
+
     private <T> T request(URI uri, Class<T> type) {
         if (apiKey.isBlank()) throw new IllegalStateException("MASSIVE_API_KEY_REQUIRED");
         rateLimiter.acquire();
-        return restClient.get().uri(uri).header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey).retrieve().body(type);
+        try {
+            return restClient.get().uri(uri).header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey).retrieve().body(type);
+        } catch (HttpStatusCodeException ex) {
+            HttpStatusCode status = ex.getStatusCode();
+            if (status.value() == 401 || status.value() == 403) {
+                throw new IllegalStateException("MASSIVE_API_UNAUTHORIZED:" + status.value(), ex);
+            }
+            throw ex;
+        }
     }
 }

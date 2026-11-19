@@ -133,18 +133,22 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     void initializeJobConfigData() {
-        // 香港時間先準備主檔、價格基準、匯率及行情，再同步補充資料與計算估值。
+        // 香港時間先準備主檔、價格基準、匯率、信用利差及行情，再同步補充資料與計算估值。
         initializeScheduledJob(TaskCode.TREASURY_DAILY_SYNC, TreasuryDailySyncJob.class, "0 0 5 * * ?");
         initializeScheduledJob(TaskCode.FX_RATE_DAILY_SYNC, FxRateDailySyncJob.class, "0 5 5 * * ?");
+        initializeScheduledJob(TaskCode.CREDIT_SPREAD_DAILY_SYNC, CreditSpreadDailySyncJob.class, "0 8 5 * * ?");
         initializeScheduledJob(TaskCode.STOCK_DAILY, StockDailyTask.class, "0 15 5 ? * TUE-SAT");
         initializeScheduledJob(TaskCode.STOCK_SPLIT_DAILY, StockSplitDailyTask.class, "0 45 5 * * ?");
         initializeScheduledJob(TaskCode.STOCK_QUOTE_DAILY, StockQuoteDailyTask.class, "0 15 6 ? * TUE-SAT");
         initializeScheduledJob(TaskCode.FINANCIAL_REPORT_DAILY_SYNC, FinancialReportDailySyncJob.class, "0 30 6 ? * TUE-SAT");
         initializeScheduledJob(TaskCode.STOCK_CLASSIFICATION_DAILY_SYNC, StockClassificationDailySyncJob.class, "0 0 7 ? * TUE-SAT");
+        initializeScheduledJob(TaskCode.SHORT_INTEREST_SYNC, ShortInterestSyncJob.class, "0 20 8 ? * TUE,FRI");
         initializeScheduledJob(TaskCode.MARKET_SENTIMENT_DAILY, MarketSentimentDailyTask.class, "0 30 8 * * ?");
         initializeScheduledJob(TaskCode.MARKET_EVENT_DAILY_SYNC, MarketEventDailySyncJob.class, "0 40 8 * * ?");
         initializeScheduledJob(TaskCode.EARNINGS_FORECAST_DAILY_SYNC, EarningsForecastDailySyncJob.class, "0 50 8 * * ?");
         initializeScheduledJob(TaskCode.STOCK_VALUATION_DAILY, StockValuationDailyTask.class, "0 0 10 * * ?");
+        initializeScheduledJob(TaskCode.CHIP_EVENT_DAILY_SYNC, ChipEventDailySyncJob.class, "0 25 10 ? * TUE-SAT");
+        initializeScheduledJob(TaskCode.INSTITUTIONAL_13F_SYNC, Institutional13fSyncJob.class, "0 0 9 ? * SUN");
         // 香港 08:00 在行情及富途財報之後、10:00 估值之前準備 SEC 資料。
         initializeScheduledJob(TaskCode.SEC_FINANCIAL_FACTS_DAILY_SYNC, SecFinancialFactsDailySyncJob.class, "0 0 8 * * ?");
     }

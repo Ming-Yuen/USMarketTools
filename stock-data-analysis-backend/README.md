@@ -12,7 +12,12 @@
   - `companyfacts.zip`：同步核心 `us-gaap` 與 `dei` 標籤，自 2014 年起按披露唯一鍵整份 CIK JSON 比對新增與修訂。
 - **富途 OpenD**：提供產業、概念、三大財務報表（損益表、資產負債表、現金流量表）、單季 EPS／營收預測、最新流通股數與原生估值快照，以及新股回補／週六全市場拆股對帳（`requestRehab`）。
 - **Alpha Vantage**：提供美股 USD 財報營運公司的年度共識預測（`EARNINGS_ESTIMATES`，含 FY1／FY2 EPS、營收與 30／90 日前 EPS 基準）；採查詢時按需同步、7 日 DB 快取與持久化每日配額熔斷保護（每日機會雷達等批次掃描嚴禁觸發外部 API，只能唯讀 PostgreSQL `stock_earnings_forecast` 既有快取；非 USD 財報 ADR 嚴禁寫入以防混幣污染）。
-- **FRED H.10 官方日頻匯率**：提供 16 種主要外幣對美元官方匯率（`fx_rate_daily`），統一折算為「1 單位外幣折合美元（`usd_per_unit`）」，供全市場非美元報表普通股與已核實 ADR 進行估值與財務品質換算。
+- **FRED H.10 官方日頻匯率與高收益債信用利差**：提供 16 種主要外幣對美元官方匯率（`fx_rate_daily`），以及美國高收益債信用利差 ICE BofA US High Yield Index OAS（`BAMLH0A0HYM2`，`macro_credit_spread_daily`），用於總經信用風險監控與宏觀防禦連動。
+- **籌碼與事件免費／已訂閱擴充通道（零額外付費訂閱）**：
+  - **Alpaca Options Contracts & Snapshots**：按需採集目標股與 ETF 之 ATM Straddle Implied Move、ATM IV／HV20、等距虛值偏度（Skew）、Put/Call Ratio 與主力到期日最大 Call／Put OI 牆（強制標示非方向性提示）。
+  - **SEC EDGAR XML／XBRL（Form 4、13F-HR、8-K／6-K 與本地 `companyfacts.zip`）**：遵守官方 `User-Agent` 與每秒請求限流，解析 Form 4 內部人交易（精準區分公開市場買入 `Code P` 與薪酬／`10b5-1` 例行交易）、追蹤旗艦機構 13F-HR 季度持倉，以及按需擷取 8-K／6-K `EX-99.1` 財測摘要與一次性人工確認自訂標籤映射。
+  - **Massive Starter FINRA Short Interest（`/stocks/v1/short-interest`）**：官方雙週結算做空股數與回補天數；嚴格驗證單一股類流通股數分母（多股類、未核實 ADR、ETF 安全攔截 `shortPct` 不硬除）。
+  - **多源 REST 新聞（Alpaca 主／Finnhub／Massive 備援）＋三通道輕量 AI 隔離閘道（`enhancement.ai.*`）**：與高價 `industry.valuation.ai.*` 完全隔離，預設 `provider=NONE`（零成本零報錯，前端隨時支援一鍵複製 Prompt → 貼回 JSON 驗收入庫），可選低推理成本 `OPENAI_API` 或本機唯讀隔離 `CODEX_CLI`。
 
 ## 2. 業務資料表
 
@@ -47,6 +52,15 @@
 | `treasury_par_yield_daily` | `observation_date` | 美國財政部國債殖利率資料 |
 | `market_sentiment_daily` | `market_date` | 市場情緒指標、VIX 與觀察時間 |
 | `market_event` | `event_key` | 個股財報日曆與宏觀事件 |
+| `macro_credit_spread_daily` | `(observation_date, series_id)` | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）日頻原始觀測值 |
+| `stock_options_summary` | `(figi, snapshot_date)` | 目標股／ETF 輕量期權快照（ATM Straddle Implied Move、ATM IV／HV20、偏度 Skew、Put/Call Ratio 與主力到期日最大 Call／Put OI 牆） |
+| `sec_form4_transaction` | `(accession, transaction_index)` | SEC Form 4 內部人交易明細（精準標記公開市場買進 `Code P` 與薪酬／`10b5-1` 例行交易） |
+| `sec_13f_holding` | `(manager_cik, report_period, cusip, share_type, put_call)` | 旗艦機構 SEC 13F-HR 季度聚合持倉與 FIGI 解析對應 |
+| `stock_short_interest` | `(figi, settlement_date)` | FINRA 雙週結算做空股數、已核實單一股類做空佔比與回補天數（DTC） |
+| `stock_news_event_cache` | `(figi, source_type, external_id)` | 按需同步之多源新聞與 SEC 8-K／6-K（含 `EX-99.1` 財測節錄）快取 |
+| `stock_event_ai_summary` | `(figi, input_fingerprint)` | 結構化 3 點事件摘要與官方白紙黑字財測區間快取（支援 `OPENAI_API`／`CODEX_CLI`／手動 JSON 匯入，原子認領去重） |
+| `sec_custom_tag_mapping` | `(cik, taxonomy, custom_tag, unit)` | 經前端人工點選確認生效之 SEC 自訂標籤顯式映射規則（確認後日常 0 AI 消耗） |
+| `sec_custom_financial_fact` | 披露唯一鍵（獨立隔離表） | 依已確認映射規則確定性回填之自訂 XBRL 事實（與標準 `sec_financial_fact` 隔離，僅在重建財季分母時補標準標籤缺口） |
 
 `job_config`、Quartz 表、`menu`、`search_criteria_config`、`upload_job` 等為排程、選單與匯入基礎設施表。
 
@@ -106,7 +120,13 @@
 | `GET /industry-valuation/{code}` | 查詢正式產業估值設定、支援模型及是否可產生 AI 草稿 |
 | `POST /industry-valuation/{code}/proposals` | 同步產生待確認 AI 產業倍數草稿（不自動持久化） |
 | `PUT /industry-valuation/{code}/config` | 人工確認並保存正式產業估值設定 |
-| `POST /overview/dashboard` | 市場總覽儀表板（整合指數與 ETF 觀察、大盤 `marketRegime` 橫幅、11 大板塊代表 ETF 對照、板塊量價資金流與均線廣度、最新發布日雙軌機會雷達快照及歷史訊號勝率統計） |
+| `POST /overview/dashboard` | 市場總覽儀表板（整合指數與 ETF 觀察、大盤 `marketRegime` 橫幅與高收益債信用利差 HY OAS 警戒、11 大板塊代表 ETF 對照、板塊量價資金流與均線廣度、最新發布日雙軌機會雷達快照（含高管逢低買進確認徽章）及歷史訊號勝率統計） |
+| `GET /enhancements/macro/credit-spread`、`POST /enhancements/macro/credit-spread/refresh` | 查詢或按需同步 FRED 高收益債信用利差（`BAMLH0A0HYM2`）與 20 期變動狀態 |
+| `GET /enhancements/stocks/{figi}` | 查詢單一標的完整籌碼與事件擴充總覽（AI 通道狀態、期權、Form 4、13F、做空、快取新聞／摘要與已確認 SEC 自訂標籤映射） |
+| `POST /enhancements/stocks/{figi}/options/refresh`、`insiders/refresh`、`short-interest/refresh`、`news/refresh` | 單一標的按需即時同步期權、Form 4、做空比例或新聞／8-K 快取 |
+| `POST /enhancements/stocks/{figi}/news/summarize`、`GET .../news/prompt`、`POST .../news/import` | 事件／8-K 財測三通道摘要（自動輕量 AI、零成本精簡 Prompt 匯出、手動 JSON 驗證入庫） |
+| `GET /enhancements/stocks/{figi}/custom-tags/candidates`、`GET .../prompt`、`POST .../propose`、`POST .../import`、`POST .../confirm`、`DELETE .../{mappingId}` | SEC 自訂標籤抽樣、三通道預覽提議（確認前嚴禁寫庫）、人工確認落庫確定性重算與停用 |
+| `POST /enhancements/13f/refresh` | 手動按需同步旗艦機構 13F-HR 季度持倉（支援 `maxManagers` 參數） |
 | `POST /job/enquiry`、`/job/update`、`/job/launch` | 查詢、調整或手動觸發排程任務 |
 | `GET /upload/types`、`POST /upload`、`GET /upload/{id}` | CSV 股票產業匯入與任務狀態查詢 |
 
@@ -118,16 +138,20 @@
 | --- | --- | --- |
 | `TREASURY_DAILY_SYNC` | 每日 05:00 | 美國財政部國債殖利率同步 |
 | `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率增量同步（寫入 `fx_rate_daily`） |
+| `CREDIT_SPREAD_DAILY_SYNC` | 每日 05:08 | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）增量同步（遇假日沿用最近有效觀測日不中斷估值排程） |
 | `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步 |
 | `STOCK_SPLIT_DAILY` | 每日 05:45 | 平日 Massive `/stocks/v1/splits` 增量同步；新股與週六富途 `requestRehab` 全量對帳 |
 | `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（回看最近 5 個交易日補漏） |
 | `FINANCIAL_REPORT_DAILY_SYNC` | 週二至六 06:30 | 富途三大財報同步（平日近 14 天新申報增量，週六全市場巡檢），變更時重建財季分母 |
 | `STOCK_CLASSIFICATION_DAILY_SYNC` | 週二至六 07:00 | 富途產業與概念分類同步 |
-| `SEC_FINANCIAL_FACTS_DAILY_SYNC` | 每日 08:00 | SEC `companyfacts.zip` 與 `submissions.zip` 整份 CIK 比對同步，變更時重建財季分母 |
+| `SEC_FINANCIAL_FACTS_DAILY_SYNC` | 每日 08:00 | SEC `companyfacts.zip` 與 `submissions.zip` 整份 CIK 比對同步（並確定性同步已確認自訂標籤映射公司之 `sec_custom_financial_fact`，0 AI 消耗），變更時重建財季分母 |
+| `SHORT_INTEREST_SYNC` | 週二、五 08:20 | FINRA 雙週做空比例增量同步（透過 Massive `/stocks/v1/short-interest` 批量更新） |
 | `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
-| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢及站內收盤簡報／提醒寫入（異常僅記警告日誌，絕不回滾上游估值、資金流與雷達快照） |
+| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含財報跳空止損風險）及站內收盤簡報／提醒寫入（含高收益債信用利差警戒，異常僅記警告日誌，絕不回滾上游估值、資金流與雷達快照） |
+| `CHIP_EVENT_DAILY_SYNC` | 週二至六 10:25 | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗） |
+| `INSTITUTIONAL_13F_SYNC` | 每週日 09:00 | 旗艦機構（約 15 家）SEC 13F-HR 季度持倉同步與 OpenFIGI／Massive CUSIP→FIGI 解析 |
 
 ### 舊版資料庫清理與枚舉約束說明
 

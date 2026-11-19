@@ -83,6 +83,11 @@ export function formatAlertMessage(
     criticalCount: asNum(p.criticalCount) ?? 0,
     warningCount: asNum(p.warningCount) ?? 0,
     radarTop5Count: asNum(p.radarTop5Count) ?? 0,
+    oasPct: formatDecimal(asNum(p.oasPct), 2),
+    deltaBps: formatDecimal(asNum(p.deltaBps), 1),
+    observationDate: asStr(p.observationDate),
+    impliedMovePct: formatPct(asNum(p.impliedMovePct), 1),
+    stopDistancePct: formatPct(asNum(p.stopDistancePct), 1),
   };
 
   return String(t(`notifications.alerts.${alertCode}`, {

@@ -1,4 +1,5 @@
 import { Financials, ValuationResult } from "./valuation";
+import { CreditSpreadSummary, ReportEnhancementHighlights } from "./enhancement";
 
 export type MetricStatus = "AVAILABLE" | "STALE" | "INSUFFICIENT_DATA" | "UNVERIFIED" | "NOT_APPLICABLE";
 export type AnalysisHorizon = "POSITION" | "SWING";
@@ -334,6 +335,10 @@ export interface MacroCaution {
   suggestedMarginBufferMin?: number | null;
   suggestedMarginBufferMax?: number | null;
   suggestedPositionScale?: number | null;
+  hyOasPct?: number | null;
+  hyOasDate?: string | null;
+  hyOasDeltaVsPrior20Bps?: number | null;
+  hyOasStatus?: string | null;
 }
 
 export interface TrendPullbackStarter {
@@ -466,4 +471,6 @@ export interface StockAnalysisReport {
   peerRelativeStrength?: PeerRelativeStrength | null;
   starterPositionSizing?: PositionSizing | null;
   dcf?: DcfValuation | null;
+  enhancements?: ReportEnhancementHighlights | null;
+  creditSpread?: CreditSpreadSummary | null;
 }

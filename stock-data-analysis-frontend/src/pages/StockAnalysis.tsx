@@ -14,6 +14,7 @@ import { readableReason, reasonLabel, statusLabel, TechnicalIndicatorsPanel, Val
 import { ExecutiveSummaryPanel } from "./ExecutiveSummaryPanel";
 import { FundamentalsPanel } from "./FundamentalsPanel";
 import { DcfValuationPanel } from "./DcfValuationPanel";
+import { StockEnhancementPanels } from "./StockEnhancementPanels";
 import { FinancialsPanel, ValuationHistoryPanel } from "./ValuationPanels";
 import { FutuObservationPanels } from "./FutuObservationPanels";
 import { IndustryValuationProposalPanel } from "./IndustryValuationProposalPanel";
@@ -199,6 +200,7 @@ export function StockAnalysisPage() {
         summaryResult={report.summary}
         breakoutDiagnosis={levels?.breakoutDiagnosis}
         starterPositionSizing={report.starterPositionSizing}
+        enhancements={report.enhancements}
       />
 
       {/* L2. 看圖與時機工作台（嚴格保持位於估值參考三面板之前） */}
@@ -227,6 +229,15 @@ export function StockAnalysisPage() {
         <FinancialsPanel financials={report.financials} />
         {report.futuObservations && <FutuObservationPanels observations={report.futuObservations} />}
       </>}
+
+      {/* L3.5 06_Enhancement：輕量期權、內部人 Form 4／13F、做空比例、異動／8-K 財測摘要與 SEC 自訂標籤顯式映射 */}
+      <StockEnhancementPanels
+        figi={figi}
+        asOfDate={valuationDate || report.valuationDate}
+        onValuationRebuilt={async () => {
+          await reportQuery.refetch();
+        }}
+      />
 
       <Accordion variant="outlined" disableGutters sx={{ mt: 2, borderRadius: 1, "&:before": { display: "none" } }}>
         <AccordionSummary expandIcon={<ExpandMore />}>

@@ -409,7 +409,8 @@
       "SUMMARY_WITH_SENTIMENT": "CNN Fear & Greed is {{score}}; among observed ETFs, {{up}} rose and {{down}} fell.",
       "SUMMARY_WITHOUT_SENTIMENT": "CNN sentiment data is unavailable; among observed ETFs, {{up}} rose and {{down}} fell.",
       "DATE_UNAVAILABLE": "Date unavailable",
-      "MARKET_CLOSE": "{{date}} close"
+      "MARKET_CLOSE": "{{date}} close",
+      "HY_OAS_CREDIT_STRESS": "US High Yield OAS credit spread widened abnormally to {{oasPct}}% ({{deltaBps}} bps vs prior 20-obs mean, as of {{observationDate}}). Tighten risk and position sizing."
     },
     "marketSummary": {
       "STRONG_BUT_OVERHEATED": "Risk appetite is strong, but sentiment is overheated",
@@ -473,7 +474,9 @@
       "headwindBanner": "Market is in {{regime}} headwind mode. The opportunity radar is tightened to deep-value strong-fundamental watch-only names, and new buy signals are paused.",
       "correctionBanner": "Market is in correction. Strong leader pullback starters are paused; undervalued candidates require right-side confirmation with reduced sizing.",
       "vixLabel": "VIX Close",
-      "asOfDate": "As of"
+      "asOfDate": "As of",
+      "hyOasAlertBanner": "Credit Spread Stress: US High Yield OAS (FRED BAMLH0A0HYM2) reached {{oasPct}}% ({{deltaBps}} bps vs prior 20-obs mean, as of {{date}}). Position sizing and safety margins tightened.",
+      "hyOasChip": "HY OAS {{oasPct}}% ({{date}})"
     },
     "sectorEtfs": {
       "title": "11 Sector ETFs Momentum & Relative Strength",
@@ -1134,7 +1137,8 @@
         "BELOW_SMA200_DOWNTREND": "Weekly downtrend with daily close below SMA200",
         "ANCHOR_DIVERGENCE": "Wide divergence between historical median and peer median prices",
         "MARGIN_COMPRESSION_CONSECUTIVE": "Gross or operating margin declined for two consecutive quarters",
-        "LOW_INTEREST_COVERAGE": "High leverage (Net Debt / EBITDA > 4x) with interest coverage below 2x indicates tight debt-servicing buffer"
+        "LOW_INTEREST_COVERAGE": "High leverage (Net Debt / EBITDA > 4x) with interest coverage below 2x indicates tight debt-servicing buffer",
+        "HY_OAS_CREDIT_STRESS": "US High Yield OAS credit spread (FRED BAMLH0A0HYM2) widened abnormally; tighten position sizing and safety margin"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "Trend pullback starter ({{anchor}} {{anchorPrice}} {{currency}}): {{positionFraction}} tranche, tight stop {{suggestedStop}} {{currency}}",
@@ -1560,7 +1564,9 @@
       "WATCHLIST_TREND_PULLBACK_STARTER": "Watchlist {{symbol}} triggered trend pullback starter (close {{closePrice}}, stop {{protectiveStop}}, suggested {{suggestedShares}} sh)",
       "RADAR_TOP_OPPORTUNITY": "Radar top pick {{symbol}} ({{trackType}} · close {{closePrice}})",
       "MARKET_REGIME_SHIFT": "Market regime shifted from {{previousRegime}} to {{currentRegime}} since {{previousTradeDate}}",
-      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} closing briefing ready: {{criticalCount}} critical · {{warningCount}} warning · {{radarTop5Count}} radar picks"
+      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} closing briefing ready: {{criticalCount}} critical · {{warningCount}} warning · {{radarTop5Count}} radar picks",
+      "HY_OAS_CREDIT_STRESS": "Credit Spread Alert: US High Yield OAS is at {{oasPct}}% ({{deltaBps}} bps vs prior 20-obs mean, as of {{observationDate}}). Macro defensive posture activated.",
+      "HOLDING_EARNINGS_GAP_EXCEEDS_STOP": "{{symbol}} pre-earnings ({{eventDate}}, {{daysToEarnings}}d left) options implied move ±{{impliedMovePct}} exceeds protective stop distance {{stopDistancePct}}. Watch for earnings gap-through risk."
     }
   },
   "stockScreener": {
@@ -1572,5 +1578,215 @@
     },
     "etfTechnicalChip": "ETF Technicals",
     "etfTechnicalStatus": "Technical & Flow Mode"
+  },
+  "enhancements": {
+    "title": "Positioning & Events (Options · Form 4 / 13F · Short Interest · Guidance · Custom Tags)",
+    "subtitle": "On-demand synced & cached with zero default AI cost. Auxiliary signals never overwrite quantitative valuation or protective stops.",
+    "common": {
+      "loading": "Loading positioning & event data…",
+      "operationFailed": "Operation failed. Please try again.",
+      "copiedPrompt": "Compact prompt copied to clipboard. Paste into any web AI and import the JSON response below.",
+      "promptReadyCopyManually": "Prompt generated. Please copy the text below manually into your web AI."
+    },
+    "aiChannel": {
+      "badge": "AI Channel: {{provider}}",
+      "manualAlwaysReady": "Zero-cost manual copy mode ready",
+      "providers": {
+        "NONE": "Manual Only (Zero API Cost)",
+        "OPENAI_API": "Lightweight OpenAI API (Low Reasoning)",
+        "CODEX_CLI": "Local Codex CLI (Read-Only Sandbox)",
+        "MANUAL_WEB_AI": "Manual Web AI Import"
+      }
+    },
+    "macro": {
+      "triggerHyOasStress": "High Yield Credit Spread (HY OAS) in stress zone (≥ 5.0%)",
+      "triggerHyOasWidening": "High Yield Credit Spread (HY OAS) rapid widening (≥ +50 bps)"
+    },
+    "tabs": {
+      "options": "Options",
+      "insiders13f": "Form 4 / 13F",
+      "shortInterest": "Short Interest",
+      "newsGuidance": "News & 8-K Guidance",
+      "customTags": "SEC Custom Tag Mapping"
+    },
+    "status": {
+      "AVAILABLE": "Available",
+      "INSUFFICIENT_DATA": "Insufficient Data",
+      "NOT_APPLICABLE": "Not Applicable"
+    },
+    "reasons": {
+      "OPTIONS_NOT_SYNCED": "Options snapshot not synced yet. Click Refresh Options to fetch on demand.",
+      "NO_ACTIVE_OPTIONS_CHAIN": "No active options chain found for this security.",
+      "NO_STRADDLE_EXPIRY": "No eligible near-term expiration found for ATM straddle calculation.",
+      "EARNINGS_COVERING_EXPIRY_MISSING": "No expiration covers the next earnings date; using nearest expiration as reference.",
+      "ATM_TWO_SIDED_QUOTE_MISSING": "ATM two-sided bid/ask quotes missing; implied move cannot be computed reliably.",
+      "SPOT_PRICE_UNAVAILABLE": "Latest spot price unavailable to align ATM strike.",
+      "OPTIONS_METRICS_INCOMPLETE": "Options chain quotes or open interest fields are incomplete.",
+      "ALPACA_API_CREDENTIALS_REQUIRED": "Alpaca API credentials are not configured.",
+      "ETF_OPTIONS_SUMMARY_ONLY": "ETFs do not have corporate earnings dates; showing IV, skew, Put/Call, and primary OI walls only.",
+      "EARNINGS_STRADDLE": "Nearest expiration covering earnings date (ATM Straddle)",
+      "NEAREST_EXPIRY_REFERENCE": "Nearest expiration ATM Straddle reference (non-earnings)",
+      "NOT_APPLICABLE_FOR_ETF": "Not applicable for ETFs / ETPs.",
+      "NO_FORM4_FILINGS_SYNCED": "No SEC Form 4 filings synced yet. Click Refresh Form 4 to fetch on demand.",
+      "SEC_CIK_MISSING": "Verified SEC CIK missing for this issuer.",
+      "NO_13F_HOLDINGS_MATCHED": "No matched holdings found in recent 13F-HR filings of tracked flagship managers.",
+      "SHORT_INTEREST_NOT_SYNCED": "FINRA short interest not synced yet. Click Refresh Short Interest to fetch.",
+      "MASSIVE_API_KEY_REQUIRED": "Massive API key is not configured.",
+      "ADR_ADS_FLOAT_UNVERIFIED": "ADR ADS share ratio unverified; Short % safely blocked (raw short shares & days-to-cover still shown).",
+      "MULTI_CLASS_SHARE_DENOMINATOR_MISMATCH": "Multi-class share denominator unverified; Short % safely blocked (raw short shares & DTC still shown).",
+      "OUTSTANDING_SHARES_UNAVAILABLE": "Verified shares outstanding unavailable for Short % denominator.",
+      "ETF_INFO_ONLY": "ETF create/redeem structure; raw short shares and days-to-cover shown for reference only.",
+      "STOCK_OR_DATE_MISSING": "Security or reference date missing.",
+      "ATM_STRIKE_PAIR_MISSING": "No ATM strike with both Call and Put contracts found; implied move unavailable.",
+      "INTRADAY_SPOT_PRICE_UNAVAILABLE": "Live intraday stock price unavailable for ATM alignment; refusing to mix prior close with live options."
+    },
+    "options": {
+      "title": "Lightweight Options Positioning",
+      "refreshBtn": "Refresh Options",
+      "refreshed": "Options snapshot refreshed.",
+      "oiDisclaimer": "Non-directional notice: Every open interest (OI) contract has both a buyer and a seller. Call/Put OI walls below indicate near-term positioning concentration / support-resistance reference only — never interpret Call OI as bullish or Put OI as bearish.",
+      "earningsGapWarning": "Earnings Gap Risk: {{days}} days to earnings — ATM implied move (±{{impliedMove}}) exceeds protective stop distance ({{stopDist}}). Watch for gap-through stop risk.",
+      "earningsGapChip": "Earnings Gap Risk (Implied ±{{impliedMove}} > Stop)",
+      "unavailable": "Options summary unavailable ({{status}}): {{reason}}",
+      "impliedMoveLabel": "ATM Straddle Implied Move",
+      "ivHvLabel": "ATM IV / 20D Historical Vol",
+      "ivToHvRatio": "IV / HV20 Ratio: {{value}}",
+      "skewAndPcLabel": "Equidistant OTM Skew (Put IV − Call IV)",
+      "putCallOi": "P/C OI: {{value}}",
+      "putCallVol": "P/C Vol: {{value}}",
+      "oiWallsLabel": "Primary Expiry OI Walls (Non-Directional)",
+      "maxCallOiWall": "Max Call OI Wall: ${{strike}} ({{oi}} contracts)",
+      "maxPutOiWall": "Max Put OI Wall: ${{strike}} ({{oi}} contracts)"
+    },
+    "insiders": {
+      "title": "SEC Form 4 Insider Transactions (Zero AI Cost)",
+      "refreshBtn": "Refresh Form 4",
+      "refreshed": "SEC Form 4 insider filings refreshed.",
+      "undervaluedConfirmBadge": "Insider Dip-Buy Confirmed",
+      "summaryLine": "60D Open-Market Buys (Code P): {{codePCount}} trades · {{insiders}} officers/directors · Total {{valueUsd}} | Routine / Award / 10b5-1 trades: {{routineCount}} (not treated as bearish).",
+      "colDate": "Trade Date",
+      "colOwner": "Reporting Owner",
+      "colCode": "Code",
+      "colShares": "Shares",
+      "colPrice": "Price",
+      "colValue": "Value",
+      "colTag": "Classification",
+      "codePBuyTag": "Open-Market Buy (P)",
+      "plan10b51Tag": "10b5-1 Plan",
+      "routineTag": "Routine / Award"
+    },
+    "inst13f": {
+      "title": "SEC 13F-HR Flagship Institutional Holdings",
+      "summaryLine": "Latest Period {{period}} · Held by {{holding}} tracked managers (New/Add {{added}} · Reduce/Not Listed {{reduced}})",
+      "colManager": "Manager",
+      "colPeriod": "Report Period",
+      "colAction": "QoQ Action",
+      "colShares": "Shares",
+      "colChange": "QoQ Change",
+      "colValueUsd": "Value (USD)",
+      "actions": {
+        "NEW": "New",
+        "ADD": "Added",
+        "REDUCE": "Reduced",
+        "UNCHANGED": "Unchanged",
+        "HOLDING": "Holding",
+        "NOT_LISTED": "Not Listed"
+      }
+    },
+    "shortInterest": {
+      "title": "FINRA Biweekly Short Interest & Days to Cover",
+      "refreshBtn": "Refresh Short Interest",
+      "refreshed": "FINRA short interest refreshed.",
+      "shortPctLabel": "Short % of Shares Outstanding",
+      "shortSharesLabel": "Short Interest Shares",
+      "biweeklyChange": "Biweekly change: {{value}}",
+      "dtcLabel": "Days to Cover (Source / 20D Vol)",
+      "dtcCaption": "Reported DTC / 20D Avg Vol DTC",
+      "settlementLabel": "Settlement Date",
+      "signals": {
+        "NORMAL": "Normal Short Level",
+        "ELEVATED_SHORT_INTEREST": "Elevated Short Interest (≥ 15%)",
+        "SHORT_TRAP_WARNING": "Short Trap Warning (High Short + Weakening Fundamentals)",
+        "SHORT_SQUEEZE_POTENTIAL": "Short Squeeze Potential (High Short + Bullish Breakout)",
+        "ETF_INFO_ONLY": "ETF Reference Info"
+      }
+    },
+    "news": {
+      "title": "News & SEC 8-K / 6-K Official Guidance Summary",
+      "refreshBtn": "Refresh News & 8-K",
+      "refreshed": "News & SEC 8-K / 6-K cache updated.",
+      "aiSummarizeBtn": "Generate 3-Bullet AI Summary",
+      "summarized": "Structured event summary generated and cached.",
+      "copyManualPromptBtn": "Copy Compact Prompt (Zero API Cost)",
+      "advisoryDisclaimer": "Advisory context and official printed guidance only. News summaries never overwrite quantitative valuation, reference bands, or protective stops.",
+      "manualBoxTitle": "Zero-API-Cost Manual Mode: Copy prompt to web AI and paste JSON back to validate & save",
+      "pasteJsonLabel": "Paste JSON response from web AI (eventNature / bulletPoints / guidance)",
+      "importJsonBtn": "Validate & Import Summary",
+      "manualImported": "Manual JSON summary validated and saved.",
+      "guidanceTitle": "Official 8-K / 6-K Guidance ({{period}} · {{action}})",
+      "guidanceNumbers": "Revenue: {{revLow}} – {{revHigh}} {{currency}} {{scale}} | EPS: {{epsLow}} – {{epsHigh}}",
+      "cachedListTitle": "Recent Cached News & Filings ({{count}})",
+      "emptyCache": "No cached events yet. Click Refresh News & 8-K to fetch on demand.",
+      "exhibit991Link": "Open EX-99.1 Filing",
+      "natures": {
+        "POSITIVE_CATALYST": "Positive Catalyst",
+        "FUNDAMENTAL_DETERIORATION": "Fundamental Deterioration",
+        "ONE_OFF_SHOCK": "One-Off Shock",
+        "NEUTRAL_NOISE": "Neutral Noise",
+        "UNCLEAR": "Unclear"
+      },
+      "statusNoticeInProgress": "Event summary is currently in progress. Please refresh shortly.",
+      "summaryStatuses": {
+        "COMPLETED": "Completed",
+        "IN_PROGRESS": "In Progress",
+        "TIMED_OUT": "Timed Out (not auto-retried to avoid duplicate billing)",
+        "FAILED": "Failed"
+      }
+    },
+    "customTags": {
+      "isolationWarning": "Safety Isolation Guard: AI or manual import produces a preview ONLY. Nothing is written to the database or affects financial periods/valuation until you explicitly check items and click Confirm & Rebuild. Once confirmed, daily calculations run deterministically at 0 AI cost.",
+      "sampleBtn": "Sample Local XBRL Custom Tags",
+      "sampledCount": "Sampled {{count}} unmapped tags from local SEC XBRL / companyfacts.",
+      "aiProposeBtn": "AI Propose Mappings (Preview Only)",
+      "copyManualPromptBtn": "Copy Mapping Prompt (Zero API Cost)",
+      "manualBoxTitle": "Zero-API-Cost Manual Mode: Copy sampled tags prompt to web AI and paste JSON back for preview",
+      "pasteJsonLabel": "Paste mapping JSON from web AI (proposals array)",
+      "importPreviewBtn": "Parse Preview Only (No DB Write)",
+      "previewReadyNotSaved": "Preview generated (NOT saved to DB yet — review carefully before confirming).",
+      "previewTitle": "Pending Human Confirmation Preview ({{count}} items — Not Saved)",
+      "previewEmpty": "No valid mapping proposals in preview.",
+      "selectAtLeastOne": "Select at least one proposal before confirming.",
+      "confirmSaveBtn": "Confirm, Save & Deterministically Rebuild",
+      "confirmSuccess": "Confirmed {{mappings}} mappings, deterministically backfilled {{facts}} facts, and rebuilt {{stocks}} securities.",
+      "discardPreviewBtn": "Discard Preview",
+      "candidatesTitle": "Sampled Candidate Custom Tags ({{count}})",
+      "confirmedTitle": "Confirmed Explicit Mappings ({{count}} — 0 Daily AI Cost)",
+      "noConfirmedMappings": "No confirmed custom tag mappings for this company yet.",
+      "disableBtn": "Disable",
+      "disabledSuccess": "Mapping disabled and affected financial periods rebuilt.",
+      "colSourceTag": "Source XBRL Tag",
+      "colUnit": "Unit",
+      "colLatestVal": "Latest Value",
+      "colPeriod": "Period Type",
+      "colConcept": "Target Standard Concept",
+      "colSign": "Sign",
+      "colRationale": "Rationale",
+      "colStatus": "Status",
+      "colAction": "Action"
+    },
+    "errors": {
+      "AI_AUTOMATED_CHANNEL_DISABLED_USE_MANUAL_PROMPT": "Automated AI channel is disabled. Use the zero-API-cost manual prompt mode.",
+      "AI_CHANNEL_BUSY_RETRY_LATER": "Local AI channel is busy (single-concurrency guard). Please retry shortly.",
+      "NEWS_INPUT_FINGERPRINT_STALE_REFRESH_PROMPT": "Cached news/filings changed since prompt generation. Copy a fresh prompt and re-import.",
+      "SUMMARY_GUIDANCE_QUOTE_NOT_IN_EXHIBIT": "Guidance quoteExcerpt could not be verified verbatim against official EX-99.1 text.",
+      "SUMMARY_GUIDANCE_FIELD_REQUIRED": "JSON must explicitly include the guidance field (use null when absent).",
+      "MANUAL_JSON_EMPTY": "Pasted JSON must not be empty.",
+      "MANUAL_JSON_SYNTAX_INVALID": "Invalid JSON syntax. Please check and retry.",
+      "CUSTOM_TAG_PROPOSAL_MAX_ITEMS_EXCEEDED": "Proposal payload must not exceed 20 items.",
+      "CUSTOM_TAG_SIGN_INVALID": "signMultiplier must be explicitly 1 or -1.",
+      "STOCK_NOT_FOUND": "Requested security was not found.",
+      "NEWS_INPUT_FINGERPRINT_REQUIRED": "Missing prompt input fingerprint. Copy a fresh prompt before importing JSON.",
+      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "Structured guidance numbers do not match the verbatim official quote; rejected safely."
+    }
   }
 }

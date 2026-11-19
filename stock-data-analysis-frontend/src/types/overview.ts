@@ -99,6 +99,11 @@ export interface MarketRegimeBanner {
   headwindActive: boolean;
   correctionActive: boolean;
   asOfDate: string | null;
+  hyOasPct?: number | null;
+  hyOasDate?: string | null;
+  hyOasDeltaVsPrior20Bps?: number | null;
+  hyOasStatus?: string | null;
+  hyOasAlertActive?: boolean;
 }
 
 export interface SectorEtfRow {
@@ -182,6 +187,7 @@ export interface OpportunityRadarItem {
   daysToNextEarnings: number | null;
   sectorCmf20d: number | null;
   sectorFlowState: string | null;
+  insiderBuyUndervaluedConfirm?: boolean;
 }
 
 export interface OpportunityRadarSummary {

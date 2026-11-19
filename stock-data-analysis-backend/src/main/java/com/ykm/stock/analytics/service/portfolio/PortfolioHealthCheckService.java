@@ -46,6 +46,7 @@ import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
+import com.ykm.stock.analytics.model.entity.StockOptionsSummary;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
@@ -59,6 +60,7 @@ import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEarningsForecastRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
+import com.ykm.stock.analytics.repository.jpa.StockOptionsSummaryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository.QuoteBarRow;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
@@ -129,6 +131,7 @@ public class PortfolioHealthCheckService {
     public static final String ALERT_HOLDING_SUSPECTED_SHAKEOUT = "HOLDING_SUSPECTED_SHAKEOUT";
     public static final String ALERT_HOLDING_BREACH_OBSERVING = "HOLDING_BREACH_OBSERVING";
     public static final String ALERT_HOLDING_EARNINGS_COUNTDOWN = "HOLDING_EARNINGS_COUNTDOWN";
+    public static final String ALERT_HOLDING_EARNINGS_GAP_EXCEEDS_STOP = "HOLDING_EARNINGS_GAP_EXCEEDS_STOP";
     public static final String ALERT_HOLDING_FUNDAMENTAL_WEAKENING = "HOLDING_FUNDAMENTAL_WEAKENING";
     public static final String ALERT_HOLDING_VALUE_TRAP = "HOLDING_VALUE_TRAP";
     public static final String ALERT_HOLDING_OVERVALUED_PROFIT_TAKING = "HOLDING_OVERVALUED_PROFIT_TAKING";
@@ -169,6 +172,8 @@ public class PortfolioHealthCheckService {
     private final TransactionTemplate transactions;
     private final FxRateService fxRateService;
     private final AdrShareRatioRepository adrShareRatios;
+    @Autowired(required = false)
+    private StockOptionsSummaryRepository optionsSummaryRepository;
 
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
@@ -853,6 +858,44 @@ public class PortfolioHealthCheckService {
 
         List<TradePlanDto> planList = tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
                 ? tradePlans.value().plans() : List.of();
+
+        // 06_Enhancement 2.1：若距財報 <= 14 天且已快取之跨式 Implied Move 大於保護止損距離，提示財報跳空打穿止損風險（0 外部 API）
+        if (!isEtf && optionsSummaryRepository != null && daysToEarnings != null && daysToEarnings >= 0 && daysToEarnings <= 14
+                && nextEarningsDate != null && evalPrice != null && evalPrice.signum() > 0) {
+            BigDecimal refStop = (alignedPriorStop != null && alignedPriorStop.verified() && alignedPriorStop.rawAdjustedPrice() != null)
+                    ? alignedPriorStop.rawAdjustedPrice()
+                    : planList.stream()
+                            .filter(p -> p != null && p.stop() != null && p.stop().protectivePrice() != null
+                                    && p.stop().protectivePrice().signum() > 0)
+                            .map(p -> p.stop().protectivePrice())
+                            .findFirst()
+                            .orElse(null);
+            if (refStop != null && refStop.signum() > 0 && refStop.compareTo(evalPrice) < 0) {
+                Optional<StockOptionsSummary> optFound = optionsSummaryRepository
+                        .findTopByFigiAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(figi, targetDate);
+                if (optFound.isPresent() && optFound.get().getImpliedMovePct() != null
+                        && optFound.get().getImpliedMovePct().signum() > 0) {
+                    StockOptionsSummary opt = optFound.get();
+                    boolean matchesUpcomingEarnings = nextEarningsDate.equals(opt.getNextEarningsDate())
+                            && opt.getStraddleExpiration() != null && !opt.getStraddleExpiration().isBefore(nextEarningsDate)
+                            && opt.getSnapshotDate() != null && !opt.getSnapshotDate().isBefore(targetDate.minusDays(7));
+                    BigDecimal stopDist = evalPrice.subtract(refStop, MC).divide(evalPrice, 6, RoundingMode.HALF_UP);
+                    if (matchesUpcomingEarnings && opt.getImpliedMovePct().compareTo(stopDist) > 0) {
+                        Map<String, Object> gapPayload = new LinkedHashMap<>();
+                        gapPayload.put("impliedMovePct", opt.getImpliedMovePct().setScale(4, RoundingMode.HALF_UP));
+                        gapPayload.put("stopDistancePct", stopDist.setScale(4, RoundingMode.HALF_UP));
+                        gapPayload.put("daysToEarnings", daysToEarnings);
+                        gapPayload.put("eventDate", nextEarningsDate.toString());
+                        alerts.add(new PortfolioAlertDto(
+                                InAppNotification.SEVERITY_WARNING,
+                                InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                                ALERT_HOLDING_EARNINGS_GAP_EXCEEDS_STOP,
+                                figi, symbol, stockName, gapPayload
+                        ));
+                    }
+                }
+            }
+        }
 
         if (priorStopBreached) {
             actualPriceStopTriggered = true;

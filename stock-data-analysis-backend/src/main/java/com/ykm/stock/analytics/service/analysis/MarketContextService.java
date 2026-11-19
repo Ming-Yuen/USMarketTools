@@ -3,6 +3,7 @@ package com.ykm.stock.analytics.service.analysis;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.*;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily.SentimentMetric;
@@ -13,7 +14,9 @@ import com.ykm.stock.analytics.repository.jpa.MarketSentimentDailyRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.TreasuryParYieldDailyRepository;
 import com.ykm.stock.analytics.service.analysis.calculator.*;
-import lombok.RequiredArgsConstructor;
+import com.ykm.stock.analytics.service.enhancement.MacroCreditSpreadService;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,7 +27,6 @@ import java.util.*;
 import java.util.function.Function;
 
 @Service
-@RequiredArgsConstructor
 public class MarketContextService {
     private static final ZoneId NY = ZoneId.of("America/New_York");
     private static final MathContext MC = MathContext.DECIMAL128;
@@ -39,6 +41,69 @@ public class MarketContextService {
     private final StockRepository stocks;
     private final QuoteNormalizationService quotes;
     private final MarketStatusService calendar;
+    private final MacroCreditSpreadService creditSpreadService;
+
+    public MarketContextService(
+            MomentumCalculator momentumCalculator,
+            VolumeAnalysisCalculator volumeCalculator,
+            RelativeStrengthCalculator relativeStrengthCalculator,
+            DrawdownCalculator drawdownCalculator,
+            MarketRegimeCalculator regimeCalculator,
+            MarketSentimentDailyRepository sentiments,
+            TreasuryParYieldDailyRepository treasuries,
+            MarketEventRepository events,
+            StockRepository stocks,
+            QuoteNormalizationService quotes,
+            MarketStatusService calendar) {
+        this(momentumCalculator, volumeCalculator, relativeStrengthCalculator, drawdownCalculator,
+                regimeCalculator, sentiments, treasuries, events, stocks, quotes, calendar, (MacroCreditSpreadService) null);
+    }
+
+    @Autowired
+    public MarketContextService(
+            MomentumCalculator momentumCalculator,
+            VolumeAnalysisCalculator volumeCalculator,
+            RelativeStrengthCalculator relativeStrengthCalculator,
+            DrawdownCalculator drawdownCalculator,
+            MarketRegimeCalculator regimeCalculator,
+            MarketSentimentDailyRepository sentiments,
+            TreasuryParYieldDailyRepository treasuries,
+            MarketEventRepository events,
+            StockRepository stocks,
+            QuoteNormalizationService quotes,
+            MarketStatusService calendar,
+            ObjectProvider<MacroCreditSpreadService> creditSpreadProvider) {
+        this(momentumCalculator, volumeCalculator, relativeStrengthCalculator, drawdownCalculator,
+                regimeCalculator, sentiments, treasuries, events, stocks, quotes, calendar,
+                creditSpreadProvider == null ? null : creditSpreadProvider.getIfAvailable());
+    }
+
+    public MarketContextService(
+            MomentumCalculator momentumCalculator,
+            VolumeAnalysisCalculator volumeCalculator,
+            RelativeStrengthCalculator relativeStrengthCalculator,
+            DrawdownCalculator drawdownCalculator,
+            MarketRegimeCalculator regimeCalculator,
+            MarketSentimentDailyRepository sentiments,
+            TreasuryParYieldDailyRepository treasuries,
+            MarketEventRepository events,
+            StockRepository stocks,
+            QuoteNormalizationService quotes,
+            MarketStatusService calendar,
+            MacroCreditSpreadService creditSpreadService) {
+        this.momentumCalculator = momentumCalculator;
+        this.volumeCalculator = volumeCalculator;
+        this.relativeStrengthCalculator = relativeStrengthCalculator;
+        this.drawdownCalculator = drawdownCalculator;
+        this.regimeCalculator = regimeCalculator;
+        this.sentiments = sentiments;
+        this.treasuries = treasuries;
+        this.events = events;
+        this.stocks = stocks;
+        this.quotes = quotes;
+        this.calendar = calendar;
+        this.creditSpreadService = creditSpreadService;
+    }
 
     /** 單一交易日之 10Y 美債殖利率觀測（百分比數值與實際觀測日），供五年行情缺口時 DCF 獨立讀取。 */
     public record TreasuryRateObservation(BigDecimal tenYearPct, LocalDate observationDate) {}
@@ -67,7 +132,7 @@ public class MarketContextService {
         return null;
     }
 
-    /** 預載之共用大盤背景（SPY/QQQ 基準序列、情緒、利率與宏觀事件），供兩階段雷達與儀表板零重複 DB 查詢共用。 */
+    /** 預載之共用大盤背景（SPY/QQQ 基準序列、情緒、利率、高收益債信用利差與宏觀事件），供兩階段雷達與儀表板零重複 DB 查詢共用。 */
     public record PreloadedMarketData(
             LocalDate through,
             Instant observationCutoff,
@@ -76,8 +141,21 @@ public class MarketContextService {
             Map<String, List<Observation>> inputs,
             List<MarketEvent> marketWideEvents,
             MetricResult<MarketSnapshotDto> marketSnapshot,
-            MetricResult<BigDecimal> vixClose
+            MetricResult<BigDecimal> vixClose,
+            CreditSpreadSummaryDto creditSpread
     ) {
+        public PreloadedMarketData(
+                LocalDate through,
+                Instant observationCutoff,
+                MetricResult<NormalizedPriceSeriesDto> spy,
+                MetricResult<NormalizedPriceSeriesDto> qqq,
+                Map<String, List<Observation>> inputs,
+                List<MarketEvent> marketWideEvents,
+                MetricResult<MarketSnapshotDto> marketSnapshot,
+                MetricResult<BigDecimal> vixClose) {
+            this(through, observationCutoff, spy, qqq, inputs, marketWideEvents, marketSnapshot, vixClose, null);
+        }
+
         /** 取得預載視窗內截至 through 之最新一筆 10Y 美債殖利率（百分比數值，如 4.35）；缺值時回傳 NULL。 */
         public BigDecimal latestTreasury10y() {
             if (inputs == null) {
@@ -91,7 +169,7 @@ public class MarketContextService {
         }
     }
 
-    /** 一次載入 SPY/QQQ 272 個交易日基準日線（與單股 MarketRegime 視窗完全一致，避免 273+ 日舊缺口誤殺）、近 400 日情緒與美債殖利率及宏觀事件。 */
+    /** 一次載入 SPY/QQQ 272 個交易日基準日線（與單股 MarketRegime 視窗完全一致，避免 273+ 日舊缺口誤殺）、近 400 日情緒與美債殖利率、高收益債信用利差及宏觀事件。 */
     @Transactional(readOnly = true)
     public PreloadedMarketData preloadMarketData(LocalDate through, Instant observationCutoff) {
         Instant cutoff = calendar.getSessionCloseAt(through);
@@ -107,7 +185,8 @@ public class MarketContextService {
         MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", baseContext, inputs, 1);
         MetricResult<MarketSnapshotDto> snapshot = market(baseContext, spy, qqq, inputs, vixClose);
         List<MarketEvent> macroEvents = events.findVisibleMarketWide(through.minusDays(10), through.plusDays(20), obsCutoff);
-        return new PreloadedMarketData(through, obsCutoff, spy, qqq, inputs, macroEvents, snapshot, vixClose);
+        CreditSpreadSummaryDto creditSpread = creditSpreadService == null ? null : creditSpreadService.evaluateAt(through, obsCutoff);
+        return new PreloadedMarketData(through, obsCutoff, spy, qqq, inputs, macroEvents, snapshot, vixClose, creditSpread);
     }
 
     /** 供兩階段雷達批次精算呼叫：完全複用預載大盤資料並嚴守與單股 evaluate(...) 一致之 272 日基準對齊視窗，零額外 DB 查詢。 */
@@ -137,7 +216,7 @@ public class MarketContextService {
         }
         knownEvents.sort(Comparator.comparing(MarketEvent::getEventDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(MarketEvent::getOccurrenceAt, Comparator.nullsLast(Comparator.naturalOrder())));
-        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents);
+        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents, preloaded.creditSpread());
     }
 
     /** 直接讀已入庫的行情、情緒、利率及已知日程；不存在原始檔案或證據再驗證步驟。 */
@@ -173,7 +252,8 @@ public class MarketContextService {
                 ? events.findVisibleMarketWide(anchorDay.minusDays(10), anchorDay.plusDays(20), context.observationCutoff())
                 : events.findVisible(context.figi(), anchorDay.minusDays(10), anchorDay.plusDays(20), context.observationCutoff());
         List<MarketEvent> effectivePastEarnings = skipCompanyEarningsLock ? List.of() : pastEarnings;
-        return evaluateCore(context, stockPrice, structures, effectivePastEarnings, spy, qqq, inputs, knownEvents);
+        CreditSpreadSummaryDto creditSpread = creditSpreadService == null ? null : creditSpreadService.evaluateAt(through, context.observationCutoff());
+        return evaluateCore(context, stockPrice, structures, effectivePastEarnings, spy, qqq, inputs, knownEvents, creditSpread);
     }
 
     private MetricResult<MarketContextDto> evaluateCore(
@@ -184,7 +264,8 @@ public class MarketContextService {
             MetricResult<NormalizedPriceSeriesDto> spy,
             MetricResult<NormalizedPriceSeriesDto> qqq,
             Map<String, List<Observation>> inputs,
-            List<MarketEvent> knownEvents) {
+            List<MarketEvent> knownEvents,
+            CreditSpreadSummaryDto creditSpread) {
         List<NormalizedBarDto> bars = stockPrice.bars();
         LocalDate through = bars.getLast().sessionDate();
         MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", context, inputs, 1);
@@ -215,7 +296,7 @@ public class MarketContextService {
         for (String source : List.of("TREASURY_10Y", "TREASURY_2Y", "VIX_CLOSE", "CNN_FG"))
             freshness.put(source, freshness(source, context, inputs, source.startsWith("TREASURY") ? 3 : 1));
         MarketContextDto result = new MarketContextDto(summary, relative, market, risks, constraint(context, market, knownEvents, risks),
-                List.copyOf(reasons), List.of(), momentum, volume, drawdown, treasury, freshness, vixClose);
+                List.copyOf(reasons), List.of(), momentum, volume, drawdown, treasury, freshness, vixClose, creditSpread);
         return MetricResult.available(result);
     }
 

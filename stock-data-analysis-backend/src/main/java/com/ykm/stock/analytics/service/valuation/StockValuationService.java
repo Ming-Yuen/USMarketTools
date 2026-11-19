@@ -44,6 +44,7 @@ import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.calculator.StockSplitCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
+import com.ykm.stock.analytics.service.enhancement.SecCustomTagMappingService;
 import com.ykm.stock.analytics.service.market.FxRateService;
 import com.ykm.stock.analytics.service.market.FxRateService.FxRateLookup;
 import com.ykm.stock.analytics.service.market.FxRateService.FxResolution;
@@ -57,6 +58,7 @@ import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.Per
 import com.ykm.stock.analytics.service.valuation.SecFinancialFactsCalculator.PeriodWindow;
 import jakarta.persistence.EntityManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -138,6 +140,8 @@ public class StockValuationService {
     private final EntityManager entityManager;
     private final FxRateService fxRateService;
     private final AdrShareRatioRepository adrShareRatios;
+    @Autowired(required = false)
+    private ObjectProvider<SecCustomTagMappingService> customTagMappingServiceProvider;
 
     private final FinancialReportValuationCalculator calculator = new FinancialReportValuationCalculator();
     private final SecFinancialFactsCalculator secCalculator = new SecFinancialFactsCalculator();
@@ -617,7 +621,22 @@ public class StockValuationService {
             }
             Map<String, List<SecFinancialFact>> factsByCik = ciks.isEmpty() ? Map.of()
                     : secFacts.findPeriodRebuildFacts(ciks, SecFinancialFactsCalculator.INPUT_TAGS, PERIOD_REBUILD_START).stream()
-                            .collect(Collectors.groupingBy(SecFinancialFact::getCik));
+                            .collect(Collectors.groupingBy(SecFinancialFact::getCik, LinkedHashMap::new, Collectors.toCollection(ArrayList::new)));
+            // 06_Enhancement 2.4B：僅於該期間缺少標準 us-gaap 標籤時，確定性注入經人工確認落庫之自訂標籤補洞事實（0 AI 消耗，絕不覆寫標準事實）。
+            SecCustomTagMappingService customTagService = customTagMappingServiceProvider == null
+                    ? null : customTagMappingServiceProvider.getIfAvailable();
+            if (customTagService != null && !ciks.isEmpty()) {
+                Map<String, List<SecFinancialFact>> gapFillByCik = customTagService.buildConfirmedGapFillFactsByCik(
+                        ciks, factsByCik, PERIOD_REBUILD_START);
+                if (!gapFillByCik.isEmpty()) {
+                    if (factsByCik.isEmpty()) {
+                        factsByCik = new LinkedHashMap<>();
+                    }
+                    for (Map.Entry<String, List<SecFinancialFact>> entry : gapFillByCik.entrySet()) {
+                        factsByCik.computeIfAbsent(entry.getKey(), k -> new ArrayList<>()).addAll(entry.getValue());
+                    }
+                }
+            }
             Set<String> multiSecurityIssuers = ciks.isEmpty() ? Set.of()
                     : stocks.findMultiSecurityIssuers(ciks, ActiveStatus.ACTIVE);
             Map<String, StockShareObservation> latestObsByFigi = shareObservations.findLatestAt(activeFigis, calculatedAt).stream()

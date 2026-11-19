@@ -283,6 +283,15 @@ const HomeDashboard: React.FC = () => {
           {t("dashboard.marketRegime.correctionBanner")}
         </Alert>
       )}
+      {marketRegime?.hyOasAlertActive && (
+        <Alert severity="warning" variant="filled" data-testid="hy-oas-credit-stress-banner">
+          {t("dashboard.marketRegime.hyOasAlertBanner", {
+            oasPct: formatDec(marketRegime.hyOasPct, 2),
+            deltaBps: formatDec(marketRegime.hyOasDeltaVsPrior20Bps, 1),
+            date: marketRegime.hyOasDate ?? "—",
+          })}
+        </Alert>
+      )}
 
       {/* Batch 04：置頂持倉與自選股今日體檢警示卡 */}
       <PortfolioHealthCard />
@@ -313,6 +322,17 @@ const HomeDashboard: React.FC = () => {
                   <Typography sx={{ fontSize: 12, color: "text.secondary" }}>
                     {t("dashboard.marketRegime.vixLabel")} {formatDec(marketRegime.vixClose, 2)}
                   </Typography>
+                )}
+                {marketRegime.hyOasPct != null && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={marketRegime.hyOasAlertActive ? "error" : marketRegime.hyOasStatus === "ELEVATED" ? "warning" : "default"}
+                    label={t("dashboard.marketRegime.hyOasChip", {
+                      oasPct: formatDec(marketRegime.hyOasPct, 2),
+                      date: marketRegime.hyOasDate ?? "—",
+                    })}
+                  />
                 )}
               </Box>
             )}
@@ -495,6 +515,14 @@ const HomeDashboard: React.FC = () => {
                         <Typography variant="caption" display="block" color="text.secondary" noWrap sx={{ maxWidth: 160 }}>
                           {row.stockName}
                         </Typography>
+                      )}
+                      {row.insiderBuyUndervaluedConfirm && (
+                        <Chip
+                          size="small"
+                          color="success"
+                          label={t("enhancements.insiders.undervaluedConfirmBadge")}
+                          sx={{ mt: 0.4, height: 20, fontSize: 11 }}
+                        />
                       )}
                     </TableCell>
                     <TableCell>

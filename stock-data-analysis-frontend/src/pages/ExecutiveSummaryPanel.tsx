@@ -2,6 +2,7 @@ import React from "react";
 import { Alert, Box, Chip, Divider, Grid, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { BreakoutDiagnosis, InvestmentSummary, MacroCaution, MetricResult, PositionSizing, SummaryFlag, WatchItem } from "../services/types/dto/analysis";
+import { ReportEnhancementHighlights } from "../services/types/dto/enhancement";
 import { ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, metricLabel, readableReason, readableState, reasonLabel, statusLabel } from "./AnalysisPanels";
 import { PositionSizingBlock } from "../components/PositionSizingBlock";
@@ -51,6 +52,7 @@ const RISK_DEFAULTS: Record<string, string> = {
   EARNINGS_IMMINENT_BLOCK: "財報或重大事件臨近，新入場條件受限",
   MARKET_REGIME_HEADWIND: "大盤市況處於逆風狀態，左側接刀風險偏高",
   MACRO_VOLATILITY_OR_RATE_STRESS: "市場波動率（VIX）或 10Y 美債近 20 期變動處於警戒水位，宜預留額外安全邊際並縮減倉位",
+  HY_OAS_CREDIT_STRESS: "美國高收益債信用利差（FRED BAMLH0A0HYM2）異常擴大，債市風險定價升溫，宜收緊倉位與安全邊際",
   SUPPORT_HIGH_RISK_BREAKDOWN: "關鍵支撐已觸發高機率真破位診斷，須嚴格執行止損紀律",
   PROTECTIVE_STOP_OR_RECLAIM_PENDING: "股價已跌穿保護止損或低於入場區，須先收復止穩",
   FORWARD_EARNINGS_CONTRACTION: "市場共識預期年度 EPS 較當期 TTM 顯著下滑或轉虧（提防價值陷阱，共識口徑僅供對照）",
@@ -107,7 +109,7 @@ const FORWARD_PEG_BASIS_LABELS: Record<string, string> = {
   FORWARD_FY2_VS_FY1: "FY2 較 FY1",
 };
 
-function formatMacroTriggers(caution: MacroCaution): string[] {
+function formatMacroTriggers(caution: MacroCaution, t: (key: string, opts?: Record<string, unknown>) => string): string[] {
   const labels: string[] = [];
   for (const code of caution.triggerCodes ?? []) {
     if (code === "MARKET_REGIME_PANIC") labels.push("大盤處於恐慌（PANIC）");
@@ -117,6 +119,10 @@ function formatMacroTriggers(caution: MacroCaution): string[] {
     else if (code === "TREASURY_10Y_SURGE_20P") {
       const bps = caution.tenYearChange20 != null ? Math.round(caution.tenYearChange20 * 100) : null;
       labels.push(`10Y 美債近 20 期急升${bps != null ? `（+${bps} bps）` : "（≥ +30 bps）"}`);
+    } else if (code === "HY_OAS_STRESS") {
+      labels.push(t("enhancements.macro.triggerHyOasStress"));
+    } else if (code === "HY_OAS_WIDENING") {
+      labels.push(t("enhancements.macro.triggerHyOasWidening"));
     } else labels.push(code);
   }
   return labels;
@@ -154,11 +160,12 @@ function isPrimaryCodeMatch(cardKey: string, primaryMetric?: string | null): boo
   return cardKey.toUpperCase() === upper;
 }
 
-export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagnosis, starterPositionSizing }: {
+export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagnosis, starterPositionSizing, enhancements }: {
   valuation?: ValuationResult | null;
   summaryResult?: MetricResult<InvestmentSummary> | null;
   breakoutDiagnosis?: BreakoutDiagnosis | null;
   starterPositionSizing?: PositionSizing | null;
+  enhancements?: ReportEnhancementHighlights | null;
 }) {
   const { t } = useTranslation();
   const summary = summaryResult?.status === "AVAILABLE" ? summaryResult.value : null;
@@ -318,6 +325,30 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
             label={`破位診斷：${diagnosisMeta.label}`}
             sx={{ fontWeight: 700 }}
           />
+        )}
+        {enhancements?.insiderBuyUndervaluedConfirm && (
+          <Chip
+            size="small"
+            color="success"
+            label={t("enhancements.insiders.undervaluedConfirmBadge")}
+            sx={{ fontWeight: 700 }}
+          />
+        )}
+        {enhancements?.options?.earningsGapExceedsStopRisk && (
+          <Chip
+            size="small"
+            color="warning"
+            label={t("enhancements.options.earningsGapChip", {
+              impliedMove: enhancements.options.impliedMovePct != null ? `${(enhancements.options.impliedMovePct * 100).toFixed(1)}%` : "—",
+            })}
+            sx={{ fontWeight: 700 }}
+          />
+        )}
+        {enhancements?.shortInterest?.signalCode === "SHORT_TRAP_WARNING" && (
+          <Chip size="small" color="error" label={t("enhancements.shortInterest.signals.SHORT_TRAP_WARNING")} />
+        )}
+        {enhancements?.shortInterest?.signalCode === "SHORT_SQUEEZE_POTENTIAL" && (
+          <Chip size="small" color="warning" variant="outlined" label={t("enhancements.shortInterest.signals.SHORT_SQUEEZE_POTENTIAL")} />
         )}
       </Stack>
       {valuation?.primaryMetric && (
@@ -495,7 +526,7 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
         severity={macroCaution.marketRegime === "PANIC" || macroCaution.marketRegime === "BEAR" ? "error" : "warning"}
         sx={{ mt: 1.5 }}
       >
-        <b>宏觀環境安全邊際提示</b>（{formatMacroTriggers(macroCaution).join("；")}）：客觀參考帶 [L, M, H] 維持不變
+        <b>宏觀環境安全邊際提示</b>（{formatMacroTriggers(macroCaution, t).join("；")}）：客觀參考帶 [L, M, H] 維持不變
         {macroCaution.suggestedMarginBufferMin != null && macroCaution.suggestedMarginBufferMax != null && (
           <>
             ；建議低接目標再預留{" "}

@@ -1,5 +1,7 @@
 package com.ykm.stock.analytics.model.dto.stockInsight.analysis;
 
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +19,8 @@ public record MarketContextDto(
         DrawdownAnalysisDto drawdown,
         TreasuryContextDto treasury,
         Map<String, SourceFreshnessDto> sourceFreshness,
-        MetricResult<BigDecimal> vixClose
+        MetricResult<BigDecimal> vixClose,
+        CreditSpreadSummaryDto creditSpread
 ) {
     public MarketContextDto {
         events = events == null ? List.of() : List.copyOf(events);
@@ -30,9 +33,18 @@ public record MarketContextDto(
             MomentumVolumeDto momentum, RelativeStrengthDto relativeStrength, MetricResult<MarketSnapshotDto> market,
             List<EventRiskDto> events, PlanConstraintDto tradeConstraint, List<AnalysisReasonDto> reasons, List<String> evidenceRefs,
             MomentumAnalysisDto momentumDetail, VolumeAnalysisDto volume, DrawdownAnalysisDto drawdown,
+            TreasuryContextDto treasury, Map<String, SourceFreshnessDto> sourceFreshness, MetricResult<BigDecimal> vixClose) {
+        this(momentum, relativeStrength, market, events, tradeConstraint, reasons, evidenceRefs,
+                momentumDetail, volume, drawdown, treasury, sourceFreshness, vixClose, null);
+    }
+
+    public MarketContextDto(
+            MomentumVolumeDto momentum, RelativeStrengthDto relativeStrength, MetricResult<MarketSnapshotDto> market,
+            List<EventRiskDto> events, PlanConstraintDto tradeConstraint, List<AnalysisReasonDto> reasons, List<String> evidenceRefs,
+            MomentumAnalysisDto momentumDetail, VolumeAnalysisDto volume, DrawdownAnalysisDto drawdown,
             TreasuryContextDto treasury, Map<String, SourceFreshnessDto> sourceFreshness) {
         this(momentum, relativeStrength, market, events, tradeConstraint, reasons, evidenceRefs,
-                momentumDetail, volume, drawdown, treasury, sourceFreshness, null);
+                momentumDetail, volume, drawdown, treasury, sourceFreshness, null, null);
     }
 
     public MarketContextDto(
@@ -40,13 +52,13 @@ public record MarketContextDto(
             List<EventRiskDto> events, PlanConstraintDto tradeConstraint, List<AnalysisReasonDto> reasons, List<String> evidenceRefs,
             MomentumAnalysisDto momentumDetail, VolumeAnalysisDto volume, DrawdownAnalysisDto drawdown) {
         this(momentum, relativeStrength, market, events, tradeConstraint, reasons, evidenceRefs,
-                momentumDetail, volume, drawdown, null, Map.of(), null);
+                momentumDetail, volume, drawdown, null, Map.of(), null, null);
     }
 
     public MarketContextDto(
             MomentumVolumeDto momentum, RelativeStrengthDto relativeStrength, MetricResult<MarketSnapshotDto> market,
             List<EventRiskDto> events, PlanConstraintDto tradeConstraint, List<AnalysisReasonDto> reasons, List<String> evidenceRefs) {
         this(momentum, relativeStrength, market, events, tradeConstraint, reasons, evidenceRefs,
-                null, null, null, null, Map.of(), null);
+                null, null, null, null, Map.of(), null, null);
     }
 }

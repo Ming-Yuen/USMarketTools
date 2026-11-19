@@ -36,6 +36,8 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationReferenc
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ValuationResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
+import com.ykm.stock.analytics.service.enhancement.MacroCreditSpreadService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 
 import java.math.BigDecimal;
@@ -256,7 +258,7 @@ public class ValuationSummaryCalculator {
         MarketRegime marketRegime = extractMarketRegime(marketContext);
         BigDecimal vixClose = extractVixClose(marketContext);
         BigDecimal tenYearChange20 = extractTenYearChange20(marketContext);
-        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20);
+        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20, extractCreditSpread(marketContext));
         BreakoutDiagnosisDto primaryDiagnosis = extractPrimaryDiagnosis(supportResistance);
         BreakoutDiagnosisDto matchedZoneDiagnosis = findDiagnosisForZone(supportResistance, supportZone);
         BreakoutDiagnosisDto breakoutDiagnosis = matchedZoneDiagnosis != null ? matchedZoneDiagnosis : primaryDiagnosis;
@@ -420,7 +422,7 @@ public class ValuationSummaryCalculator {
         MarketRegime marketRegime = extractMarketRegime(marketContext);
         BigDecimal vixClose = extractVixClose(marketContext);
         BigDecimal tenYearChange20 = extractTenYearChange20(marketContext);
-        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20);
+        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20, extractCreditSpread(marketContext));
 
         BreakoutDiagnosisDto primaryDiagnosis = extractPrimaryDiagnosis(supportResistance);
         BreakoutDiagnosisDto matchedZoneDiagnosis = findDiagnosisForZone(supportResistance, supportZone);
@@ -544,7 +546,7 @@ public class ValuationSummaryCalculator {
         MarketRegime marketRegime = extractMarketRegime(marketContext);
         BigDecimal vixClose = extractVixClose(marketContext);
         BigDecimal tenYearChange20 = extractTenYearChange20(marketContext);
-        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20);
+        MacroCautionDto macroCaution = buildMacroCaution(marketRegime, vixClose, tenYearChange20, extractCreditSpread(marketContext));
 
         BreakoutDiagnosisDto primaryDiagnosis = extractPrimaryDiagnosis(supportResistance);
         BreakoutDiagnosisDto matchedZoneDiagnosis = findDiagnosisForZone(supportResistance, supportZone);
@@ -1231,8 +1233,17 @@ public class ValuationSummaryCalculator {
         return "CAUTION_OVEREXTENSION";
     }
 
-    private MacroCautionDto buildMacroCaution(MarketRegime regime, BigDecimal vixClose, BigDecimal tenYearChange20) {
-        boolean evaluated = regime != null || vixClose != null || tenYearChange20 != null;
+    private CreditSpreadSummaryDto extractCreditSpread(MetricResult<MarketContextDto> marketContext) {
+        if (marketContext == null || marketContext.status() != MetricStatus.AVAILABLE || marketContext.value() == null) {
+            return null;
+        }
+        return marketContext.value().creditSpread();
+    }
+
+    private MacroCautionDto buildMacroCaution(MarketRegime regime, BigDecimal vixClose, BigDecimal tenYearChange20,
+                                              CreditSpreadSummaryDto creditSpread) {
+        boolean hasCreditSpread = creditSpread != null && creditSpread.oasPct() != null;
+        boolean evaluated = regime != null || vixClose != null || tenYearChange20 != null || hasCreditSpread;
         List<String> triggers = new ArrayList<>();
         if (regime == MarketRegime.PANIC) {
             triggers.add("MARKET_REGIME_PANIC");
@@ -1247,6 +1258,8 @@ public class ValuationSummaryCalculator {
         if (tenYearChange20 != null && tenYearChange20.compareTo(TEN_YEAR_SURGE_20_THRESHOLD) >= 0) {
             triggers.add("TREASURY_10Y_SURGE_20P");
         }
+        // 僅 STRESS (>= 5.00%) 與 WIDENING (oas >= 3.50% 且相對前 20 筆均線擴寬 >= +50 bps) 觸發安全邊際與倉位縮手；ELEVATED 僅顯示狀態不提前縮倉。
+        triggers.addAll(MacroCreditSpreadService.resolveMacroCautionTriggers(creditSpread));
         boolean active = !triggers.isEmpty();
         return new MacroCautionDto(
                 active,
@@ -1257,7 +1270,11 @@ public class ValuationSummaryCalculator {
                 triggers,
                 active ? MACRO_MARGIN_BUFFER_MIN : null,
                 active ? MACRO_MARGIN_BUFFER_MAX : null,
-                active ? MACRO_POSITION_SCALE : null
+                active ? MACRO_POSITION_SCALE : null,
+                hasCreditSpread ? creditSpread.oasPct() : null,
+                hasCreditSpread ? creditSpread.observationDate() : null,
+                hasCreditSpread ? creditSpread.deltaVsPrior20Bps() : null,
+                creditSpread == null ? null : creditSpread.status()
         );
     }
 
@@ -1519,6 +1536,15 @@ public class ValuationSummaryCalculator {
             if (macroCaution.vixClose() != null) params.put("vixClose", macroCaution.vixClose());
             if (macroCaution.tenYearChange20() != null) params.put("tenYearChange20", macroCaution.tenYearChange20());
             candidates.add(new SummaryFlagDto("MACRO_VOLATILITY_OR_RATE_STRESS", "MEDIUM", params));
+        }
+        if (macroCaution != null && (macroCaution.triggerCodes().contains(MacroCreditSpreadService.TRIGGER_HY_OAS_STRESS)
+                || macroCaution.triggerCodes().contains(MacroCreditSpreadService.TRIGGER_HY_OAS_WIDENING))) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (macroCaution.hyOasPct() != null) params.put("hyOasPct", macroCaution.hyOasPct());
+            if (macroCaution.hyOasDeltaVsPrior20Bps() != null) params.put("deltaBps", macroCaution.hyOasDeltaVsPrior20Bps());
+            if (macroCaution.hyOasDate() != null) params.put("observationDate", macroCaution.hyOasDate().toString());
+            String sev = macroCaution.triggerCodes().contains(MacroCreditSpreadService.TRIGGER_HY_OAS_STRESS) ? "HIGH" : "MEDIUM";
+            candidates.add(new SummaryFlagDto("HY_OAS_CREDIT_STRESS", sev, params));
         }
         if (primaryDiagnosis != null && primaryDiagnosis.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN) {
             Map<String, Object> params = new LinkedHashMap<>();

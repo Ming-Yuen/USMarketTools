@@ -77,7 +77,7 @@ public record InvestmentSummaryDto(
             BigDecimal assumptionHigh
     ) {}
 
-    /** 大盤逆風／高波動／高利率安全邊際提示，不改動 [L, M, H] 參考帶本身。 */
+    /** 大盤逆風／高波動／高利率／債市信用利差安全邊際提示，不改動 [L, M, H] 參考帶本身。 */
     public record MacroCautionDto(
             boolean active,
             boolean evaluated,
@@ -87,10 +87,23 @@ public record InvestmentSummaryDto(
             List<String> triggerCodes,
             BigDecimal suggestedMarginBufferMin,
             BigDecimal suggestedMarginBufferMax,
-            BigDecimal suggestedPositionScale
+            BigDecimal suggestedPositionScale,
+            BigDecimal hyOasPct,
+            LocalDate hyOasDate,
+            BigDecimal hyOasDeltaVsPrior20Bps,
+            String hyOasStatus
     ) {
         public MacroCautionDto {
             triggerCodes = triggerCodes == null ? List.of() : List.copyOf(triggerCodes);
+        }
+
+        public MacroCautionDto(
+                boolean active, boolean evaluated, MarketRegime marketRegime, BigDecimal vixClose,
+                BigDecimal tenYearChange20, List<String> triggerCodes, BigDecimal suggestedMarginBufferMin,
+                BigDecimal suggestedMarginBufferMax, BigDecimal suggestedPositionScale) {
+            this(active, evaluated, marketRegime, vixClose, tenYearChange20, triggerCodes,
+                    suggestedMarginBufferMin, suggestedMarginBufferMax, suggestedPositionScale,
+                    null, null, null, null);
         }
     }
 

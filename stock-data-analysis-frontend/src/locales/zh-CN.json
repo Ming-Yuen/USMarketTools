@@ -860,7 +860,8 @@
       "SUMMARY_WITH_SENTIMENT": "CNN 贪婪恐慌指数为 {{score}}；观察 ETF 中有 {{up}} 个上涨、{{down}} 个下跌。",
       "SUMMARY_WITHOUT_SENTIMENT": "CNN 情绪数据不足；观察 ETF 中有 {{up}} 个上涨、{{down}} 个下跌。",
       "DATE_UNAVAILABLE": "数据日期不足",
-      "MARKET_CLOSE": "{{date}} 收盘"
+      "MARKET_CLOSE": "{{date}} 收盘",
+      "HY_OAS_CREDIT_STRESS": "债市信用利差异常扩大：高收益债 OAS 最新报 {{oasPct}}%（较前 20 期均值 {{deltaBps}} bps，观测日 {{observationDate}}），建议提高风险警觉并收紧仓位。"
     },
     "marketSummary": {
       "STRONG_BUT_OVERHEATED": "风险偏好偏强，但情绪已过热",
@@ -924,7 +925,9 @@
       "headwindBanner": "大盘处于{{regime}}逆风警戒，机会雷达已自动收紧至深度低估且基本面强劲之仅观察名单，并暂停新增主动买入信号。",
       "correctionBanner": "大盘处于修正期，强势回踩试单暂停，低估标的须等待右侧确认并建议缩减仓位。",
       "vixLabel": "VIX 收盘",
-      "asOfDate": "基准日"
+      "asOfDate": "基准日",
+      "hyOasAlertBanner": "债市信用利差异常扩大：美国高收益债 OAS（FRED BAMLH0A0HYM2）最新报 {{oasPct}}%（较前 20 期均值变动 {{deltaBps}} bps，观测日 {{date}}），已自动收紧仓位与安全边际。",
+      "hyOasChip": "HY OAS {{oasPct}}%（{{date}}）"
     },
     "sectorEtfs": {
       "title": "11 大板块代表 ETF 动能与相对强弱",
@@ -1585,7 +1588,8 @@
         "BELOW_SMA200_DOWNTREND": "周线处于下降趋势且日线收盘低于 SMA200 年线",
         "ANCHOR_DIVERGENCE": "自身历史中位价与同行中位价差距较大，请一并对照下方分项",
         "MARGIN_COMPRESSION_CONSECUTIVE": "毛利率或营业利润率连续两季环比下滑（定价权或成本结构承压）",
-        "LOW_INTEREST_COVERAGE": "高杠杆（净负债／EBITDA 逾 4x）且利息保障倍数低于 2x，偿债安全边际偏低"
+        "LOW_INTEREST_COVERAGE": "高杠杆（净负债／EBITDA 逾 4x）且利息保障倍数低于 2x，偿债安全边际偏低",
+        "HY_OAS_CREDIT_STRESS": "美国高收益债信用利差（FRED BAMLH0A0HYM2）异常扩大，债市风险定价升温，宜收紧仓位与安全边际"
       },
       "watchItems": {
         "WATCH_TREND_PULLBACK_STARTER": "强势回踩试单（{{anchor}} {{anchorPrice}} {{currency}}）：建议 {{positionFraction}} 底仓试单，紧贴止损 {{suggestedStop}} {{currency}}",
@@ -2011,7 +2015,9 @@
       "WATCHLIST_TREND_PULLBACK_STARTER": "自选股 {{symbol}} 触发强势趋势回踩试单（收盘 {{closePrice}}，止损 {{protectiveStop}}，建议 {{suggestedShares}} 股）",
       "RADAR_TOP_OPPORTUNITY": "雷达精选 {{symbol}}（{{trackType}} · 收盘 {{closePrice}}）",
       "MARKET_REGIME_SHIFT": "大盘市况较上次简报（{{previousTradeDate}}）由 {{previousRegime}} 切换至 {{currentRegime}}",
-      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盘简报已就绪：严重 {{criticalCount}} · 警告 {{warningCount}} · 雷达精选 {{radarTop5Count}} 档"
+      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盘简报已就绪：严重 {{criticalCount}} · 警告 {{warningCount}} · 雷达精选 {{radarTop5Count}} 档",
+      "HY_OAS_CREDIT_STRESS": "债市信用利差异常扩大：美国高收益债 OAS 报 {{oasPct}}%（较前 20 期均值 {{deltaBps}} bps，观测日 {{observationDate}}），已启动宏观防御提示。",
+      "HOLDING_EARNINGS_GAP_EXCEEDS_STOP": "{{symbol}} 财报前（{{eventDate}}，尚余 {{daysToEarnings}} 天）期权隐含波动 ±{{impliedMovePct}} 已高于保护止损距离 {{stopDistancePct}}，须留意财报跳空打穿止损风险。"
     }
   },
   "stockScreener": {
@@ -2023,5 +2029,215 @@
     },
     "etfTechnicalChip": "ETF 技术分析",
     "etfTechnicalStatus": "技术与资金模式"
+  },
+  "enhancements": {
+    "title": "筹码与事件扩充（期权 · Form 4 / 13F · 做空 · 财测摘要 · 自定义标签）",
+    "subtitle": "按需同步并落库缓存，默认零 AI 成本；所有辅助信号绝不覆盖量化估值或止损价。",
+    "common": {
+      "loading": "正在加载筹码与事件数据…",
+      "operationFailed": "操作失败，请稍后再试。",
+      "copiedPrompt": "精简 Prompt 已复制到剪贴板，可粘贴至网页版 AI 询问并贴回 JSON 结果。",
+      "promptReadyCopyManually": "Prompt 已生成，请手动复制下方文字粘贴至网页版 AI。"
+    },
+    "aiChannel": {
+      "badge": "AI 通道：{{provider}}",
+      "manualAlwaysReady": "零成本手动复制模式随时可用",
+      "providers": {
+        "NONE": "仅手动模式（零 API 消耗）",
+        "OPENAI_API": "轻量 OpenAI API（低推理成本）",
+        "CODEX_CLI": "本机 Codex CLI（只读隔离）",
+        "MANUAL_WEB_AI": "手动网页版 AI 导入"
+      }
+    },
+    "macro": {
+      "triggerHyOasStress": "高收益债信用利差（HY OAS）处于压力区（≥ 5.0%）",
+      "triggerHyOasWidening": "高收益债信用利差（HY OAS）短期急扩（≥ +50 bps）"
+    },
+    "tabs": {
+      "options": "轻量期权",
+      "insiders13f": "Form 4 / 13F",
+      "shortInterest": "做空比例",
+      "newsGuidance": "异动新闻与财测",
+      "customTags": "SEC 自定义标签映射"
+    },
+    "status": {
+      "AVAILABLE": "可用",
+      "INSUFFICIENT_DATA": "数据不足",
+      "NOT_APPLICABLE": "不适用"
+    },
+    "reasons": {
+      "OPTIONS_NOT_SYNCED": "尚未同步期权快照，可点击“即时更新期权”按需采集。",
+      "NO_ACTIVE_OPTIONS_CHAIN": "此标的查无活跃期权链。",
+      "NO_STRADDLE_EXPIRY": "尚无符合条件的近期到期合约可计算 ATM Straddle。",
+      "EARNINGS_COVERING_EXPIRY_MISSING": "找不到可覆盖财报日的到期合约，改以近期到期合约作参考。",
+      "ATM_TWO_SIDED_QUOTE_MISSING": "ATM 双边买卖报价缺失，暂无法可靠计算隐含波动幅度。",
+      "SPOT_PRICE_UNAVAILABLE": "缺少最新参考股价，无法对齐 ATM 行权价。",
+      "OPTIONS_METRICS_INCOMPLETE": "期权链报价或未平仓量字段不完整。",
+      "ALPACA_API_CREDENTIALS_REQUIRED": "尚未设置 Alpaca API 凭证，无法采集期权快照。",
+      "ETF_OPTIONS_SUMMARY_ONLY": "ETF 不设公司财报日，仅展示期权 IV、偏度、Put/Call 与主力 OI 墙参考。",
+      "EARNINGS_STRADDLE": "覆盖财报日之最近到期 ATM Straddle",
+      "NEAREST_EXPIRY_REFERENCE": "最近到期 ATM Straddle 参考（非财报覆盖日）",
+      "NOT_APPLICABLE_FOR_ETF": "ETF／ETP 不适用单一公司财报或内部人／自定义标签项目。",
+      "NO_FORM4_FILINGS_SYNCED": "尚未同步 SEC Form 4 内部人申报，可点击“更新 Form 4”按需获取。",
+      "SEC_CIK_MISSING": "此标的缺少已核实 SEC CIK，无法查询 EDGAR 申报。",
+      "NO_13F_HOLDINGS_MATCHED": "追踪的旗舰机构近两季 13F-HR 未见对应持仓记录。",
+      "SHORT_INTEREST_NOT_SYNCED": "尚未同步 FINRA 做空比例，可点击“更新做空数据”按需获取。",
+      "MASSIVE_API_KEY_REQUIRED": "尚未设置 Massive API 密钥，无法获取做空数据。",
+      "ADR_ADS_FLOAT_UNVERIFIED": "ADR 流通股换算倍数未核实，安全拦截做空占比计算（仍保留做空股数与回补天数）。",
+      "MULTI_CLASS_SHARE_DENOMINATOR_MISMATCH": "多层股权结构分母口径未统一，安全拦截做空占比（仍保留做空股数与回补天数）。",
+      "OUTSTANDING_SHARES_UNAVAILABLE": "缺少已核实总股数，暂不计算做空占比。",
+      "ETF_INFO_ONLY": "ETF 属可申购赎回架构，仅供查看做空股数与回补天数参考。",
+      "STOCK_OR_DATE_MISSING": "缺少标的或基准日期。",
+      "ATM_STRIKE_PAIR_MISSING": "找不到同时具备 Call 与 Put 报价的近价 ATM 行权价对，暂不计算跨式隐含波动。",
+      "INTRADAY_SPOT_PRICE_UNAVAILABLE": "盘中无法获取即时成交价对齐 ATM 行权价，为免混用昨日收盘价与即时期权报价，暂标为数据不足。"
+    },
+    "options": {
+      "title": "轻量期权辅助指标",
+      "refreshBtn": "即时更新期权",
+      "refreshed": "已更新最新期权快照。",
+      "oiDisclaimer": "非方向性提示：每张未平仓合约（OI）皆同时存在买方与卖方，下方 Call／Put OI 墙仅作短期筹码密集带与支撑阻力对照参考，绝非单纯看涨或看跌信号。",
+      "earningsGapWarning": "财报跳空风险提示：距离财报尚余 {{days}} 天，期权隐含波动（±{{impliedMove}}）已高于目前保护止损距离（{{stopDist}}），请留意跳空打穿止损风险。",
+      "earningsGapChip": "财报跳空风险（隐含波动 ±{{impliedMove}} > 止损距离）",
+      "unavailable": "期权摘要暂不可用（{{status}}）：{{reason}}",
+      "impliedMoveLabel": "ATM Straddle 隐含波动",
+      "ivHvLabel": "ATM IV / 20 日历史波动率",
+      "ivToHvRatio": "IV / HV20 倍数：{{value}}",
+      "skewAndPcLabel": "等距虚值偏度（Put IV − Call IV）",
+      "putCallOi": "P/C OI：{{value}}",
+      "putCallVol": "P/C 成交量：{{value}}",
+      "oiWallsLabel": "主力到期日 OI 筹码密集带（非方向性）",
+      "maxCallOiWall": "最大 Call OI 墙：${{strike}}（{{oi}} 张）",
+      "maxPutOiWall": "最大 Put OI 墙：${{strike}}（{{oi}} 张）"
+    },
+    "insiders": {
+      "title": "SEC Form 4 内部人交易（零 AI 消耗）",
+      "refreshBtn": "更新 Form 4",
+      "refreshed": "已更新 SEC Form 4 内部人申报。",
+      "undervaluedConfirmBadge": "高管逢低买进确认",
+      "summaryLine": "近 60 日公开市场自掏腰包买入（Code P）：{{codePCount}} 笔 · {{insiders}} 位高管／董事 · 合计 {{valueUsd}}；薪酬行权／赠与／10b5-1 例行交易：{{routineCount}} 笔（不作看空解读）。",
+      "colDate": "交易日",
+      "colOwner": "申报人／职称",
+      "colCode": "代码",
+      "colShares": "股数",
+      "colPrice": "均价",
+      "colValue": "金额",
+      "colTag": "性质标记",
+      "codePBuyTag": "公开市场买进 (P)",
+      "plan10b51Tag": "10b5-1 预定计划",
+      "routineTag": "例行／薪酬交易"
+    },
+    "inst13f": {
+      "title": "SEC 13F-HR 旗舰机构季度持仓动向",
+      "summaryLine": "最新季度报告期 {{period}} · 追踪机构持有 {{holding}} 家（新建／加仓 {{added}} · 减仓／未列示 {{reduced}}）",
+      "colManager": "机构名称",
+      "colPeriod": "报告期",
+      "colAction": "季度变动",
+      "colShares": "持股数",
+      "colChange": "环比变动",
+      "colValueUsd": "持仓市值",
+      "actions": {
+        "NEW": "新建仓",
+        "ADD": "加仓",
+        "REDUCE": "减仓",
+        "UNCHANGED": "持平",
+        "HOLDING": "持有",
+        "NOT_LISTED": "本季未列示"
+      }
+    },
+    "shortInterest": {
+      "title": "FINRA 双周做空比例与回补天数",
+      "refreshBtn": "更新做空数据",
+      "refreshed": "已更新最新 FINRA 做空数据。",
+      "shortPctLabel": "做空占流通股比例",
+      "shortSharesLabel": "做空股数",
+      "biweeklyChange": "较上期双周变动：{{value}}",
+      "dtcLabel": "回补天数（来源 / 20日均量）",
+      "dtcCaption": "来源回报 / 自算 20 日均量",
+      "settlementLabel": "结算基准日",
+      "signals": {
+        "NORMAL": "做空水位正常",
+        "ELEVATED_SHORT_INTEREST": "高做空比例（≥ 15%）",
+        "SHORT_TRAP_WARNING": "空头地雷警示（高做空＋基本面转弱）",
+        "SHORT_SQUEEZE_POTENTIAL": "轧空动能提示（高做空＋强势突破）",
+        "ETF_INFO_ONLY": "ETF 参考信息"
+      }
+    },
+    "news": {
+      "title": "异动新闻与 SEC 8-K / 6-K 官方财测摘要",
+      "refreshBtn": "更新新闻与 8-K",
+      "refreshed": "已同步最新新闻与 SEC 8-K／6-K 缓存。",
+      "aiSummarizeBtn": "AI 生成 3 点摘要",
+      "summarized": "已完成结构化事件摘要并缓存落库。",
+      "copyManualPromptBtn": "复制精简 Prompt（零 API 成本）",
+      "advisoryDisclaimer": "仅供事件解读与官方白纸黑字财测整理参考；新闻摘要绝不覆盖量化估值、参考带或保护止损价。",
+      "manualBoxTitle": "零 API 成本手动模式：复制 Prompt 问网页版 AI，再贴回 JSON 验收入库",
+      "pasteJsonLabel": "粘贴网页版 AI 返回之 JSON（eventNature / bulletPoints / guidance）",
+      "importJsonBtn": "验证并导入摘要",
+      "manualImported": "手动 JSON 摘要已验证通过并保存。",
+      "guidanceTitle": "官方 8-K / 6-K 财测区间（{{period}} · {{action}}）",
+      "guidanceNumbers": "营收区间：{{revLow}} – {{revHigh}} {{currency}} {{scale}} ｜ EPS 区间：{{epsLow}} – {{epsHigh}}",
+      "cachedListTitle": "近期缓存新闻与申报（{{count}} 条）",
+      "emptyCache": "尚无缓存事件，请点击“更新新闻与 8-K”按需获取。",
+      "exhibit991Link": "查看 EX-99.1 原文",
+      "natures": {
+        "POSITIVE_CATALYST": "正面催化",
+        "FUNDAMENTAL_DETERIORATION": "基本面恶化",
+        "ONE_OFF_SHOCK": "一次性冲击",
+        "NEUTRAL_NOISE": "中性杂讯",
+        "UNCLEAR": "方向未明"
+      },
+      "statusNoticeInProgress": "摘要任务正在处理中，请稍候片刻再刷新查看结果。",
+      "summaryStatuses": {
+        "COMPLETED": "已完成",
+        "IN_PROGRESS": "处理中",
+        "TIMED_OUT": "请求超时（未确认是否已计费，暂不自动重试）",
+        "FAILED": "执行失败"
+      }
+    },
+    "customTags": {
+      "isolationWarning": "安全隔离红线：AI 或手动导入仅产生“待确认预览”，在您明确勾选并点击“确认保存并确定性重算”之前，系统绝不写入数据库，也不会影响任何财报期数或估值结果；确认落库后日常计算保持 0 AI 消耗。",
+      "sampleBtn": "抽样本地 XBRL 自定义标签",
+      "sampledCount": "已从本地 SEC XBRL／companyfacts 抽样 {{count}} 个未映射标签。",
+      "aiProposeBtn": "AI 生成映射建议（仅预览）",
+      "copyManualPromptBtn": "复制映射 Prompt（零 API 成本）",
+      "manualBoxTitle": "零 API 成本手动模式：复制抽样标签 Prompt 问网页版 AI，再贴回 JSON 预览",
+      "pasteJsonLabel": "粘贴网页版 AI 返回之映射 JSON（proposals 数组）",
+      "importPreviewBtn": "解析为待确认预览（不写库）",
+      "previewReadyNotSaved": "已生成待确认映射预览（尚未写入数据库，请人工核对后再确认保存）。",
+      "previewTitle": "待人工确认映射预览（{{count}} 项，尚未入库）",
+      "previewEmpty": "预览中无有效映射建议。",
+      "selectAtLeastOne": "请至少勾选一项映射建议后再确认保存。",
+      "confirmSaveBtn": "确认保存并确定性重算",
+      "confirmSuccess": "已确认落库 {{mappings}} 项映射，确定性回补 {{facts}} 条财报事实并重算 {{stocks}} 支标的。",
+      "discardPreviewBtn": "舍弃预览",
+      "candidatesTitle": "本地抽样候选自定义标签（{{count}} 项）",
+      "confirmedTitle": "已人工确认生效的显式映射（{{count}} 项，日常 0 AI 消耗）",
+      "noConfirmedMappings": "此公司目前尚无已确认的自定义标签映射。",
+      "disableBtn": "停用",
+      "disabledSuccess": "已停用该项映射并重新计算受影响财报期数。",
+      "colSourceTag": "来源 XBRL 标签",
+      "colUnit": "单位",
+      "colLatestVal": "最新值",
+      "colPeriod": "期间类型",
+      "colConcept": "目标标准财务科目",
+      "colSign": "符号",
+      "colRationale": "判断依据",
+      "colStatus": "状态",
+      "colAction": "操作"
+    },
+    "errors": {
+      "AI_AUTOMATED_CHANNEL_DISABLED_USE_MANUAL_PROMPT": "目前未启用自动 AI 通道，请使用零 API 成本手动复制 Prompt 模式。",
+      "AI_CHANNEL_BUSY_RETRY_LATER": "本机 AI 通道目前忙碌中（单并发保护），请稍后再试。",
+      "NEWS_INPUT_FINGERPRINT_STALE_REFRESH_PROMPT": "新闻或 SEC 公告缓存已更新，请重新复制最新 Prompt 后再导入。",
+      "SUMMARY_GUIDANCE_QUOTE_NOT_IN_EXHIBIT": "财测引文未能在官方 EX-99.1 公告原文中核对，已安全拒绝入库。",
+      "SUMMARY_GUIDANCE_FIELD_REQUIRED": "JSON 必须明确包含 guidance 字段（无官方财测时请填 null）。",
+      "MANUAL_JSON_EMPTY": "粘贴的 JSON 内容不可为空。",
+      "MANUAL_JSON_SYNTAX_INVALID": "粘贴的 JSON 语法无效，请确认格式后重试。",
+      "CUSTOM_TAG_PROPOSAL_MAX_ITEMS_EXCEEDED": "单次映射提议不可超过 20 项。",
+      "CUSTOM_TAG_SIGN_INVALID": "映射符号（signMultiplier）必须明确填写 1 或 -1。",
+      "STOCK_NOT_FOUND": "找不到指定的股票标的。",
+      "NEWS_INPUT_FINGERPRINT_REQUIRED": "缺少 Prompt 输入指纹，请先复制最新 Prompt 后再贴回 JSON。",
+      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "财测结构化数字与官方引文不符，已安全拒绝入库。"
+    }
   }
 }

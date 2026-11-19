@@ -4,6 +4,7 @@ import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketRegime;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PositionSizingDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.BriefingRadarItemDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.BriefingSectorDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.DailyClosingBriefingDto;
@@ -61,6 +62,7 @@ import java.util.Set;
 @Slf4j
 public class PortfolioClosingService {
     public static final String ALERT_MARKET_REGIME_SHIFT = "MARKET_REGIME_SHIFT";
+    public static final String ALERT_HY_OAS_CREDIT_STRESS = "HY_OAS_CREDIT_STRESS";
     public static final String ALERT_RADAR_TOP_OPPORTUNITY = "RADAR_TOP_OPPORTUNITY";
     public static final String ALERT_DAILY_CLOSING_BRIEFING = "DAILY_CLOSING_BRIEFING";
 
@@ -165,6 +167,25 @@ public class PortfolioClosingService {
             if (InAppNotification.SEVERITY_CRITICAL.equals(shiftSeverity)) criticalBiz++;
             else if (InAppNotification.SEVERITY_WARNING.equals(shiftSeverity)) warningBiz++;
             else infoBiz++;
+        }
+
+        // 5a2. 債市高收益債信用利差（FRED BAMLH0A0HYM2）急擴或突破警戒門檻通知（按觀測日＋狀態冪等去重，避免延遲觀測每日重複轟炸）
+        CreditSpreadSummaryDto creditSpread = preloaded == null ? null : preloaded.creditSpread();
+        if (creditSpread != null && creditSpread.macroCautionTriggered() && !creditSpread.stale() && creditSpread.observationDate() != null) {
+            String csSeverity = "STRESS".equals(creditSpread.status())
+                    ? InAppNotification.SEVERITY_CRITICAL : InAppNotification.SEVERITY_WARNING;
+            Map<String, Object> csPayload = new LinkedHashMap<>();
+            csPayload.put("seriesId", creditSpread.seriesId());
+            csPayload.put("status", creditSpread.status());
+            csPayload.put("observationDate", creditSpread.observationDate().toString());
+            if (creditSpread.oasPct() != null) csPayload.put("oasPct", creditSpread.oasPct());
+            if (creditSpread.deltaVsPrior20Bps() != null) csPayload.put("deltaBps", creditSpread.deltaVsPrior20Bps());
+            notifications.add(buildNotification(
+                    "MACRO_HY_OAS:" + creditSpread.observationDate() + ":" + creditSpread.status(),
+                    tradeDate, csSeverity, InAppNotification.CATEGORY_MACRO_REGIME,
+                    ALERT_HY_OAS_CREDIT_STRESS, null, null, null, csPayload, generatedAt));
+            if (InAppNotification.SEVERITY_CRITICAL.equals(csSeverity)) criticalBiz++;
+            else warningBiz++;
         }
 
         // 5b. 持倉體檢異常警示

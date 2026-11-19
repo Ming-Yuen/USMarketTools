@@ -10,6 +10,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedBarDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.CreditSpreadSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.response.DashboardResponse;
 import com.ykm.stock.analytics.model.dto.stockInsight.response.DashboardResponse.EtfRow;
 import com.ykm.stock.analytics.model.dto.stockInsight.response.DashboardResponse.EventItem;
@@ -48,7 +49,9 @@ import com.ykm.stock.analytics.service.analysis.QuoteNormalizationService;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.SignalTrackingService;
 import com.ykm.stock.analytics.service.analysis.SignalTrackingService.SignalTrackingStatsSummary;
+import com.ykm.stock.analytics.service.enhancement.SecInsiderAndInstitutionalService;
 import com.ykm.stock.analytics.service.market.MarketEventService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.ykm.stock.analytics.service.market.MarketSentimentService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.market.TreasuryService;
@@ -101,6 +104,8 @@ public class OverviewService {
     private final DailyOpportunityRadarRunRepository radarRunRepository;
     private final SignalTrackingService signalTrackingService;
     private final AppProperties appProperties;
+    @Autowired(required = false)
+    private SecInsiderAndInstitutionalService insider13fService;
 
     private static final String FIGI_SPX = "BBG000H4FSM0";
     private static final String FIGI_NDX = "BBG000KKFC45";
@@ -257,11 +262,20 @@ public class OverviewService {
         }
         ExecutionBias executionBias = new ExecutionBias("EXECUTION_BIAS", executionDescriptionCode);
 
-        // Batch 03：大盤 MarketRegime、11 大板塊 ETF、板塊量價資金流、每日機會雷達快照與訊號勝率統計
+        // Batch 03 & 06：大盤 MarketRegime（含 FRED HY OAS 信用利差）、11 大板塊 ETF、板塊量價資金流、每日機會雷達快照與訊號勝率統計
         // 大盤與各 ETF 各自封頂於已入庫交易日，避免行情分批同步期間因單檔推進至 T 日導致尚未同步的基準／ETF 暫時變 UNAVAILABLE 或消失
         LocalDate benchmarkDate = resolveBenchmarkDate(marketDate);
         PreloadedMarketData preloaded = benchmarkDate == null ? null : marketContextService.preloadMarketData(benchmarkDate, now);
         MarketRegimeBanner marketRegimeBanner = buildMarketRegimeBanner(benchmarkDate, preloaded);
+        if (marketRegimeBanner != null && marketRegimeBanner.isHyOasAlertActive()) {
+            alerts.removeIf(item -> "NO_ALERTS".equals(item.getCode()));
+            Map<String, Object> oasParams = new LinkedHashMap<>();
+            if (marketRegimeBanner.getHyOasPct() != null) oasParams.put("oasPct", formatDecimal(marketRegimeBanner.getHyOasPct()));
+            if (marketRegimeBanner.getHyOasDeltaVsPrior20Bps() != null) oasParams.put("deltaBps", formatDecimal(marketRegimeBanner.getHyOasDeltaVsPrior20Bps()));
+            if (marketRegimeBanner.getHyOasDate() != null) oasParams.put("observationDate", marketRegimeBanner.getHyOasDate());
+            alerts.add(message("HY_OAS_CREDIT_STRESS", oasParams));
+            riskScore += 2;
+        }
         List<SectorEtfRow> sectorEtfs = buildSectorEtfRows(marketDate, now, preloaded);
         SectorMoneyFlowSummary sectorMoneyFlow = buildSectorMoneyFlowSummary();
         OpportunityRadarSummary opportunityRadar = buildOpportunityRadarSummary(marketRegimeBanner);
@@ -287,11 +301,19 @@ public class OverviewService {
     }
 
     private MarketRegimeBanner buildMarketRegimeBanner(LocalDate marketDate, PreloadedMarketData preloaded) {
+        CreditSpreadSummaryDto cs = preloaded == null ? null : preloaded.creditSpread();
+        BigDecimal hyOasPct = cs == null ? null : cs.oasPct();
+        String hyOasDate = cs == null || cs.observationDate() == null ? null : cs.observationDate().toString();
+        BigDecimal hyOasDelta = cs == null ? null : cs.deltaVsPrior20Bps();
+        String hyOasStatus = cs == null ? null : cs.status();
+        boolean hyOasAlert = cs != null && cs.macroCautionTriggered();
+
         if (preloaded == null || preloaded.marketSnapshot() == null
                 || preloaded.marketSnapshot().status() != MetricStatus.AVAILABLE
                 || preloaded.marketSnapshot().value() == null) {
             return new MarketRegimeBanner(MarketRegime.UNAVAILABLE.name(), null, false, false,
-                    marketDate == null ? null : marketDate.toString());
+                    marketDate == null ? null : marketDate.toString(),
+                    hyOasPct, hyOasDate, hyOasDelta, hyOasStatus, hyOasAlert);
         }
         MarketRegime regime = preloaded.marketSnapshot().value().regime();
         BigDecimal vix = preloaded.vixClose() != null && preloaded.vixClose().status() == MetricStatus.AVAILABLE
@@ -300,7 +322,8 @@ public class OverviewService {
         boolean correction = regime == MarketRegime.CORRECTION;
         LocalDate asOf = preloaded.marketSnapshot().value().dataDate() != null
                 ? preloaded.marketSnapshot().value().dataDate() : marketDate;
-        return new MarketRegimeBanner(regime.name(), vix, headwind, correction, asOf == null ? null : asOf.toString());
+        return new MarketRegimeBanner(regime.name(), vix, headwind, correction, asOf == null ? null : asOf.toString(),
+                hyOasPct, hyOasDate, hyOasDelta, hyOasStatus, hyOasAlert);
     }
 
     /** 取 SPY 與 QQQ 共同最新已入庫交易日並封頂於 marketDate，避免行情分批同步期間因單一股票先推進至 T 日導致大盤市況暫時 UNAVAILABLE。 */
@@ -475,13 +498,14 @@ public class OverviewService {
         LocalDate radarDate = run.getRadarDate();
         // 即使當日為 0 入選，也必須嚴格回傳最新發布日空清單，絕不回退復活前一日名單
         List<DailyOpportunityRadar> all = radarRepository.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(radarDate);
+        Map<String, Boolean> insiderConfirmByFigi = resolveRadarInsiderConfirmBatch(all, radarDate);
         List<OpportunityRadarItem> valueList = new ArrayList<>();
         List<OpportunityRadarItem> starterList = new ArrayList<>();
         String snapshotRegime = run.getMarketRegime() != null ? run.getMarketRegime()
                 : (banner == null ? null : banner.getRegime());
         boolean headwind = run.isHeadwindActive();
         for (DailyOpportunityRadar r : all) {
-            OpportunityRadarItem item = toRadarItem(r);
+            OpportunityRadarItem item = toRadarItem(r, Boolean.TRUE.equals(insiderConfirmByFigi.get(r.getFigi())));
             if (DailyOpportunityRadar.TRACK_VALUE_SUPPORT.equals(r.getTrackType())) {
                 valueList.add(item);
             } else if (DailyOpportunityRadar.TRACK_TREND_PULLBACK_STARTER.equals(r.getTrackType())) {
@@ -499,7 +523,28 @@ public class OverviewService {
         );
     }
 
-    private OpportunityRadarItem toRadarItem(DailyOpportunityRadar r) {
+    private Map<String, Boolean> resolveRadarInsiderConfirmBatch(List<DailyOpportunityRadar> rows, LocalDate radarDate) {
+        if (insider13fService == null || rows == null || rows.isEmpty() || radarDate == null) {
+            return Map.of();
+        }
+        List<String> figis = rows.stream().map(DailyOpportunityRadar::getFigi).distinct().toList();
+        Map<String, String> cikByFigi = new LinkedHashMap<>();
+        for (Stock s : stockRepository.findAllById(figis)) {
+            if (s != null && s.getCik() != null && !s.getCik().isBlank()) {
+                cikByFigi.put(s.getFigi(), s.getCik());
+            }
+        }
+        if (cikByFigi.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> verdictByFigi = new LinkedHashMap<>();
+        for (DailyOpportunityRadar r : rows) {
+            verdictByFigi.putIfAbsent(r.getFigi(), r.getVerdict());
+        }
+        return insider13fService.evaluateInsiderConfirmBatch(cikByFigi, verdictByFigi, radarDate);
+    }
+
+    private OpportunityRadarItem toRadarItem(DailyOpportunityRadar r, boolean insiderBuyConfirm) {
         return new OpportunityRadarItem(
                 r.getFigi(),
                 r.getSymbol(),
@@ -536,7 +581,8 @@ public class OverviewService {
                 r.getNextEarningsDate() == null ? null : r.getNextEarningsDate().toString(),
                 r.getDaysToNextEarnings(),
                 r.getSectorCmf20d(),
-                r.getSectorFlowState()
+                r.getSectorFlowState(),
+                insiderBuyConfirm
         );
     }
 

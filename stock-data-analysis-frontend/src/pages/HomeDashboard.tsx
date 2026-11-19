@@ -41,6 +41,7 @@ import {
   Analytics,
 } from "@mui/icons-material";
 import MetricCard from "../components/MetricCard";
+import { PortfolioHealthCard } from "../components/PortfolioHealthCard";
 import { useFetch } from "../hooks/api/useApi";
 import {
   DashboardResponse,
@@ -282,6 +283,9 @@ const HomeDashboard: React.FC = () => {
           {t("dashboard.marketRegime.correctionBanner")}
         </Alert>
       )}
+
+      {/* Batch 04：置頂持倉與自選股今日體檢警示卡 */}
+      <PortfolioHealthCard />
 
       <Paper
         elevation={0}

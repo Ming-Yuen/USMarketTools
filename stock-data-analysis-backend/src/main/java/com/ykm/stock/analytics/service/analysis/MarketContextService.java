@@ -50,7 +50,19 @@ public class MarketContextService {
             List<MarketEvent> marketWideEvents,
             MetricResult<MarketSnapshotDto> marketSnapshot,
             MetricResult<BigDecimal> vixClose
-    ) {}
+    ) {
+        /** 取得預載視窗內截至 through 之最新一筆 10Y 美債殖利率（百分比數值，如 4.35）；缺值時回傳 NULL。 */
+        public BigDecimal latestTreasury10y() {
+            if (inputs == null) {
+                return null;
+            }
+            List<Observation> list = inputs.get("TREASURY_10Y");
+            if (list == null || list.isEmpty()) {
+                return null;
+            }
+            return list.getLast().value();
+        }
+    }
 
     /** 一次載入 SPY/QQQ 272 個交易日基準日線（與單股 MarketRegime 視窗完全一致，避免 273+ 日舊缺口誤殺）、近 400 日情緒與美債殖利率及宏觀事件。 */
     @Transactional(readOnly = true)

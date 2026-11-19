@@ -14,6 +14,7 @@ import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService;
 import com.ykm.stock.analytics.service.analysis.SignalTrackingService;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
+import com.ykm.stock.analytics.service.portfolio.PortfolioClosingService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
@@ -60,6 +61,7 @@ public class StockValuationDailyTask implements Job {
     private final SectorMoneyFlowService sectorMoneyFlowService;
     private final DailyOpportunityRadarService dailyOpportunityRadarService;
     private final SignalTrackingService signalTrackingService;
+    private final PortfolioClosingService portfolioClosingService;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -107,6 +109,15 @@ public class StockValuationDailyTask implements Job {
                 dailyOpportunityRadarService.refreshDaily(snapshotDate, startedAt);
                 int settled = signalTrackingService.settlePendingSignals(snapshotDate);
                 log.info("Signal tracking settlement completed | tradeDate={} updatedSettlements={}", snapshotDate, settled);
+                // 4b. 獨立容錯隔離執行持倉自動體檢與站內收盤簡報／提醒寫入：異常僅記警告日誌，絕不回滾上游估值、板塊資金流、雷達與訊號結算
+                if (portfolioClosingService != null) {
+                    try {
+                        portfolioClosingService.publishDailyClosing(snapshotDate, startedAt);
+                    } catch (RuntimeException ex) {
+                        log.warn("Portfolio closing health check & briefing failed (isolated; upstream committed) | tradeDate={}",
+                                snapshotDate, ex);
+                    }
+                }
             } else {
                 log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={}",
                         targetDate, readyQuotes, targets.size(), snapshotDate);

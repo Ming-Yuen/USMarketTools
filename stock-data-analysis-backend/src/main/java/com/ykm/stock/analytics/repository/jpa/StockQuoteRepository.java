@@ -51,4 +51,14 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
     List<StockQuote> findMonthEndQuotes(@Param("figis") Collection<String> figis,
                                         @Param("from") LocalDate from,
                                         @Param("through") LocalDate through);
+
+    /** 批次取得每股最近一筆已入庫日線收盤紀錄（不超過指定日），供持倉清單快速計算最新市值與損益，免載入 5 年日線。 */
+    @Query(value = """
+            select distinct on (q.figi) q.*
+            from stock_quote q
+            where q.figi in (:figis) and q.quote_date <= :through
+            order by q.figi, q.quote_date desc
+            """, nativeQuery = true)
+    List<StockQuote> findLatestQuotesUpTo(@Param("figis") Collection<String> figis,
+                                          @Param("through") LocalDate through);
 }

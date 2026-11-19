@@ -1,11 +1,14 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, Grid, Stack, TextField, Typography } from "@mui/material";
-import { ArrowBack, ExpandMore } from "@mui/icons-material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, Grid, Stack, TextField, Typography } from "@mui/material";
+import { AccountBalanceWalletOutlined, ArrowBack, ExpandMore } from "@mui/icons-material";
 import { apiClient } from "../services/apiClient";
 import { apiConfig } from "../apiConfig";
+import { fetchPortfolioOverview } from "../services/portfolioApi";
+import { PortfolioDrawer } from "../components/PortfolioDrawer";
+import { PortfolioItemView } from "../services/types/dto/portfolio";
 import { AnalysisHorizon, AnalysisReportRequest, MetricResult, StockAnalysisReport } from "../services/types/dto/analysis";
 import { readableReason, reasonLabel, statusLabel, TechnicalIndicatorsPanel, ValuationReferencePanel } from "./AnalysisPanels";
 import { ExecutiveSummaryPanel } from "./ExecutiveSummaryPanel";
@@ -25,6 +28,30 @@ export function StockAnalysisPage() {
   const [dateInput, setDateInput] = useState("");
   const [valuationDate, setValuationDate] = useState("");
   const [horizon, setHorizon] = useState<AnalysisHorizon>("POSITION");
+  const [portfolioDrawerOpen, setPortfolioDrawerOpen] = useState(false);
+  const [currentPortfolioItem, setCurrentPortfolioItem] = useState<PortfolioItemView | null>(null);
+  const portfolioSeqRef = React.useRef(0);
+  const reloadPortfolioBadge = useCallback(async () => {
+    const seq = ++portfolioSeqRef.current;
+    if (!figi) {
+      setCurrentPortfolioItem(null);
+      return;
+    }
+    try {
+      const overview = await fetchPortfolioOverview();
+      if (portfolioSeqRef.current === seq) {
+        setCurrentPortfolioItem(overview?.items?.find((it) => it.figi === figi) ?? null);
+      }
+    } catch {
+      if (portfolioSeqRef.current === seq) {
+        setCurrentPortfolioItem(null);
+      }
+    }
+  }, [figi]);
+  useEffect(() => {
+    setCurrentPortfolioItem(null);
+    reloadPortfolioBadge();
+  }, [reloadPortfolioBadge]);
   const reportQuery = useQuery<StockAnalysisReport>({
     queryKey: horizon === "POSITION" ? ["analysis-report", figi, valuationDate] : ["analysis-report", figi, valuationDate, horizon],
     enabled: Boolean(figi),
@@ -56,9 +83,28 @@ export function StockAnalysisPage() {
           {valuation?.calculatedAt ? " · 計算時間（香港）：" + formatHongKongDateTime(valuation.calculatedAt, "zh-HK") : ""}
         </Typography>}
       </Box>
-      <Stack component="form" direction="row" spacing={1} useFlexGap flexWrap="wrap" onSubmit={event => { event.preventDefault(); setValuationDate(dateInput); }}>
+      <Stack component="form" direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center" onSubmit={event => { event.preventDefault(); setValuationDate(dateInput); }}>
         <TextField label="估值日期（留空為最新）" type="date" size="small" value={dateInput} InputLabelProps={{ shrink: true }} onChange={event => setDateInput(event.target.value)} />
         <Button type="submit" variant="contained" disabled={reportQuery.isFetching}>查詢</Button>
+        <Button
+          startIcon={<AccountBalanceWalletOutlined />}
+          variant={currentPortfolioItem ? "contained" : "outlined"}
+          color={currentPortfolioItem?.itemType === "HOLDING" ? "success" : "primary"}
+          onClick={() => setPortfolioDrawerOpen(true)}
+          data-testid="stock-portfolio-btn"
+        >
+          {currentPortfolioItem
+            ? (currentPortfolioItem.itemType === "HOLDING" ? t("portfolio.inHoldingBadge") : t("portfolio.inWatchlistBadge"))
+            : t("portfolio.manageCurrent")}
+        </Button>
+        {currentPortfolioItem?.itemType === "HOLDING" && currentPortfolioItem.adjustedShares != null && (
+          <Chip
+            size="small"
+            color="success"
+            variant="outlined"
+            label={t("portfolio.sizing.sharesUnit", { shares: currentPortfolioItem.adjustedShares })}
+          />
+        )}
         <Button startIcon={<ArrowBack />} variant="outlined" onClick={() => navigate("/stockAnalysis")}>股票篩選</Button>
       </Stack>
     </Stack>
@@ -74,7 +120,12 @@ export function StockAnalysisPage() {
       </Alert>}
 
       {/* L1. 置頂首屏：綜合估值位置、參考價帶標尺、觀察傾向與當期核心估值倍數 */}
-      <ExecutiveSummaryPanel valuation={valuation} summaryResult={report.summary} breakoutDiagnosis={levels?.breakoutDiagnosis} />
+      <ExecutiveSummaryPanel
+        valuation={valuation}
+        summaryResult={report.summary}
+        breakoutDiagnosis={levels?.breakoutDiagnosis}
+        starterPositionSizing={report.starterPositionSizing}
+      />
 
       {/* L2. 看圖與時機工作台（嚴格保持位於估值參考三面板之前） */}
       <InteractivePriceWorkbench structure={structure} levels={levels} market={market} valuation={valuation} summary={summary} />
@@ -121,5 +172,20 @@ export function StockAnalysisPage() {
 
       {!!report.reasons?.length && <Alert severity="info" sx={{ mt: 2 }}>{report.reasons.map(reason => readableReason(t, reason)).join("；")}</Alert>}
     </>}
+    <PortfolioDrawer
+      open={portfolioDrawerOpen}
+      onClose={() => setPortfolioDrawerOpen(false)}
+      onSaved={() => {
+        reloadPortfolioBadge();
+        reportQuery.refetch?.();
+      }}
+      initialStock={figi ? {
+        figi,
+        symbol: report?.symbol,
+        stockName: report?.name,
+        latestClosePrice: valuationDate ? null : (valuation?.price ?? null),
+        latestQuoteDate: valuationDate ? null : (report?.valuationDate ?? null),
+      } : null}
+    />
   </Box>;
 }

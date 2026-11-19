@@ -1140,5 +1140,200 @@
       "COMPLETED": "已完成",
       "FAILED": "失败"
     }
+  },
+  "portfolio": {
+    "title": "持仓与自选管理",
+    "openDrawer": "持仓／自选管理",
+    "closeDrawer": "关闭抽屉",
+    "manageCurrent": "记录持仓／自选",
+    "inHoldingBadge": "已持仓",
+    "inWatchlistBadge": "已加自选",
+    "tabs": {
+      "list": "持仓与自选清单",
+      "edit": "新增／编辑标的",
+      "riskConfig": "资金与风控设置"
+    },
+    "types": {
+      "HOLDING": "实质持仓",
+      "WATCHLIST": "重点自选"
+    },
+    "summary": {
+      "holdings": "实质持仓",
+      "watchlist": "重点自选",
+      "totalMarketValue": "USD 持仓市值",
+      "totalPnl": "未实现损益",
+      "sectorExposureTitle": "行业板块敞口分布（占总资金）",
+      "sectorExceeded": "超上限 {{max}}%",
+      "noHoldings": "尚未记录任何持仓或自选股，可在个股分析页一键加入。",
+      "excludedNotice": "另有 {{count}} 笔持仓因非 USD、缺行情或拆股未核实，未计入 USD 组合总市值。"
+    },
+    "table": {
+      "symbol": "标的",
+      "type": "类型",
+      "shares": "股数",
+      "avgCost": "均价",
+      "close": "最新收盘",
+      "pnl": "浮盈／回报",
+      "weight": "占总资金",
+      "actions": "操作",
+      "splitAdjustedTag": "已拆股对齐",
+      "edit": "编辑",
+      "delete": "移除"
+    },
+    "form": {
+      "figi": "股票 FIGI",
+      "itemType": "项目类型",
+      "shares": "持仓股数",
+      "avgCost": "平均买入成本",
+      "costBasisDate": "成本基准交易日（拆股对齐用）",
+      "costBasisDateHelper": "填入上述股数与均价所对应的美东交易日；留空自动采用最新已收市交易日。",
+      "notes": "交易备注",
+      "save": "保存项目",
+      "saving": "保存中…",
+      "saved": "已保存持仓／自选设置。",
+      "deleted": "已从清单移除。",
+      "deleteConfirm": "确定要移除 {{symbol}} 吗？",
+      "saveFailed": "保存失败：{{message}}",
+      "loadFailed": "无法加载既有持仓状态，为避免误覆盖已禁用保存；请重新打开或稍后再试。"
+    },
+    "config": {
+      "title": "个人资金与仓位风控参数（USD）",
+      "totalCapital": "总资金（USD）",
+      "riskPerTradePct": "单笔最大风险比例（%）",
+      "maxSinglePositionPct": "单一标的最大仓位上限（%）",
+      "maxSectorExposurePct": "同行业最大集中度上限（%）",
+      "save": "保存风控设置",
+      "saved": "风控设置已更新，建议股数与敞口已重新对齐。",
+      "saveFailed": "风控设置更新失败：{{message}}",
+      "loadFailed": "无法加载当前风控设置，为避免误覆盖已禁用保存；请重新打开或稍后再试。"
+    },
+    "sizing": {
+      "sectionTitle": "仓位风险建议（1% 风险预算）",
+      "starterSectionTitle": "强势回踩试单建议股数",
+      "suggestedShares": "建议买入股数",
+      "sharesUnit": "{{shares}} 股",
+      "estimatedAmount": "预估名义仓位",
+      "capitalPct": "占总资金 {{pct}}",
+      "maxLoss": "按止损价估算亏损",
+      "lossPct": "占总资金 {{pct}}",
+      "entryRef": "保守计算基准价 {{price}}",
+      "scaleBadge": "缩仓系数：{{scale}}",
+      "sectorExposure": "同行业买后敞口：{{projected}}（现有 {{current}}／上限 {{max}}）",
+      "pausedNotice": "大盘处于逆风／恐慌状态，系统建议暂缓开新仓（0 股）。",
+      "waitingTriggerNote": "方案尚未触发（仅供触发后试算参考）",
+      "staleFallbackNote": "当日行情尚未入库，以下仅按前一交易日回退行情估算",
+      "tags": {
+        "TREND_PULLBACK_STARTER_ONE_THIRD": "1/3 底仓试单",
+        "MACRO_HEADWIND_HALF_SIZE": "大盘逆风／高波动半仓控管",
+        "MARKET_REGIME_PAUSE_NEW_ENTRY": "大盘逆风暂缓开仓",
+        "SECTOR_CONCENTRATION_WARNING": "行业集中度超标警告（超过上限）",
+        "EXISTING_HOLDING_CAPPED": "已扣减既有持仓剩余单档额度",
+        "WAITING_TRIGGER_ESTIMATE": "触发后试算",
+        "STALE_QUOTE_DATE_FALLBACK": "使用前一日回退行情估算",
+        "BUDGET_BELOW_ONE_SHARE": "风控预算不足 1 股",
+        "PARTIAL_PORTFOLIO_COVERAGE": "部分持仓未计入 USD 敞口"
+      },
+      "reasons": {
+        "NON_USD_CURRENCY_NO_FX": "非 USD 报价标的，依规范不跨币别自动汇兑，不估算 USD 建议股数。",
+        "CURRENCY_MISSING": "缺少报价币别数据，暂无法估算建议股数。",
+        "HISTORICAL_DATE_NOT_APPLICABLE": "历史日期查询不估算当前组合建议股数。",
+        "MARKET_REGIME_UNAVAILABLE": "大盘市况数据不足，暂无法估算建议股数。",
+        "INVALID_PRICE_OR_STOP": "缺少有效参考价或保护止损，无法估算股数。",
+        "PLAN_NOT_ELIGIBLE": "此方案目前不可执行或已失效，不估算股数。",
+        "EXISTING_HOLDING_VALUE_UNVERIFIED": "既有同股持仓市值尚未核实（缺行情或拆股未确认），暂不估算加仓股数。",
+        "SINGLE_POSITION_CAP_EXHAUSTED": "既有同股持仓已达单档资金上限，建议新增 0 股。",
+        "BUDGET_BELOW_ONE_SHARE": "按目前风控预算与缩仓系数不足买入 1 股。"
+      }
+    },
+    "health": {
+      "cardTitle": "持仓与自选股今日体检警示卡",
+      "sourceSnapshot": "收盘体检快照",
+      "sourceLive": "按目前持仓实时重算",
+      "tradeDate": "体检交易日：{{date}}",
+      "recalculateLive": "实时重算",
+      "structureHealthy": "持仓结构正常：目前全部持仓无破位、财报逼近、基本面恶化或板块超标警示。",
+      "noItems": "尚未建立个人持仓或重点自选股。点击右侧“持仓／自选管理”或在个股页一键加入。",
+      "coverageWarning": "部分持仓数据缺口或非 USD 未计入整体敞口（{{count}} 项），请留意个别项目状态。",
+      "dataGapNote": "当日部分检查数据不完整（{{count}} 项缺口），请检查行情、估值或拆股同步状态。",
+      "holdingsAlertsTitle": "持仓异常与防守／止盈提醒",
+      "watchlistEntriesTitle": "自选股触发有效买点",
+      "sectorAlertsTitle": "行业板块集中度超标提醒",
+      "criticalCount": "严重 {{count}}",
+      "warningCount": "警告 {{count}}",
+      "infoCount": "提示 {{count}}",
+      "bufferLevels": {
+        "ADEQUATE": "浮盈缓冲充足（>= 10%）",
+        "THIN": "浮盈缓冲偏薄（0%–10%）",
+        "NEGATIVE": "账面亏损无缓冲",
+        "UNKNOWN": "缓冲未知"
+      },
+      "earningsTimings": {
+        "BEFORE_OPEN": "盘前公布",
+        "AFTER_CLOSE": "盘后公布",
+        "DATE_ONLY": "待确认时段"
+      }
+    }
+  },
+  "notifications": {
+    "bellTooltip": "站内主动提醒中心与收盘简报",
+    "title": "站内主动提醒中心",
+    "tabs": {
+      "alerts": "提醒清单",
+      "briefing": "当日收盘简报"
+    },
+    "filters": {
+      "ALL": "全部",
+      "CRITICAL": "严重",
+      "WARNING": "警告",
+      "INFO": "资讯"
+    },
+    "markAllRead": "全部标为已读",
+    "markRead": "标为已读",
+    "unreadOnly": "只看未读",
+    "empty": "目前没有符合条件的站内提醒。",
+    "loading": "加载中…",
+    "loadFailed": "加载数据失败，请稍后再试。",
+    "noBriefing": "尚未生成每日收盘简报，待收盘排程完成后自动更新。",
+    "radarTracks": {
+      "VALUE_SUPPORT": "价值支撑主清单",
+      "TREND_PULLBACK_STARTER": "强势回踩试单"
+    },
+    "briefing": {
+      "marketOverview": "大盘市况概览",
+      "regime": "大盘市况",
+      "regimeChanged": "较上次简报（{{prevDate}}）由 {{prev}} 切换至 {{curr}}",
+      "vix": "VIX",
+      "treasury10y": "美债 10Y",
+      "topSectors": "资金最强前 2 板块（20D CMF）",
+      "bottomSectors": "资金最弱前 2 板块（20D CMF）",
+      "portfolioSection": "持仓体检摘要",
+      "watchlistSection": "自选股触发买点",
+      "radarTop5Section": "全市场每日雷达精选前 5 名",
+      "noRadar": "当日雷达无符合门槛标的。",
+      "noWatchlist": "当日自选股无触发有效买点标的。",
+      "entryRange": "参考区间",
+      "stopPrice": "止损价",
+      "suggestedShares": "建议股数"
+    },
+    "alerts": {
+      "HOLDING_HIGH_RISK_BREAKDOWN": "{{symbol}} 出现高概率真破位（收盘 {{closePrice}}，建议严格执行止损评估）",
+      "HOLDING_STOP_BREACHED": "{{symbol}} 跌破保护止损 {{protectiveStop}}（收盘 {{closePrice}}）",
+      "HOLDING_TECHNICAL_INVALIDATION": "{{symbol}} 连续两日跌破技术失效阈值 {{closeThreshold}}（收盘 {{closePrice}}，技术结构已失效）",
+      "HOLDING_SUSPECTED_SHAKEOUT": "{{symbol}} 疑似洗盘假跌破（收盘 {{closePrice}}，建议观察 1–3 个交易日能否收回）",
+      "HOLDING_BREACH_OBSERVING": "{{symbol}} 跌破支撑观察中（收盘 {{closePrice}}，待后续量价确认真假破位）",
+      "HOLDING_EARNINGS_COUNTDOWN": "{{symbol}} 距离财报日 {{eventDate}} 尚余 {{daysToEarnings}} 天（{{timing}} · {{buffer}}）",
+      "HOLDING_FUNDAMENTAL_WEAKENING": "{{symbol}} 基本面支撑度转弱（WEAKENING），请检视盈利与现金流变化",
+      "HOLDING_VALUE_TRAP": "{{symbol}} 触发价值陷阱警戒（{{stance}}），留意前瞻盈利下修风险",
+      "HOLDING_OVERVALUED_PROFIT_TAKING": "{{symbol}} 突破估值参考带上缘（收盘 {{closePrice}}，可评估分批锁利或上移止损）",
+      "HOLDING_OVERVALUED_RISK_LOSS": "{{symbol}} 处于高估风险区（收盘 {{closePrice}}，目前账面亏损，请留意估值回撤风险）",
+      "HOLDING_TARGET_REACHED": "{{symbol}} 收盘达标上方目标 {{targetLevel}}（{{targetPrice}}，收盘 {{closePrice}}，可评估分批减仓）",
+      "HOLDING_AT_RESISTANCE_ZONE": "{{symbol}} 进入上方主要阻力区（{{resistanceLower}}–{{resistanceUpper}}），留意获利回吐压力",
+      "HOLDING_SECTOR_CONCENTRATION": "行业“{{industryName}}”持仓集中度达 {{exposurePct}}，超过上限 {{maxPct}}",
+      "WATCHLIST_ACCUMULATE_SUPPORT": "自选股 {{symbol}} 进入低估支撑有效买入区（收盘 {{closePrice}}，止损 {{protectiveStop}}，建议 {{suggestedShares}} 股）",
+      "WATCHLIST_TREND_PULLBACK_STARTER": "自选股 {{symbol}} 触发强势趋势回踩试单（收盘 {{closePrice}}，止损 {{protectiveStop}}，建议 {{suggestedShares}} 股）",
+      "RADAR_TOP_OPPORTUNITY": "雷达精选 {{symbol}}（{{trackType}} · 收盘 {{closePrice}}）",
+      "MARKET_REGIME_SHIFT": "大盘市况较上次简报（{{previousTradeDate}}）由 {{previousRegime}} 切换至 {{currentRegime}}",
+      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盘简报已就绪：严重 {{criticalCount}} · 警告 {{warningCount}} · 雷达精选 {{radarTop5Count}} 档"
+    }
   }
 }

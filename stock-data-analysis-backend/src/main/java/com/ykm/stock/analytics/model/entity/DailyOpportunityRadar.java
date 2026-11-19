@@ -139,6 +139,14 @@ public class DailyOpportunityRadar {
     @Comment("配對週線有效支撐區上緣價；次清單或無對應支撐時為 NULL。")
     private BigDecimal supportUpper;
 
+    @Column(name = "plan_entry_lower", precision = 20, scale = 4)
+    @Comment("匹配同區交易計畫之實際入場區間下緣價（區分區間限價與確認回踩上限）；無匹配計畫時為 NULL。")
+    private BigDecimal planEntryLower;
+
+    @Column(name = "plan_entry_upper", precision = 20, scale = 4)
+    @Comment("匹配同區交易計畫之實際入場區間上緣價（供下游收盤簡報精準計算倉位股數）；無匹配計畫時為 NULL。")
+    private BigDecimal planEntryUpper;
+
     @Column(name = "support_distance_pct", precision = 12, scale = 6)
     @Comment("收盤價距配對支撐上緣之距離比例（位於支撐區內為 0，高於上緣為 (close - upper) / upper）；無支撐時為 NULL。")
     private BigDecimal supportDistancePct;

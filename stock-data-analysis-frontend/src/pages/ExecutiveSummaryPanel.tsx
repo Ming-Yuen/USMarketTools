@@ -1,9 +1,10 @@
 import React from "react";
 import { Alert, Box, Chip, Divider, Grid, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
-import { BreakoutDiagnosis, InvestmentSummary, MacroCaution, MetricResult, SummaryFlag, WatchItem } from "../services/types/dto/analysis";
+import { BreakoutDiagnosis, InvestmentSummary, MacroCaution, MetricResult, PositionSizing, SummaryFlag, WatchItem } from "../services/types/dto/analysis";
 import { ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, metricLabel, readableReason, readableState, reasonLabel, statusLabel } from "./AnalysisPanels";
+import { PositionSizingBlock } from "../components/PositionSizingBlock";
 
 const VERDICT_DEFAULTS: Record<string, string> = {
   DEEP_UNDERVALUED: "顯著低於市場參考帶（嚴重偏低）",
@@ -146,10 +147,11 @@ function isPrimaryCodeMatch(cardKey: string, primaryMetric?: string | null): boo
   return cardKey.toUpperCase() === upper;
 }
 
-export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagnosis }: {
+export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagnosis, starterPositionSizing }: {
   valuation?: ValuationResult | null;
   summaryResult?: MetricResult<InvestmentSummary> | null;
   breakoutDiagnosis?: BreakoutDiagnosis | null;
+  starterPositionSizing?: PositionSizing | null;
 }) {
   const { t } = useTranslation();
   const summary = summaryResult?.status === "AVAILABLE" ? summaryResult.value : null;
@@ -428,6 +430,7 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
             。前瞻成長依據：{starter.forwardGrowthBasis === "HYPER_GROWTH_FORWARD_PE"
               ? `預期 EPS 成長逾 100% 豁免 · Forward P/E ${formatNumber(starter.forwardPe)}x`
               : `Forward PEG ${formatNumber(starter.forwardPeg)}${starter.forwardPegBasis ? `（${FORWARD_PEG_BASIS_LABELS[starter.forwardPegBasis] ?? starter.forwardPegBasis}）` : ""}`}。
+            <PositionSizingBlock sizing={starterPositionSizing} starterMode />
           </Alert>
         )}
 

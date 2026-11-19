@@ -62,11 +62,39 @@ export interface SupportResistance {
 }
 export interface RiskReward { entry: number; stop: number; grossRR: number; netRR: number; potentialUpsidePercent: number; potentialDownsidePercent: number; }
 export interface PriceRange { lower: number; upper: number; }
+export interface PositionSizing {
+  status: "AVAILABLE" | "PAUSED" | "NOT_APPLICABLE" | string;
+  reasonCode?: string | null;
+  planActionable: boolean;
+  suggestedShares?: number | null;
+  entryReferencePrice?: number | null;
+  protectiveStopPrice?: number | null;
+  riskPerShare?: number | null;
+  estimatedPositionAmount?: number | null;
+  positionCapitalPct?: number | null;
+  maxEstimatedLossAmount?: number | null;
+  maxEstimatedLossPct?: number | null;
+  totalCapital?: number | null;
+  riskPerTradePct?: number | null;
+  maxSinglePositionPct?: number | null;
+  maxSectorExposurePct?: number | null;
+  scaleNumerator: number;
+  scaleDenominator: number;
+  scaleLabel: string;
+  existingHoldingMarketValue?: number | null;
+  industryCode?: string | null;
+  currentSectorExposurePct?: number | null;
+  projectedSectorExposurePct?: number | null;
+  sectorConcentrationWarning: boolean;
+  excludedHoldingsCount: number;
+  sizingTags: string[];
+}
 export interface TradePlan {
   planId: string; setupType: string; entryRange?: PriceRange | null; entryMethod?: string | null; trigger?: string | null;
   stop?: { protectivePrice: number; closeThreshold: number | null; requiredCloses?: number; evaluationTimeframe?: string } | null;
   targets: { price: number; weight: number; reason: string; sourceZoneId?: string }[];
   riskReward: MetricResult<RiskReward>; status: string; reasons: AnalysisReason[]; validThroughSession?: string | null;
+  positionSizing?: PositionSizing | null;
 }
 export interface TradePlanResult { plans: TradePlan[]; currentPrice: number; priceDataThrough: string; currentPriceRR: MetricResult<RiskReward>; reasons: AnalysisReason[]; contextEvaluated: boolean; }
 export interface MomentumVolume { rsi14: MetricResult<number>; momentumSignal: MetricResult<number>; macd: MetricResult<number>; macdSignal: MetricResult<number>; volumeVs20Day: MetricResult<number>; volumeSignal: MetricResult<number>; drawdownFrom252High: MetricResult<number>; return20: MetricResult<number>; return60: MetricResult<number>; }
@@ -360,4 +388,5 @@ export interface StockAnalysisReport {
   fundamentals?: FundamentalSnapshot | null;
   summary?: MetricResult<InvestmentSummary> | null;
   peerRelativeStrength?: PeerRelativeStrength | null;
+  starterPositionSizing?: PositionSizing | null;
 }

@@ -32,6 +32,9 @@
 | `daily_opportunity_radar_run` | `radar_date` | 每日機會雷達發布紀錄（含零入選日、大盤市況與候選／發布檔數），確保當日首次完整發布後凍結快照，且零入選日不回退復活前一日名單 |
 | `sector_money_flow_daily` | `(trade_date, industry_code)` | 全市場各產業板塊之成交額加權量價資金流（5D／20D CMF）、市場成交額佔比變化、拆股對齊均線廣度（SMA50／SMA200）與 20D／60D 完整視窗報酬中位數 |
 | `signal_tracking_log` | `id`（唯一鍵 `(figi, signal_type, signal_date)`） | 歷史雷達訊號（`ACCUMULATE_AT_SUPPORT`、`TREND_PULLBACK_STARTER`）不可變帳本與事後跨拆股結算表，條件式回填 `+5D/+20D/+60D` 報酬、完整 60D 無缺口 MFE／MAE 與止盈止損首次觸發狀態 |
+| `portfolio_item` | `figi` | 個人持倉（`HOLDING`）與重點自選（`WATCHLIST`）清單，保存股數、均價、美東拆股基準日（`cost_basis_date`）與備註 |
+| `in_app_notification` | `id`（唯一去重鍵 `dedup_key`） | 站內主動提醒持久化表，按嚴重度（`CRITICAL`／`WARNING`／`INFO`）保存持倉異常、自選買點、雷達精選、大盤切換與簡報通知及已讀狀態 |
+| `daily_closing_briefing` | `trade_date` | 每日收盤簡報持久化快照（每交易日首次完整發布即凍結），彙整大盤市況、強弱前 2 板塊、持倉體檢摘要、自選買點與雷達雙軌精選前 5 名 |
 | `stock_custom_peer` | `(target_figi, peer_figi)` | 個股自訂對標同業清單與可選偏好比較指標（`preferred_metric`） |
 | `stock_share_observation` | `(figi, observed_at)` | 富途流通在外股數、已發行股數、對應市值及原生 P/E、P/B 快照觀察（僅在股數變動或當日尚無收市快照時寫入） |
 | `financial_report` | `(figi, statement_type, period_end, period_type)` | 富途原幣三大財報（損益表 `1`、資產負債表 `2`、現金流量表 `3`） |
@@ -84,7 +87,11 @@
 | `PATCH /stock/{figi}/tracked` | 更新單一股票的人工追蹤開關 `{ "tracked": true \| false }` |
 | `POST /stock/tracked/batch` | 批量更新多檔股票的人工追蹤開關 `{ "figis": [...], "tracked": true \| false }` |
 | `POST /stock/classification` | 交易所、產業、概念、市值規模分層（`marketCapTiers`）、估值定性（`verdicts`）與支援排序欄位（`sortFields`）字典查詢 |
-| `POST /analysis/report` | 個股分析報告（回傳 `valuation`、規模分層／自訂對標同業參考、同日同業相對強弱 `peerRelativeStrength`、前瞻估值與預期修正觀察、`financials` 14 項指標、5 年月頻 `history`、技術支撐阻力與執行摘要 `summary`） |
+| `POST /analysis/report` | 個股分析報告（回傳 `valuation`、規模分層／自訂對標同業參考、同日同業相對強弱 `peerRelativeStrength`、前瞻估值與預期修正觀察、`financials` 14 項指標、5 年月頻 `history`、技術支撐阻力、各交易計畫與強勢試單之倉位風險建議 `positionSizing`/`starterPositionSizing` 及執行摘要 `summary`） |
+| `GET /portfolio`、`PUT /portfolio/{figi}`、`DELETE /portfolio/{figi}` | 個人持倉／自選清單（含拆股對齊損益與 USD 板塊曝險彙總）查詢、新增更新與移除 |
+| `GET /portfolio/config`、`PUT /portfolio/config` | 讀寫 `sys_config` 內之總資金（USD）、單筆風險比例、單檔上限與單一板塊上限風控參數 |
+| `GET /portfolio/health` | 查詢持倉與自選股體檢警示卡（預設讀最新已發布收盤簡報快照，`live=true` 時按目前持倉純本地唯讀即時重算，不觸發外部 API 或寫通知） |
+| `GET /notifications`、`GET /notifications/unread-count`、`POST /notifications/{id}/read`、`POST /notifications/read-all`、`GET /notifications/briefing/latest` | 站內主動提醒中心查詢、未讀紅點計數、單筆／全部已讀管理與最新每日收盤簡報查詢 |
 | `GET /valuation/{figi}/custom-peers`、`PUT`、`DELETE` | 查詢、儲存或清除指定 `figi` 的自訂對標同業清單與偏好比較指標，並即時同步最新 `verdict` 快照 |
 | `GET /valuation/{figi}/history` | 個股歷史估值曲線；參數 `from`、`through`、`frequency`（`MONTH_END`\|`DAILY`）、`source`（預設 `LOCAL` 本地五倍數，可選 `FUTU` 原生三倍數） |
 | `POST /valuation/recalculate` | 手動整股重建指定 `figi` 的 `stock_financial_period` 並刷新 `stock_valuation_latest`，回傳區間估值 |
@@ -111,7 +118,7 @@
 | `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
-| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫），最後獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取） |
+| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢及站內收盤簡報／提醒寫入（異常僅記警告日誌，絕不回滾上游估值、資金流與雷達快照） |
 
 ### 舊版資料庫清理說明
 

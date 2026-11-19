@@ -674,5 +674,200 @@
       "COMPLETED": "Completed",
       "FAILED": "Failed"
     }
+  },
+  "portfolio": {
+    "title": "Portfolio & Watchlist",
+    "openDrawer": "Portfolio / Watchlist",
+    "closeDrawer": "Close drawer",
+    "manageCurrent": "Track Position / Watch",
+    "inHoldingBadge": "Holding",
+    "inWatchlistBadge": "Watching",
+    "tabs": {
+      "list": "Holdings & Watchlist",
+      "edit": "Add / Edit Ticker",
+      "riskConfig": "Capital & Risk Settings"
+    },
+    "types": {
+      "HOLDING": "Holding",
+      "WATCHLIST": "Watchlist"
+    },
+    "summary": {
+      "holdings": "Holdings",
+      "watchlist": "Watchlist",
+      "totalMarketValue": "USD Market Value",
+      "totalPnl": "Unrealized P&L",
+      "sectorExposureTitle": "Sector Exposure (% of Total Capital)",
+      "sectorExceeded": "Above {{max}}% Cap",
+      "noHoldings": "No holdings or watchlist items yet. Add any stock directly from its analysis page.",
+      "excludedNotice": "{{count}} holding(s) excluded from USD totals due to non-USD currency, missing quote, or unverified split history."
+    },
+    "table": {
+      "symbol": "Ticker",
+      "type": "Type",
+      "shares": "Shares",
+      "avgCost": "Avg Cost",
+      "close": "Latest Close",
+      "pnl": "P&L / Return",
+      "weight": "% Capital",
+      "actions": "Actions",
+      "splitAdjustedTag": "Split-Adjusted",
+      "edit": "Edit",
+      "delete": "Remove"
+    },
+    "form": {
+      "figi": "Stock FIGI",
+      "itemType": "Item Type",
+      "shares": "Shares Held",
+      "avgCost": "Average Cost",
+      "costBasisDate": "Cost Basis Trading Date (Split Alignment)",
+      "costBasisDateHelper": "US trading date when the entered shares/cost applied; leave blank for latest closed session.",
+      "notes": "Notes",
+      "save": "Save Item",
+      "saving": "Saving...",
+      "saved": "Portfolio / watchlist item saved.",
+      "deleted": "Removed from list.",
+      "deleteConfirm": "Remove {{symbol}} from your list?",
+      "saveFailed": "Save failed: {{message}}",
+      "loadFailed": "Failed to load existing portfolio status. Saving is disabled to prevent overwriting an existing holding."
+    },
+    "config": {
+      "title": "Capital & Position Sizing Rules (USD)",
+      "totalCapital": "Total Capital (USD)",
+      "riskPerTradePct": "Max Risk per Trade (%)",
+      "maxSinglePositionPct": "Max Single-Stock Allocation (%)",
+      "maxSectorExposurePct": "Max Sector Exposure Cap (%)",
+      "save": "Save Risk Settings",
+      "saved": "Risk settings updated. Suggested shares and sector caps refreshed.",
+      "saveFailed": "Failed to update risk settings: {{message}}",
+      "loadFailed": "Failed to load current risk settings. Saving is disabled to prevent overwriting existing values."
+    },
+    "sizing": {
+      "sectionTitle": "Risk-Based Position Sizing",
+      "starterSectionTitle": "Trend Pullback Starter Sizing",
+      "suggestedShares": "Suggested Shares",
+      "sharesUnit": "{{shares}} sh",
+      "estimatedAmount": "Est. Position Value",
+      "capitalPct": "{{pct}} of capital",
+      "maxLoss": "Est. Loss at Stop",
+      "lossPct": "{{pct}} of capital",
+      "entryRef": "Conservative Ref. Price {{price}}",
+      "scaleBadge": "Scale: {{scale}}",
+      "sectorExposure": "Projected Sector Exposure: {{projected}} (Current {{current}} / Cap {{max}})",
+      "pausedNotice": "Market regime is BEAR/PANIC. New entries are paused (0 shares).",
+      "waitingTriggerNote": "Plan not yet active (post-trigger estimate only)",
+      "staleFallbackNote": "Latest session quote not yet synced; estimated from prior session fallback quote.",
+      "tags": {
+        "TREND_PULLBACK_STARTER_ONE_THIRD": "1/3 Starter Position",
+        "MACRO_HEADWIND_HALF_SIZE": "Half Size (Correction / High Vol)",
+        "MARKET_REGIME_PAUSE_NEW_ENTRY": "New Entries Paused (Bear/Panic)",
+        "SECTOR_CONCENTRATION_WARNING": "Sector Concentration Warning (Over Cap)",
+        "EXISTING_HOLDING_CAPPED": "Capped by Remaining Single-Stock Room",
+        "WAITING_TRIGGER_ESTIMATE": "Post-Trigger Estimate",
+        "STALE_QUOTE_DATE_FALLBACK": "Estimated on Prior Session Fallback Quote",
+        "BUDGET_BELOW_ONE_SHARE": "Budget Below 1 Share",
+        "PARTIAL_PORTFOLIO_COVERAGE": "Partial USD Portfolio Coverage"
+      },
+      "reasons": {
+        "NON_USD_CURRENCY_NO_FX": "Non-USD security: cross-currency FX conversion is disabled; USD share sizing unavailable.",
+        "CURRENCY_MISSING": "Missing quote currency; position sizing unavailable.",
+        "HISTORICAL_DATE_NOT_APPLICABLE": "Position sizing is not applicable for historical date snapshots.",
+        "MARKET_REGIME_UNAVAILABLE": "Market regime unavailable; position sizing deferred.",
+        "INVALID_PRICE_OR_STOP": "Missing valid reference price or protective stop.",
+        "PLAN_NOT_ELIGIBLE": "Plan is invalidated or unavailable for sizing.",
+        "EXISTING_HOLDING_VALUE_UNVERIFIED": "Existing holding value for this ticker is unverified (missing quote or split history); additional share sizing is unavailable.",
+        "SINGLE_POSITION_CAP_EXHAUSTED": "Existing holding already reaches the single-stock cap (0 additional shares).",
+        "BUDGET_BELOW_ONE_SHARE": "Risk/position budget after scaling is below 1 share."
+      }
+    },
+    "health": {
+      "cardTitle": "Daily Portfolio & Watchlist Health Check",
+      "sourceSnapshot": "Closing Snapshot",
+      "sourceLive": "Live Recalculation",
+      "tradeDate": "Check Date: {{date}}",
+      "recalculateLive": "Recalculate Now",
+      "structureHealthy": "Portfolio Healthy: no breakdown, imminent earnings, weakening fundamentals, or sector concentration alerts.",
+      "noItems": "No holdings or watchlist tickers yet. Click \"Portfolio / Watchlist\" or add from any stock analysis page.",
+      "coverageWarning": "Partial data coverage or non-USD holdings excluded ({{count}} item(s)); review individual items below.",
+      "dataGapNote": "Partial check data missing for this session ({{count}} gap(s)); review quote, valuation, or split sync status.",
+      "holdingsAlertsTitle": "Holdings Defense & Profit-Taking Alerts",
+      "watchlistEntriesTitle": "Watchlist Actionable Entry Signals",
+      "sectorAlertsTitle": "Sector Concentration Warnings",
+      "criticalCount": "Critical {{count}}",
+      "warningCount": "Warning {{count}}",
+      "infoCount": "Info {{count}}",
+      "bufferLevels": {
+        "ADEQUATE": "Adequate P&L Buffer (>= 10%)",
+        "THIN": "Thin P&L Buffer (0%–10%)",
+        "NEGATIVE": "Unrealized Loss (No Buffer)",
+        "UNKNOWN": "Buffer Unknown"
+      },
+      "earningsTimings": {
+        "BEFORE_OPEN": "Before Open",
+        "AFTER_CLOSE": "After Close",
+        "DATE_ONLY": "Time TBD"
+      }
+    }
+  },
+  "notifications": {
+    "bellTooltip": "In-App Alert Center & Closing Briefing",
+    "title": "In-App Alert Center",
+    "tabs": {
+      "alerts": "Alerts",
+      "briefing": "Closing Briefing"
+    },
+    "filters": {
+      "ALL": "All",
+      "CRITICAL": "Critical",
+      "WARNING": "Warning",
+      "INFO": "Info"
+    },
+    "markAllRead": "Mark All Read",
+    "markRead": "Mark Read",
+    "unreadOnly": "Unread Only",
+    "empty": "No alerts matching the current filter.",
+    "loading": "Loading...",
+    "loadFailed": "Failed to load data. Please try again.",
+    "noBriefing": "No daily closing briefing yet. Generated automatically after the daily closing task.",
+    "radarTracks": {
+      "VALUE_SUPPORT": "Value Support",
+      "TREND_PULLBACK_STARTER": "Trend Pullback Starter"
+    },
+    "briefing": {
+      "marketOverview": "Market Overview",
+      "regime": "Market Regime",
+      "regimeChanged": "Shifted from {{prev}} to {{curr}} since {{prevDate}}",
+      "vix": "VIX",
+      "treasury10y": "US 10Y",
+      "topSectors": "Top 2 Sectors (20D CMF)",
+      "bottomSectors": "Bottom 2 Sectors (20D CMF)",
+      "portfolioSection": "Portfolio Health Summary",
+      "watchlistSection": "Watchlist Entry Signals",
+      "radarTop5Section": "Daily Radar Top 5 Picks",
+      "noRadar": "No radar opportunities qualified on this session.",
+      "noWatchlist": "No watchlist tickers triggered actionable entry zones.",
+      "entryRange": "Entry Zone",
+      "stopPrice": "Stop",
+      "suggestedShares": "Suggested Shares"
+    },
+    "alerts": {
+      "HOLDING_HIGH_RISK_BREAKDOWN": "{{symbol}} high-risk breakdown detected (close {{closePrice}}; review strict stop execution)",
+      "HOLDING_STOP_BREACHED": "{{symbol}} breached protective stop {{protectiveStop}} (close {{closePrice}})",
+      "HOLDING_TECHNICAL_INVALIDATION": "{{symbol}} confirmed technical invalidation below {{closeThreshold}} (close {{closePrice}})",
+      "HOLDING_SUSPECTED_SHAKEOUT": "{{symbol}} suspected shakeout below support (close {{closePrice}}; monitor 1–3 sessions for reclaim)",
+      "HOLDING_BREACH_OBSERVING": "{{symbol}} support breach under observation (close {{closePrice}}; awaiting volume/price confirmation)",
+      "HOLDING_EARNINGS_COUNTDOWN": "{{symbol}} earnings on {{eventDate}} in {{daysToEarnings}}d ({{timing}} · {{buffer}})",
+      "HOLDING_FUNDAMENTAL_WEAKENING": "{{symbol}} fundamental backing weakened (WEAKENING); review earnings & cash flow trend",
+      "HOLDING_VALUE_TRAP": "{{symbol}} value trap caution triggered ({{stance}}); watch for forward estimate downgrades",
+      "HOLDING_OVERVALUED_PROFIT_TAKING": "{{symbol}} exceeded upper valuation band (close {{closePrice}}; consider partial profit-taking or trailing stop)",
+      "HOLDING_OVERVALUED_RISK_LOSS": "{{symbol}} in overvalued risk zone (close {{closePrice}}, currently at a loss; watch valuation drawdown risk)",
+      "HOLDING_TARGET_REACHED": "{{symbol}} closed at/above target {{targetLevel}} ({{targetPrice}}, close {{closePrice}}; consider trimming)",
+      "HOLDING_AT_RESISTANCE_ZONE": "{{symbol}} entered major resistance zone ({{resistanceLower}}–{{resistanceUpper}}); monitor supply pressure",
+      "HOLDING_SECTOR_CONCENTRATION": "Sector \"{{industryName}}\" exposure reached {{exposurePct}}, exceeding {{maxPct}} cap",
+      "WATCHLIST_ACCUMULATE_SUPPORT": "Watchlist {{symbol}} entered active support buy zone (close {{closePrice}}, stop {{protectiveStop}}, suggested {{suggestedShares}} sh)",
+      "WATCHLIST_TREND_PULLBACK_STARTER": "Watchlist {{symbol}} triggered trend pullback starter (close {{closePrice}}, stop {{protectiveStop}}, suggested {{suggestedShares}} sh)",
+      "RADAR_TOP_OPPORTUNITY": "Radar top pick {{symbol}} ({{trackType}} · close {{closePrice}})",
+      "MARKET_REGIME_SHIFT": "Market regime shifted from {{previousRegime}} to {{currentRegime}} since {{previousTradeDate}}",
+      "DAILY_CLOSING_BRIEFING": "{{tradeDate}} closing briefing ready: {{criticalCount}} critical · {{warningCount}} warning · {{radarTop5Count}} radar picks"
+    }
   }
 }

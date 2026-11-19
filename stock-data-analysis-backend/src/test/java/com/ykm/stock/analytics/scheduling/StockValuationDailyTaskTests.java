@@ -92,6 +92,7 @@ class StockValuationDailyTaskTests {
     private com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService sectorMoneyFlowService;
     private com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService dailyOpportunityRadarService;
     private com.ykm.stock.analytics.service.analysis.SignalTrackingService signalTrackingService;
+    private com.ykm.stock.analytics.service.portfolio.PortfolioClosingService portfolioClosingService;
 
     @BeforeEach
     void setUp() {
@@ -103,8 +104,9 @@ class StockValuationDailyTaskTests {
         sectorMoneyFlowService = mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class);
         dailyOpportunityRadarService = mock(com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService.class);
         signalTrackingService = mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class);
+        portfolioClosingService = mock(com.ykm.stock.analytics.service.portfolio.PortfolioClosingService.class);
         task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager,
-                latestRepo, sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService);
+                latestRepo, sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService, portfolioClosingService);
 
         when(clock.now()).thenReturn(NOW);
         when(clock.nowLocalDateTime()).thenReturn(LocalDateTime.of(2026, 11, 13, 18, 0));
@@ -533,12 +535,48 @@ class StockValuationDailyTaskTests {
         task.execute(ctx);
         org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService);
 
-        // 2) 第二批行情補齊至 D 日：覆蓋率 2/2 = 100% -> 觸發板塊資金流、雷達發布與歷史訊號結算
+        // 2) 第二批行情補齊至 D 日：覆蓋率 2/2 = 100% -> 觸發板塊資金流、雷達發布、歷史訊號結算與持倉收盤簡報
         batch2.status().setQuoteDate(DAY_NOV_12);
         task.execute(ctx);
         org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
         org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
         org.mockito.Mockito.verify(signalTrackingService).settlePendingSignals(DAY_NOV_12);
+        org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+    }
+
+    /**
+     * Scenario：排程容錯隔離 — 收盤持倉體檢或站內簡報寫入拋出異常時，
+     * 排程僅記錄警告日誌並正常完成，絕不中斷也不影響當日已完成的估值、板塊資金流、雷達與訊號結算。
+     */
+    @Test
+    void portfolioClosingFailureIsIsolatedAndDoesNotAbortDailyValuationTask() throws Exception {
+        ActiveStockWithStatus target = stockWithStatus("F_ISO", "ISO");
+        stubStock(target, "100", 10000000L);
+        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(target));
+        when(latestRepo.findMaxValuationDateAtOrBefore(DAY_NOV_12)).thenReturn(Optional.of(DAY_NOV_12));
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of());
+        currentReports.addAll(fourConsecutiveQuarters("F_ISO",
+                new String[]{"2025-09-30", "3", "2025", "1.00"},
+                new String[]{"2025-12-31", "4", "2025", "1.00"},
+                new String[]{"2026-03-31", "1", "2026", "1.00"},
+                new String[]{"2026-06-30", "2", "2026", "1.00"}));
+
+        when(portfolioClosingService.publishDailyClosing(eq(DAY_NOV_12), any()))
+                .thenThrow(new RuntimeException("SIMULATED_BRIEFING_DB_FAILURE"));
+
+        JobExecutionContext ctx = mock(JobExecutionContext.class);
+        when(ctx.getMergedJobDataMap()).thenReturn(new JobDataMap());
+
+        // 不應拋出任何例外，且上游估值、板塊資金流、雷達、訊號結算皆已順利執行完成
+        task.execute(ctx);
+
+        assertThat(storedLatest.get("F_ISO")).isNotNull();
+        org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(signalTrackingService).settlePendingSignals(DAY_NOV_12);
+        org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
     }
 
     private StockShareObservation persistedObsFrom(FutuService.ShareSnapshot snap, long shares) {

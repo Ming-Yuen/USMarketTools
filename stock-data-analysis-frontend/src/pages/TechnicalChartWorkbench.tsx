@@ -7,6 +7,7 @@ import {
 } from "../services/types/dto/analysis";
 import { ValuationResult } from "../services/types/dto/valuation";
 import { formatNumber, readableReason, readableState } from "./AnalysisPanels";
+import { PositionSizingBlock } from "../components/PositionSizingBlock";
 import { svgXFromClient } from "./ValuationPanels";
 
 type RangeCode = "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "5Y";
@@ -1060,6 +1061,7 @@ export function ActionableLevelsAndPlansPanel({ levels, tradePlans, reportPlansR
               <Typography variant="body2">扣除成本淨風報比（Net R/R）：<b>{formatNumber(rrVal?.netRR)}</b></Typography>
               {plan.validThroughSession && <Typography variant="caption">有效交易日截至：{plan.validThroughSession}</Typography>}
               {plan.reasons?.map((reason, idx) => <Typography key={idx} variant="caption" color="text.secondary">· {readableReason(t, reason)}</Typography>)}
+              <PositionSizingBlock sizing={plan.positionSizing} />
             </Stack>
           </Grid>;
         })}

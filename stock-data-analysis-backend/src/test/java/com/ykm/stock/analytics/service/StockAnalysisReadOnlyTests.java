@@ -1,5 +1,6 @@
 package com.ykm.stock.analytics.service;
 
+import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReportRequest;
@@ -77,11 +78,13 @@ import static org.mockito.Mockito.when;
 class StockAnalysisReadOnlyTests {
     private static final LocalDate DAY = LocalDate.parse("2025-05-02");
     private static final Instant CLOSE = Instant.parse("2025-05-02T20:00:00Z");
+    private static final Instant FIXED_READ_AT = Instant.parse("2025-05-03T12:00:00Z");
 
     private final StockRepository stocks = mock(StockRepository.class);
     private final StockIndustryHistoryRepository industries = mock(StockIndustryHistoryRepository.class);
     private final MarketEventRepository marketEvents = mock(MarketEventRepository.class);
     private final MarketStatusService calendar = mock(MarketStatusService.class);
+    private final DateTimeService clock = mock(DateTimeService.class);
     private final QuoteNormalizationService prices = mock(QuoteNormalizationService.class);
     private final PriceStructureService structures = mock(PriceStructureService.class);
     private final SupportResistanceService levels = mock(SupportResistanceService.class);
@@ -91,9 +94,13 @@ class StockAnalysisReadOnlyTests {
     private final StockValuationService stockValuations = mock(StockValuationService.class);
     private final com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService sectorMoneyFlowService =
             mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class);
+    private final com.ykm.stock.analytics.service.portfolio.PortfolioManagementService portfolioManagementService =
+            mock(com.ykm.stock.analytics.service.portfolio.PortfolioManagementService.class);
+    private final com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator positionSizingCalculator =
+            new com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator();
     private final StockAnalysisService service = new StockAnalysisService(
-            stocks, industries, marketEvents, calendar, prices, structures, levels, plans, market,
-            stockObservations, stockValuations, sectorMoneyFlowService);
+            stocks, industries, marketEvents, calendar, clock, prices, structures, levels, plans, market,
+            stockObservations, stockValuations, sectorMoneyFlowService, portfolioManagementService, positionSizingCalculator);
 
     private Stock testStock;
 
@@ -103,6 +110,8 @@ class StockAnalysisReadOnlyTests {
         testStock.setFigi("TEST_FIGI");
         testStock.setSymbol("TEST");
         testStock.setLongName("Test issuer");
+        testStock.setCurrency("USD");
+        when(clock.now()).thenReturn(FIXED_READ_AT);
         when(stocks.findById("TEST_FIGI")).thenReturn(Optional.of(testStock));
         when(calendar.isTradingDay(DAY)).thenReturn(true);
         when(calendar.getSessionCloseAt(DAY)).thenReturn(CLOSE);
@@ -126,15 +135,13 @@ class StockAnalysisReadOnlyTests {
 
     @Test
     void defaultDateKeepsFinancialCloseButReadsLatestSupplementalObservations() {
-        Instant before = Instant.now();
         StockAnalysisReportDto report = service.analyze(new AnalysisReportRequest("TEST_FIGI", null, null));
-        Instant after = Instant.now();
         assertThat(report.valuationDate()).isEqualTo(DAY);
         verify(stockObservations).readWithForward(argThat(ctx -> "TEST_FIGI".equals(ctx.figi())
                 && DAY.equals(ctx.valuationDate())
-                && !ctx.asOf().isBefore(before) && !ctx.asOf().isAfter(after)));
+                && FIXED_READ_AT.equals(ctx.asOf())));
         verify(prices).normalize(argThat(context -> context.analysisAsOf().equals(CLOSE)
-                && !context.observationCutoff().isBefore(before) && !context.observationCutoff().isAfter(after)), eq(DAY.minusYears(5)), eq(DAY));
+                && FIXED_READ_AT.equals(context.observationCutoff())), eq(DAY.minusYears(5)), eq(DAY));
     }
 
     @Test
@@ -239,6 +246,61 @@ class StockAnalysisReadOnlyTests {
         assertThat(plan.reasons()).extracting(AnalysisReasonDto::code).contains("NO_FIXED_TARGET");
     }
 
+    @Test
+    void unverifiedExistingHoldingBlocksActionableSizingOnSameFigi() {
+        com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto cfg =
+                new com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto(
+                        new BigDecimal("100000.00"), new BigDecimal("0.0100"),
+                        new BigDecimal("0.1500"), new BigDecimal("0.3000"), "USD");
+        when(portfolioManagementService.loadExposureSnapshot(any(), any())).thenReturn(
+                new com.ykm.stock.analytics.service.portfolio.PortfolioManagementService.PortfolioExposureSnapshot(
+                        cfg, java.util.Map.of(), java.util.Map.of(), java.util.Set.of("TEST_FIGI"), 1, List.of("SPLIT_SYNC_ERROR:TEST")));
+
+        ValuationResultDto valuation = new ValuationResultDto(
+                "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", null, "AVAILABLE", null,
+                new ValuationResultDto.Metrics(
+                        ValuationResultDto.value(new BigDecimal("20"), null),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "VALUATION_DATE_SHARES_MISSING"),
+                        ValuationResultDto.value(null, "EV_COMPONENTS_UNRESOLVED")),
+                new BigDecimal("98"), "USD", CLOSE, null, null, null, null);
+        when(stockValuations.evaluateForReport(any(), eq(DAY), eq(CLOSE), any(), any()))
+                .thenReturn(new ReportValuationBundle(valuation, null, List.of()));
+        ExecutionCostCalculator costs = new ExecutionCostCalculator();
+        TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
+        StockAnalysisService reportService = new StockAnalysisService(
+                stocks, industries, marketEvents, calendar, clock, prices, structures, levels, realPlans, market,
+                stockObservations, stockValuations, sectorMoneyFlowService, portfolioManagementService, positionSizingCalculator);
+        Instant confirmedAt = CLOSE.minusSeconds(86400);
+        when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
+        NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),
+                MetricResult.available(BigDecimal.ONE), CLOSE.minusSeconds(23400), CLOSE, CLOSE, CLOSE, null, "BASIS");
+        PriceBasisDescriptor basis = new PriceBasisDescriptor("BASIS", "STORED_QUOTES", PriceAdjustment.SPLIT_ADJUSTED, DAY,
+                null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, "USD", true, null);
+        NormalizedPriceSeriesDto price = new NormalizedPriceSeriesDto("TEST_FIGI", "DAILY", List.of(bar), basis, null, MetricStatus.AVAILABLE, List.of(), null);
+        MetricResult<StructureTrendDto> trend = MetricResult.available(new StructureTrendDto(TrendState.UPTREND, confirmedAt, PriceRelation.HH, PriceRelation.HL, List.of(), confirmedAt));
+        AtrPointDto atr = new AtrPointDto(DAY, 14, new BigDecimal("5"), null, DAY.minusYears(1), 14, 100);
+        TimeframeStructureDto frame = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar), MetricResult.available(atr), List.of(), List.of(),
+                MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL), trend, trend, List.of(), List.of());
+        PriceStructureDto structure = new PriceStructureDto("TEST_FIGI", null, DAY, List.of(frame), List.of(), List.of());
+        SupportResistanceDto zones = new SupportResistanceDto(List.of(zone("S", "95", "100", ZoneRole.SUPPORT, confirmedAt)),
+                List.of(zone("R", "130", "135", ZoneRole.RESISTANCE, confirmedAt)), List.of(), List.of(), List.of(), List.of());
+        MarketContextDto background = new MarketContextDto(null, null, null, List.of(), new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()), List.of(), List.of());
+        when(prices.normalize(any(), any(), any())).thenReturn(MetricResult.available(price));
+        when(structures.analyze(any(), same(price))).thenReturn(MetricResult.available(structure));
+        when(marketEvents.findVisiblePastEarnings(eq("TEST_FIGI"), eq(DAY), any())).thenReturn(List.of());
+        when(market.evaluate(any(), same(price), same(structure), any())).thenReturn(MetricResult.available(background));
+        when(levels.analyze(any(), same(price), same(structure), same(background))).thenReturn(MetricResult.available(zones));
+
+        StockAnalysisReportDto report = reportService.analyze(new AnalysisReportRequest("TEST_FIGI", null, AnalysisHorizon.SWING));
+        TradePlanDto plan = report.tradePlans().value().plans().getFirst();
+        assertThat(plan.positionSizing()).isNotNull();
+        assertThat(plan.positionSizing().status()).isEqualTo("NOT_APPLICABLE");
+        assertThat(plan.positionSizing().reasonCode()).isEqualTo("EXISTING_HOLDING_VALUE_UNVERIFIED");
+        assertThat(plan.positionSizing().suggestedShares()).isNull();
+    }
+
     private StockAnalysisReportDto assembledReport(boolean hasValuation, boolean hasResistance) {
         ValuationResultDto valuation = new ValuationResultDto(
                 "TEST_FIGI", DAY, CLOSE, "FINANCIAL_REPORT_AS_OBSERVED", null, "AVAILABLE", null,
@@ -255,8 +317,8 @@ class StockAnalysisReadOnlyTests {
         ExecutionCostCalculator costs = new ExecutionCostCalculator();
         TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
         StockAnalysisService reportService = new StockAnalysisService(
-                stocks, industries, marketEvents, calendar, prices, structures, levels, realPlans, market,
-                stockObservations, localValuation, sectorMoneyFlowService);
+                stocks, industries, marketEvents, calendar, clock, prices, structures, levels, realPlans, market,
+                stockObservations, localValuation, sectorMoneyFlowService, portfolioManagementService, positionSizingCalculator);
         Instant confirmedAt = CLOSE.minusSeconds(86400);
         when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
         NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),

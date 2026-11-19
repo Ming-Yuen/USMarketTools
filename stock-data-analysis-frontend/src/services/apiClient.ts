@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 
-const isSensitiveAnalysisUrl = (url?: string) => !!url && /(^|\/)analysis(\/|$)/.test(url);
+const isSensitiveUrl = (url?: string) => !!url && /(^|\/)(analysis|portfolio|notifications)(\/|$|\?)/.test(url);
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: process.env.REACT_APP_API_BASE_URL as string,
@@ -16,7 +16,7 @@ apiClient.interceptors.request.use((config) => {
     url: config.baseURL ? config.baseURL + config.url : config.url,
     method: config.method,
     params: config.params,
-    data: isSensitiveAnalysisUrl(config.url) ? "[redacted]" : config.data,
+    data: isSensitiveUrl(config.url) ? "[redacted]" : config.data,
     headers: config.headers,
   });
   return config;
@@ -28,7 +28,7 @@ apiClient.interceptors.response.use(
     console.log("[axios][response]", {
       url: res.config.baseURL ? res.config.baseURL + res.config.url : res.config.url,
       status: res.status,
-      data: isSensitiveAnalysisUrl(res.config.url) ? "[redacted]" : res.data,
+      data: isSensitiveUrl(res.config.url) ? "[redacted]" : res.data,
     });
     return res;
   },
@@ -37,7 +37,14 @@ apiClient.interceptors.response.use(
       console.error("[axios][error]", {
         url: err.config.baseURL ? err.config.baseURL + err.config.url : err.config.url,
         status: err.response.status,
-        data: isSensitiveAnalysisUrl(err.config?.url) ? "[redacted]" : err.response.data,
+        data: isSensitiveUrl(err.config?.url) ? "[redacted]" : err.response.data,
+      });
+    } else if (isSensitiveUrl(err.config?.url)) {
+      console.error("[axios][error]", {
+        url: err.config?.baseURL ? err.config.baseURL + err.config.url : err.config?.url,
+        code: err.code,
+        message: err.message,
+        data: "[redacted]",
       });
     } else {
       console.error("[axios][error]", err);

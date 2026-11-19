@@ -4,6 +4,7 @@ import { ExpandLess, ExpandMore, FolderOpen, Folder, Description, Close, QuerySt
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { MenuTree } from "../services/types/dto/menu";
 import LanguageSwitcher from "../components/LanguageSwitcher";
+import { NotificationCenterPopover } from "../components/NotificationCenterPopover";
 import "../i18n";
 import { useTranslation } from "react-i18next";
 
@@ -185,7 +186,10 @@ const Layout: React.FC<LayoutProps> = ({ menuData }) => {
             </Typography>
             <Typography sx={{ fontSize: 12, color: "text.secondary", mt: 0.25 }}>{t("shell.marketIntelligence")}</Typography>
           </Box>
-          <LanguageSwitcher />
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.25 }}>
+            <NotificationCenterPopover />
+            <LanguageSwitcher />
+          </Box>
         </Box>
 
         {tabs.length > 0 && activeTab && (

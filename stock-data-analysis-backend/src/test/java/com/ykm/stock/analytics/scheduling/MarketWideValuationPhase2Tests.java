@@ -104,7 +104,8 @@ class MarketWideValuationPhase2Tests {
                 latestRepo,
                 mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class),
                 mock(com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService.class),
-                mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class));
+                mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class),
+                mock(com.ykm.stock.analytics.service.portfolio.PortfolioClosingService.class));
 
         when(clock.now()).thenReturn(NOW);
         when(clock.nowLocalDateTime()).thenReturn(LocalDateTime.of(2026, 11, 13, 16, 0));

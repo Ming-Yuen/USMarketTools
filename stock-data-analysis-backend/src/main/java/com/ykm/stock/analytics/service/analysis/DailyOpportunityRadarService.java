@@ -455,6 +455,10 @@ public class DailyOpportunityRadarService {
                     row.setSupportUpper(scale4(supportZone.upper()));
                     row.setSupportDistancePct(supportDistPct);
                 }
+                if (matchedPlan != null && matchedPlan.entryRange() != null) {
+                    row.setPlanEntryLower(scale4(matchedPlan.entryRange().lower()));
+                    row.setPlanEntryUpper(scale4(matchedPlan.entryRange().upper()));
+                }
                 row.setProtectiveStop(scale4(protectiveStop));
                 row.setFirstTargetPrice(scale4(firstTarget));
                 row.setNetRiskReward(netRr == null ? null : netRr.setScale(4, RoundingMode.HALF_UP));

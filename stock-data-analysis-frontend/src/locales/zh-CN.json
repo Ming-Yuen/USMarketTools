@@ -2237,7 +2237,13 @@
       "CUSTOM_TAG_SIGN_INVALID": "映射符号（signMultiplier）必须明确填写 1 或 -1。",
       "STOCK_NOT_FOUND": "找不到指定的股票标的。",
       "NEWS_INPUT_FINGERPRINT_REQUIRED": "缺少 Prompt 输入指纹，请先复制最新 Prompt 后再贴回 JSON。",
-      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "财测结构化数字与官方引文不符，已安全拒绝入库。"
+      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "财测结构化数字与官方引文不符，已安全拒绝入库。",
+      "NO_CACHED_NEWS_OR_FILINGS_FOR_SUMMARY": "尚无可摘要的新闻或 SEC 8-K／6-K 缓存，请先点击“更新新闻与 8-K”。",
+      "NO_CUSTOM_OR_UNMAPPED_XBRL_TAGS_FOUND": "此发行人近期财报未检出可抽样的非默认／自定义 XBRL 金额标签。",
+      "SEC_CIK_REQUIRED_FOR_CUSTOM_TAGS": "此标的缺少 SEC CIK 或属于 ETF／ETP，不适用 SEC 自定义标签映射。",
+      "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "财测营收区间无效（下限大于上限），已安全拒绝入库。",
+      "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "财测 EPS 区间无效（下限大于上限），已安全拒绝入库。",
+      "CUSTOM_TAG_MONETARY_UNIT_INVALID": "自定义标签映射仅接受标准 3 码货币单位（如 USD／EUR），不可映射股数（shares）或比例单位。"
     }
   }
 }

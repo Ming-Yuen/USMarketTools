@@ -1,5 +1,7 @@
 package com.ykm.stock.analytics.model.dto.stockInsight.enhancement;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -20,10 +22,24 @@ public final class EnhancementDtos {
             String status,
             boolean macroCautionTriggered,
             boolean stale,
-            Instant observedAt
+            Instant observedAt,
+            @JsonIgnore List<String> resolvedTriggerCodes
     ) {
+        public CreditSpreadSummaryDto(
+                String seriesId,
+                BigDecimal oasPct,
+                LocalDate observationDate,
+                BigDecimal prior20MeanPct,
+                BigDecimal deltaVsPrior20Bps,
+                String status,
+                boolean macroCautionTriggered,
+                boolean stale,
+                Instant observedAt) {
+            this(seriesId, oasPct, observationDate, prior20MeanPct, deltaVsPrior20Bps, status, macroCautionTriggered, stale, observedAt, List.of());
+        }
+
         public static CreditSpreadSummaryDto unavailable(String reason) {
-            return new CreditSpreadSummaryDto("BAMLH0A0HYM2", null, null, null, null, reason, false, false, null);
+            return new CreditSpreadSummaryDto("BAMLH0A0HYM2", null, null, null, null, reason, false, false, null, List.of());
         }
     }
 

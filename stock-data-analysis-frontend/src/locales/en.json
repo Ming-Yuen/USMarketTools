@@ -1786,7 +1786,13 @@
       "CUSTOM_TAG_SIGN_INVALID": "signMultiplier must be explicitly 1 or -1.",
       "STOCK_NOT_FOUND": "Requested security was not found.",
       "NEWS_INPUT_FINGERPRINT_REQUIRED": "Missing prompt input fingerprint. Copy a fresh prompt before importing JSON.",
-      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "Structured guidance numbers do not match the verbatim official quote; rejected safely."
+      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "Structured guidance numbers do not match the verbatim official quote; rejected safely.",
+      "NO_CACHED_NEWS_OR_FILINGS_FOR_SUMMARY": "No cached news or SEC 8-K / 6-K filings available to summarize. Click Refresh News & 8-K first.",
+      "NO_CUSTOM_OR_UNMAPPED_XBRL_TAGS_FOUND": "No eligible unmapped or custom monetary XBRL tags were found in recent SEC filings.",
+      "SEC_CIK_REQUIRED_FOR_CUSTOM_TAGS": "SEC CIK is required for custom tag mapping (not applicable to ETFs/ETPs).",
+      "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "Guidance revenue range is invalid (low exceeds high); rejected safely.",
+      "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "Guidance EPS range is invalid (low exceeds high); rejected safely.",
+      "CUSTOM_TAG_MONETARY_UNIT_INVALID": "Custom tag mapping only accepts 3-letter ISO monetary currency units (e.g. USD/EUR), not shares or ratio units."
     }
   }
 }

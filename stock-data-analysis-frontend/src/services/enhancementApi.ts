@@ -10,19 +10,81 @@ import {
   StockEnhancementOverview,
 } from "./types/dto/enhancement";
 
+export interface EnhancementReportContext {
+  protectiveStopPrice?: number | null;
+  closePrice?: number | null;
+  verdict?: string | null;
+  fundamentalBacking?: string | null;
+  resistanceBreakout?: boolean | null;
+}
+
+const buildOptionalParams = (entries: Record<string, string | number | boolean | null | undefined>) => {
+  const params: Record<string, string | number | boolean> = {};
+  for (const [k, v] of Object.entries(entries)) {
+    if (v !== undefined && v !== null && v !== "") {
+      params[k] = v;
+    }
+  }
+  return Object.keys(params).length > 0 ? params : undefined;
+};
+
 export const enhancementApi = {
-  getOverview: async (figi: string, asOfDate?: string): Promise<StockEnhancementOverview> => {
-    const params = asOfDate ? { asOfDate } : undefined;
+  getOverview: async (
+    figi: string,
+    asOfDate?: string,
+    context?: EnhancementReportContext,
+  ): Promise<StockEnhancementOverview> => {
+    const params = buildOptionalParams({
+      asOfDate,
+      protectiveStopPrice: context?.protectiveStopPrice,
+      closePrice: context?.closePrice,
+      verdict: context?.verdict,
+      fundamentalBacking: context?.fundamentalBacking,
+      resistanceBreakout: context?.resistanceBreakout,
+    });
     return (await apiClient.get<StockEnhancementOverview>(`enhancements/stocks/${encodeURIComponent(figi)}`, { params })).data;
   },
-  refreshOptions: async (figi: string): Promise<OptionsSummary> => {
-    return (await apiClient.post<OptionsSummary>(`enhancements/stocks/${encodeURIComponent(figi)}/options/refresh`)).data;
+  refreshOptions: async (
+    figi: string,
+    context?: Pick<EnhancementReportContext, "protectiveStopPrice" | "closePrice"> & { contextDate?: string | null },
+  ): Promise<OptionsSummary> => {
+    const params = buildOptionalParams({
+      contextDate: context?.contextDate,
+      protectiveStopPrice: context?.protectiveStopPrice,
+      closePrice: context?.closePrice,
+    });
+    return (
+      await apiClient.post<OptionsSummary>(`enhancements/stocks/${encodeURIComponent(figi)}/options/refresh`, null, {
+        params,
+      })
+    ).data;
   },
-  refreshInsiders: async (figi: string) => {
-    return (await apiClient.post(`enhancements/stocks/${encodeURIComponent(figi)}/insiders/refresh`)).data;
+  refreshInsiders: async (
+    figi: string,
+    context?: Pick<EnhancementReportContext, "verdict"> & { contextDate?: string | null },
+  ) => {
+    const params = buildOptionalParams({
+      contextDate: context?.contextDate,
+      verdict: context?.verdict,
+    });
+    return (
+      await apiClient.post(`enhancements/stocks/${encodeURIComponent(figi)}/insiders/refresh`, null, { params })
+    ).data;
   },
-  refreshShortInterest: async (figi: string) => {
-    return (await apiClient.post(`enhancements/stocks/${encodeURIComponent(figi)}/short-interest/refresh`)).data;
+  refreshShortInterest: async (
+    figi: string,
+    context?: Pick<EnhancementReportContext, "fundamentalBacking" | "resistanceBreakout"> & {
+      contextDate?: string | null;
+    },
+  ) => {
+    const params = buildOptionalParams({
+      contextDate: context?.contextDate,
+      fundamentalBacking: context?.fundamentalBacking,
+      resistanceBreakout: context?.resistanceBreakout,
+    });
+    return (
+      await apiClient.post(`enhancements/stocks/${encodeURIComponent(figi)}/short-interest/refresh`, null, { params })
+    ).data;
   },
   refreshNews: async (figi: string) => {
     return (await apiClient.post(`enhancements/stocks/${encodeURIComponent(figi)}/news/refresh`)).data;

@@ -8,6 +8,7 @@ import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockNewsEventCache;
 import com.ykm.stock.analytics.repository.jpa.StockEventAiSummaryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockNewsEventCacheRepository;
+import com.ykm.stock.analytics.service.enhancement.StockEventSummaryService.NewsRefreshResult;
 import com.ykm.stock.analytics.service.enhancement.StockEventSummaryService.ValidatedSummary;
 import com.ykm.stock.analytics.service.market.FinnhubService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
@@ -20,12 +21,14 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -202,5 +205,69 @@ class StockEventSummaryServiceTest {
 
         assertThat(result.status()).isEqualTo(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_IN_PROGRESS);
         verify(aiGateway, never()).generateStructuredJson(any(), any(), any(), any());
+    }
+
+    @Test
+    void refreshNewsAndFilingsReportsAccurateSavedCountsAndShortCircuitsExtractedExhibit991() throws Exception {
+        Stock stock = new Stock();
+        stock.setFigi("BBG000B9XRY4");
+        stock.setSymbol("AAPL");
+        stock.setStockType("Common Stock");
+        stock.setCik("0000320193");
+
+        String submissionsJson = """
+                {
+                  "filings": {
+                    "recent": {
+                      "form": ["8-K"],
+                      "accessionNumber": ["0000320193-26-000024"],
+                      "filingDate": ["2026-11-04"],
+                      "acceptanceDateTime": ["2026-11-04T21:30:00.000Z"],
+                      "primaryDocument": ["aapl-8k.htm"],
+                      "items": [["2.02", "9.01"]]
+                    }
+                  }
+                }
+                """;
+        StockNewsEventCache existing8k = new StockNewsEventCache();
+        existing8k.setFigi("BBG000B9XRY4");
+        existing8k.setSymbol("AAPL");
+        existing8k.setSourceType(StockNewsEventCache.SOURCE_SEC_8K);
+        existing8k.setExternalId("0000320193-26-000024");
+        existing8k.setExhibit991Url("https://www.sec.gov/Archives/edgar/data/320193/000032019326000024/ex991.htm");
+        existing8k.setExhibit991Excerpt("Cached official guidance text");
+        existing8k.setExhibitExtractionStatus("TRUNCATED");
+
+        when(alpacaService.isConfigured()).thenReturn(false);
+        when(finnhubService.isConfigured()).thenReturn(true);
+        when(finnhubService.getCompanyNews(any(), any(), any())).thenReturn(List.of(Map.of(
+                "id", "fh-101",
+                "headline", "Apple announces new hardware line",
+                "summary", "Launch details",
+                "source", "Reuters",
+                "url", "https://example.com/news/101",
+                "datetime", 1793822400L
+        )));
+        when(secEdgarClient.isConfigured()).thenReturn(true);
+        when(secEdgarClient.fetchCompanySubmissions("0000320193")).thenReturn(mapper.readTree(submissionsJson));
+        when(secEdgarClient.buildArchiveUrl("0000320193", "0000320193-26-000024", "aapl-8k.htm"))
+                .thenReturn("https://www.sec.gov/Archives/edgar/data/320193/000032019326000024/aapl-8k.htm");
+        when(cacheRepository.findByFigiAndSourceTypeAndExternalId("BBG000B9XRY4", StockNewsEventCache.SOURCE_SEC_8K, "0000320193-26-000024"))
+                .thenReturn(Optional.of(existing8k));
+        when(cacheRepository.findByFigiAndSourceTypeAndExternalId("BBG000B9XRY4", StockNewsEventCache.SOURCE_FINNHUB_NEWS, "fh-101"))
+                .thenReturn(Optional.empty());
+        when(cacheRepository.findTop30ByFigiOrderByPublishedAtDescIdDesc("BBG000B9XRY4")).thenReturn(List.of(existing8k));
+        when(transactions.execute(any())).thenAnswer(inv -> {
+            TransactionCallback<?> cb = inv.getArgument(0);
+            return cb.doInTransaction(null);
+        });
+
+        NewsRefreshResult result = service.refreshNewsAndFilings(stock);
+
+        // Must short-circuit external SEC EX-99.1 HTML download when already EXTRACTED
+        verify(secEdgarClient, never()).fetchArchiveFile(any(), any(), any());
+        // Accurate category counts: 1 new Finnhub news saved, 0 new/updated SEC filings
+        assertThat(result.newsSaved()).isEqualTo(1);
+        assertThat(result.secFilingsSaved()).isEqualTo(0);
     }
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, Grid, Stack, TextField, Typography } from "@mui/material";
 import { AccountBalanceWalletOutlined, ArrowBack, ExpandMore } from "@mui/icons-material";
@@ -25,6 +25,7 @@ const valueOf = <T,>(result?: MetricResult<T> | null): T | null => result?.statu
 
 export function StockAnalysisPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { figi = "" } = useParams<{ figi: string }>();
   const navigate = useNavigate();
   const [dateInput, setDateInput] = useState("");
@@ -85,6 +86,35 @@ export function StockAnalysisPage() {
   const levels = valueOf(report?.supportResistance);
   const tradePlans = valueOf(report?.tradePlans);
   const summary = valueOf(report?.summary);
+  const activeProtectiveStop =
+    tradePlans?.plans?.find(
+      (plan) =>
+        plan?.stop?.protectivePrice != null &&
+        plan.stop.protectivePrice > 0 &&
+        (plan.status === "ACTIVE" || plan.status === "WAITING_TRIGGER"),
+    )?.stop?.protectivePrice ?? null;
+  const dailyBars = structure?.timeframes?.find((tf) => tf.timeframe === "DAILY")?.bars;
+  const reportClosePrice =
+    (tradePlans?.currentPrice != null && tradePlans.currentPrice > 0 ? tradePlans.currentPrice : null) ??
+    (valuation?.price != null && valuation.price > 0 ? valuation.price : null) ??
+    (dailyBars && dailyBars.length > 0 && dailyBars[dailyBars.length - 1].close > 0
+      ? dailyBars[dailyBars.length - 1].close
+      : null);
+  const resistanceBreakout = Boolean(
+    summary &&
+      summary.weeklyTrend?.toUpperCase() === "UPTREND" &&
+      summary.aboveSma200 === true &&
+      (summary.rightSideConfirmationBasis?.toUpperCase() === "CONFIRMED_RETEST" ||
+        summary.rightSideConfirmationBasis?.toUpperCase() === "SPRING_RECLAIMED" ||
+        summary.trendPullbackStarter?.eligible === true),
+  );
+  const enhancementReportContext = {
+    protectiveStopPrice: activeProtectiveStop,
+    closePrice: reportClosePrice,
+    verdict: summary?.verdict ?? null,
+    fundamentalBacking: summary?.fundamentalBacking ?? null,
+    resistanceBreakout,
+  };
   const error = reportQuery.error as { response?: { data?: { message?: string } }; message?: string } | null;
 
   return <Box sx={{ width: "100%", minWidth: 0 }}>
@@ -234,8 +264,9 @@ export function StockAnalysisPage() {
       <StockEnhancementPanels
         figi={figi}
         asOfDate={valuationDate || report.valuationDate}
+        reportContext={enhancementReportContext}
         onValuationRebuilt={async () => {
-          await reportQuery.refetch();
+          await queryClient.invalidateQueries({ queryKey: ["analysis-report", figi] }, { throwOnError: true });
         }}
       />
 

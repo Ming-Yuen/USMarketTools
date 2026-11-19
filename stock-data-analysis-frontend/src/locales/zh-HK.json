@@ -2237,7 +2237,13 @@
       "CUSTOM_TAG_SIGN_INVALID": "映射符號（signMultiplier）必須明確填寫 1 或 -1。",
       "STOCK_NOT_FOUND": "找不到指定的股票標的。",
       "NEWS_INPUT_FINGERPRINT_REQUIRED": "缺少 Prompt 輸入指紋，請先複製最新 Prompt 後再貼回 JSON。",
-      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "財測結構化數字與官方引文不符，已安全拒絕入庫。"
+      "SUMMARY_GUIDANCE_NUMBER_NOT_IN_QUOTE": "財測結構化數字與官方引文不符，已安全拒絕入庫。",
+      "NO_CACHED_NEWS_OR_FILINGS_FOR_SUMMARY": "尚無可摘要的新聞或 SEC 8-K／6-K 快取，請先點擊「更新新聞與 8-K」。",
+      "NO_CUSTOM_OR_UNMAPPED_XBRL_TAGS_FOUND": "此發行人近期財報未檢出可抽樣的非預設／自訂 XBRL 金額標籤。",
+      "SEC_CIK_REQUIRED_FOR_CUSTOM_TAGS": "此標的缺少 SEC CIK 或屬於 ETF／ETP，不適用 SEC 自訂標籤映射。",
+      "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "財測營收區間無效（下限大於上限），已安全拒絕入庫。",
+      "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "財測 EPS 區間無效（下限大於上限），已安全拒絕入庫。",
+      "CUSTOM_TAG_MONETARY_UNIT_INVALID": "自訂標籤映射僅接受標準 3 碼貨幣單位（如 USD／EUR），不可映射股數（shares）或比例單位。"
     }
   }
 }

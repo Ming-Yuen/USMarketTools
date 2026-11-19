@@ -355,6 +355,20 @@ describe("Batch 06: Positioning, Events, AI 3-Channel Isolation & Real Tri-Lingu
         expect(enInst.t(k)).not.toEqual(k);
       }
     }
+
+    const requiredNewErrorKeys = [
+      "enhancements.errors.NO_CACHED_NEWS_OR_FILINGS_FOR_SUMMARY",
+      "enhancements.errors.NO_CUSTOM_OR_UNMAPPED_XBRL_TAGS_FOUND",
+      "enhancements.errors.SEC_CIK_REQUIRED_FOR_CUSTOM_TAGS",
+      "enhancements.errors.SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID",
+      "enhancements.errors.SUMMARY_GUIDANCE_EPS_RANGE_INVALID",
+      "enhancements.errors.CUSTOM_TAG_MONETARY_UNIT_INVALID",
+    ];
+    for (const k of requiredNewErrorKeys) {
+      expect(hkInst.t(k)).not.toEqual(k);
+      expect(cnInst.t(k)).not.toEqual(k);
+      expect(enInst.t(k)).not.toEqual(k);
+    }
   });
 
   test("StockEnhancementPanels renders Options OI non-directional disclaimer, Form 4 Code P vs 10b5-1, Short Interest ADR block, and zero-cost manual News & Custom Tag flows", async () => {
@@ -590,5 +604,70 @@ describe("Batch 06: Positioning, Events, AI 3-Channel Isolation & Real Tri-Lingu
       expect(gapMsg).toContain("4.5%");
       expect(gapMsg).not.toContain("HOLDING_EARNINGS_GAP_EXCEEDS_STOP");
     }
+  });
+
+  test("StockEnhancementPanels forwards reportContext and syncs parent report on Options/Insiders/Short refresh", async () => {
+    const i18nInst = await createRealI18n("zh-HK");
+    const onValuationRebuilt = jest.fn().mockResolvedValue(undefined);
+    const reportContext = {
+      protectiveStopPrice: 215,
+      closePrice: 230.5,
+      verdict: "DEEP_UNDERVALUED",
+      fundamentalBacking: "WEAKENING",
+      resistanceBreakout: true,
+    };
+    mockedEnhApi.getOverview.mockResolvedValue(buildOverview());
+    mockedEnhApi.refreshOptions.mockResolvedValue(buildOptions());
+    mockedEnhApi.refreshInsiders.mockResolvedValue({ scannedFilings: 1, savedTransactions: 1 });
+    mockedEnhApi.refreshShortInterest.mockResolvedValue({ fetchedRows: 1, savedRows: 1 });
+
+    renderWithProviders(
+      <StockEnhancementPanels
+        figi="BBG000B9XRY4"
+        asOfDate="2026-10-15"
+        reportContext={reportContext}
+        onValuationRebuilt={onValuationRebuilt}
+      />,
+      i18nInst,
+    );
+
+    await waitFor(() => {
+      expect(mockedEnhApi.getOverview).toHaveBeenCalledWith("BBG000B9XRY4", "2026-10-15", reportContext);
+    });
+    expect(await screen.findByText(/財報跳空風險提示/)).toBeInTheDocument();
+
+    // Options refresh forwards contextDate/stop/close and invokes onValuationRebuilt
+    fireEvent.click(screen.getByRole("button", { name: "即時更新期權" }));
+    await waitFor(() => {
+      expect(mockedEnhApi.refreshOptions).toHaveBeenCalledWith("BBG000B9XRY4", {
+        contextDate: "2026-10-15",
+        protectiveStopPrice: 215,
+        closePrice: 230.5,
+      });
+      expect(onValuationRebuilt).toHaveBeenCalledTimes(1);
+    });
+
+    // Insiders refresh forwards contextDate/verdict and invokes onValuationRebuilt
+    fireEvent.click(screen.getByRole("tab", { name: "Form 4 / 13F" }));
+    fireEvent.click(screen.getByRole("button", { name: "更新 Form 4" }));
+    await waitFor(() => {
+      expect(mockedEnhApi.refreshInsiders).toHaveBeenCalledWith("BBG000B9XRY4", {
+        contextDate: "2026-10-15",
+        verdict: "DEEP_UNDERVALUED",
+      });
+      expect(onValuationRebuilt).toHaveBeenCalledTimes(2);
+    });
+
+    // Short interest refresh forwards contextDate/fundamentalBacking/resistanceBreakout and invokes onValuationRebuilt
+    fireEvent.click(screen.getByRole("tab", { name: "做空比例" }));
+    fireEvent.click(screen.getByRole("button", { name: "更新做空資料" }));
+    await waitFor(() => {
+      expect(mockedEnhApi.refreshShortInterest).toHaveBeenCalledWith("BBG000B9XRY4", {
+        contextDate: "2026-10-15",
+        fundamentalBacking: "WEAKENING",
+        resistanceBreakout: true,
+      });
+      expect(onValuationRebuilt).toHaveBeenCalledTimes(3);
+    });
   });
 });

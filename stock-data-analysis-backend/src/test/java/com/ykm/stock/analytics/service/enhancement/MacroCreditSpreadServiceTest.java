@@ -71,6 +71,35 @@ class MacroCreditSpreadServiceTest {
         CreditSpreadSummaryDto boundary = service.evaluateFromDescendingRows(boundaryRows, asOf);
         assertThat(boundary.status()).isEqualTo(MacroCreditSpreadService.STATUS_NORMAL);
         assertThat(boundary.macroCautionTriggered()).isFalse();
+        assertThat(MacroCreditSpreadService.resolveMacroCautionTriggers(boundary)).isEmpty();
+    }
+
+    @Test
+    void resolveMacroCautionTriggersFollowsUnroundedStatusAtRoundingBoundaries() {
+        LocalDate asOf = LocalDate.of(2026, 11, 19);
+        // 4.996% rounds to 5.00% for display, but raw < 5.00% -> status is WIDENING (+69.6 bps), must NOT emit HY_OAS_STRESS
+        List<MacroCreditSpreadDaily> nearStressRows = buildDescendingRows(asOf, new BigDecimal("4.996"), new BigDecimal("4.30"));
+        CreditSpreadSummaryDto nearStress = service.evaluateFromDescendingRows(nearStressRows, asOf);
+        assertThat(nearStress.oasPct()).isEqualByComparingTo("5.00");
+        assertThat(nearStress.status()).isEqualTo(MacroCreditSpreadService.STATUS_WIDENING);
+        assertThat(nearStress.macroCautionTriggered()).isTrue();
+        assertThat(MacroCreditSpreadService.resolveMacroCautionTriggers(nearStress))
+                .containsExactly(MacroCreditSpreadService.TRIGGER_HY_OAS_WIDENING);
+
+        // 5.20% vs prior 20 mean 4.50% (+70 bps): both STRESS and WIDENING must be emitted simultaneously
+        List<MacroCreditSpreadDaily> dualRows = buildDescendingRows(asOf, new BigDecimal("5.20"), new BigDecimal("4.50"));
+        CreditSpreadSummaryDto dual = service.evaluateFromDescendingRows(dualRows, asOf);
+        assertThat(dual.status()).isEqualTo(MacroCreditSpreadService.STATUS_STRESS);
+        assertThat(MacroCreditSpreadService.resolveMacroCautionTriggers(dual))
+                .containsExactly(MacroCreditSpreadService.TRIGGER_HY_OAS_STRESS, MacroCreditSpreadService.TRIGGER_HY_OAS_WIDENING);
+
+        // 5.10% vs prior 20 mean 4.6004% (+49.96 bps rounds to 50.0, raw < 50): STRESS only, must NOT emit HY_OAS_WIDENING
+        List<MacroCreditSpreadDaily> stressNearWideningRows = buildDescendingRows(asOf, new BigDecimal("5.10"), new BigDecimal("4.6004"));
+        CreditSpreadSummaryDto stressNearWidening = service.evaluateFromDescendingRows(stressNearWideningRows, asOf);
+        assertThat(stressNearWidening.deltaVsPrior20Bps()).isEqualByComparingTo("50.0");
+        assertThat(stressNearWidening.status()).isEqualTo(MacroCreditSpreadService.STATUS_STRESS);
+        assertThat(MacroCreditSpreadService.resolveMacroCautionTriggers(stressNearWidening))
+                .containsExactly(MacroCreditSpreadService.TRIGGER_HY_OAS_STRESS);
     }
 
     @Test

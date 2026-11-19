@@ -20,7 +20,11 @@ public interface SecForm4TransactionRepository extends JpaRepository<SecForm4Tra
     List<SecForm4Transaction> findByCikAndTransactionDateBetweenOrderByTransactionDateDescFilingDateDescIdDesc(
             String cik, LocalDate fromDate, LocalDate throughDate);
 
-    List<SecForm4Transaction> findTop100ByCikOrderByTransactionDateDescFilingDateDescIdDesc(String cik);
+    List<SecForm4Transaction> findByCikAndTransactionDateBetweenAndFilingDateLessThanEqualOrderByTransactionDateDescFilingDateDescIdDesc(
+            String cik, LocalDate fromDate, LocalDate throughDate, LocalDate filingDate);
+
+    List<SecForm4Transaction> findTop100ByCikAndFilingDateLessThanEqualOrderByTransactionDateDescFilingDateDescIdDesc(
+            String cik, LocalDate filingDate);
 
     @Query("""
             select t from SecForm4Transaction t

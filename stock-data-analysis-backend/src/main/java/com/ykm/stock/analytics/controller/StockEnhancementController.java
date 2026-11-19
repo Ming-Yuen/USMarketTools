@@ -49,6 +49,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -76,27 +78,43 @@ public class StockEnhancementController {
     @GetMapping("/stocks/{figi}")
     public StockEnhancementOverviewDto getStockEnhancements(
             @PathVariable String figi,
-            @RequestParam(required = false) LocalDate asOfDate) {
+            @RequestParam(required = false) LocalDate asOfDate,
+            @RequestParam(required = false) BigDecimal protectiveStopPrice,
+            @RequestParam(required = false) BigDecimal closePrice,
+            @RequestParam(required = false) String verdict,
+            @RequestParam(required = false) String fundamentalBacking,
+            @RequestParam(required = false) Boolean resistanceBreakout) {
         Stock stock = requireStock(figi);
         LocalDate effectiveDate = asOfDate != null ? asOfDate : calendar.getLastClosedTradingDay(dateTimeService.now());
         boolean isEtf = SecurityTypePolicy.isEtfType(stock.getStockType());
         StockValuationLatest latestVal = latestValuationRepository.findById(figi).orElse(null);
-        // 歷史回看（asOfDate 早於最新估值日）嚴格不滲漏未來 verdict、基本面支撐與收盤價
-        boolean latestVisibleAtDate = latestVal != null && latestVal.getValuationDate() != null
-                && !latestVal.getValuationDate().isAfter(effectiveDate);
-        String verdict = latestVisibleAtDate ? latestVal.getVerdict() : null;
-        String fundamentalBacking = latestVisibleAtDate ? latestVal.getFundamentalBacking() : null;
-        java.math.BigDecimal visibleClose = latestVisibleAtDate ? latestVal.getClosePrice() : null;
-        java.time.Instant visibleCutoff = asOfDate != null ? calendar.getSessionCloseAt(effectiveDate) : null;
+        // 歷史回看（asOfDate 早於最新估值日）未顯式透傳當期 report 上下文時，嚴格不滲漏未來 verdict、基本面支撐與收盤價
+        boolean latestVisibleAtDate = isLatestVisibleAtDate(latestVal, effectiveDate);
+        String effectiveVerdict = normalizeOptionalText(verdict);
+        if (effectiveVerdict == null && latestVisibleAtDate) {
+            effectiveVerdict = latestVal.getVerdict();
+        }
+        String effectiveFundamentalBacking = normalizeOptionalText(fundamentalBacking);
+        if (effectiveFundamentalBacking == null && latestVisibleAtDate) {
+            effectiveFundamentalBacking = latestVal.getFundamentalBacking();
+        }
+        BigDecimal effectiveClose = positiveOrNull(closePrice);
+        if (effectiveClose == null && latestVal != null && effectiveDate.equals(latestVal.getValuationDate())) {
+            effectiveClose = positiveOrNull(latestVal.getClosePrice());
+        }
+        BigDecimal effectiveStop = positiveOrNull(protectiveStopPrice);
+        boolean effectiveBreakout = Boolean.TRUE.equals(resistanceBreakout);
+        Instant visibleCutoff = asOfDate != null ? calendar.getSessionCloseAt(effectiveDate) : null;
 
         AiChannelStatus ch = aiGateway.status();
         AiChannelStatusDto aiChannel = new AiChannelStatusDto(
                 ch.provider(), ch.automatedAvailable(), ch.activeModel(), ch.reasoningEffort(), ch.manualModeAlwaysAvailable());
         CreditSpreadSummaryDto creditSpread = creditSpreadService.evaluateAt(effectiveDate, visibleCutoff);
-        OptionsSummaryDto options = optionsService.readAt(stock, effectiveDate, null, visibleClose);
-        InsiderSummaryDto insiders = insider13fService.evaluateInsiders(stock, effectiveDate, verdict);
+        OptionsSummaryDto options = optionsService.readAt(stock, effectiveDate, effectiveStop, effectiveClose);
+        InsiderSummaryDto insiders = insider13fService.evaluateInsiders(stock, effectiveDate, effectiveVerdict);
         Institutional13fSummaryDto inst13f = insider13fService.evaluate13fForStock(stock, effectiveDate);
-        ShortInterestSummaryDto shortInterest = shortInterestService.evaluateStock(stock, effectiveDate, fundamentalBacking, false);
+        ShortInterestSummaryDto shortInterest = shortInterestService.evaluateStock(
+                stock, effectiveDate, effectiveFundamentalBacking, effectiveBreakout);
 
         return new StockEnhancementOverviewDto(
                 stock.getFigi(),
@@ -118,27 +136,67 @@ public class StockEnhancementController {
     }
 
     @PostMapping("/stocks/{figi}/options/refresh")
-    public OptionsSummaryDto refreshOptions(@PathVariable String figi) {
+    public OptionsSummaryDto refreshOptions(
+            @PathVariable String figi,
+            @RequestParam(required = false) LocalDate contextDate,
+            @RequestParam(required = false) BigDecimal protectiveStopPrice,
+            @RequestParam(required = false) BigDecimal closePrice) {
         Stock stock = requireStock(figi);
-        return optionsService.refreshStock(stock);
+        OptionsSummaryDto refreshed = optionsService.refreshStock(stock);
+        if (refreshed.snapshotDate() == null) {
+            return refreshed;
+        }
+        boolean contextAligned = contextDate == null || contextDate.equals(refreshed.snapshotDate());
+        BigDecimal effectiveStop = contextAligned ? positiveOrNull(protectiveStopPrice) : null;
+        if (effectiveStop == null) {
+            return refreshed;
+        }
+        BigDecimal effectiveClose = contextAligned ? positiveOrNull(closePrice) : null;
+        if (effectiveClose == null) {
+            StockValuationLatest latestVal = latestValuationRepository.findById(figi).orElse(null);
+            if (latestVal != null && refreshed.snapshotDate().equals(latestVal.getValuationDate())) {
+                effectiveClose = positiveOrNull(latestVal.getClosePrice());
+            }
+        }
+        return optionsService.readAt(stock, refreshed.snapshotDate(), effectiveStop, effectiveClose);
     }
 
     @PostMapping("/stocks/{figi}/insiders/refresh")
-    public Map<String, Object> refreshInsiders(@PathVariable String figi) {
+    public Map<String, Object> refreshInsiders(
+            @PathVariable String figi,
+            @RequestParam(required = false) LocalDate contextDate,
+            @RequestParam(required = false) String verdict) {
         Stock stock = requireStock(figi);
         Form4SyncResult sync = insider13fService.syncForm4ForStock(stock);
         LocalDate today = calendar.getLastClosedTradingDay(dateTimeService.now());
+        boolean contextAligned = contextDate == null || contextDate.equals(today);
         StockValuationLatest latestVal = latestValuationRepository.findById(figi).orElse(null);
-        InsiderSummaryDto summary = insider13fService.evaluateInsiders(stock, today, latestVal == null ? null : latestVal.getVerdict());
+        String effectiveVerdict = contextAligned ? normalizeOptionalText(verdict) : null;
+        if (effectiveVerdict == null && isLatestVisibleAtDate(latestVal, today)) {
+            effectiveVerdict = latestVal.getVerdict();
+        }
+        InsiderSummaryDto summary = insider13fService.evaluateInsiders(stock, today, effectiveVerdict);
         return Map.of("scannedFilings", sync.scannedFilings(), "savedTransactions", sync.savedTransactions(), "insiders", summary);
     }
 
     @PostMapping("/stocks/{figi}/short-interest/refresh")
-    public Map<String, Object> refreshShortInterest(@PathVariable String figi) {
+    public Map<String, Object> refreshShortInterest(
+            @PathVariable String figi,
+            @RequestParam(required = false) LocalDate contextDate,
+            @RequestParam(required = false) String fundamentalBacking,
+            @RequestParam(required = false) Boolean resistanceBreakout) {
         Stock stock = requireStock(figi);
         ShortSyncResult sync = shortInterestService.refreshStock(stock);
         LocalDate today = calendar.getLastClosedTradingDay(dateTimeService.now());
-        ShortInterestSummaryDto summary = shortInterestService.evaluateStock(stock, today, null, false);
+        boolean contextAligned = contextDate == null || contextDate.equals(today);
+        StockValuationLatest latestVal = latestValuationRepository.findById(figi).orElse(null);
+        String effectiveFundamentalBacking = contextAligned ? normalizeOptionalText(fundamentalBacking) : null;
+        if (effectiveFundamentalBacking == null && isLatestVisibleAtDate(latestVal, today)) {
+            effectiveFundamentalBacking = latestVal.getFundamentalBacking();
+        }
+        boolean effectiveBreakout = contextAligned && Boolean.TRUE.equals(resistanceBreakout);
+        ShortInterestSummaryDto summary = shortInterestService.evaluateStock(
+                stock, today, effectiveFundamentalBacking, effectiveBreakout);
         return Map.of("fetchedRows", sync.fetchedRows(), "savedRows", sync.savedRows(), "shortInterest", summary);
     }
 
@@ -237,6 +295,25 @@ public class StockEnhancementController {
     private Stock requireStock(String figi) {
         return stockRepository.findById(figi)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND"));
+    }
+
+    private static boolean isLatestVisibleAtDate(StockValuationLatest latestVal, LocalDate effectiveDate) {
+        return latestVal != null
+                && latestVal.getValuationDate() != null
+                && effectiveDate != null
+                && !latestVal.getValuationDate().isAfter(effectiveDate);
+    }
+
+    private static String normalizeOptionalText(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static BigDecimal positiveOrNull(BigDecimal value) {
+        return value != null && value.signum() > 0 ? value : null;
     }
 
     @ExceptionHandler(ResponseStatusException.class)

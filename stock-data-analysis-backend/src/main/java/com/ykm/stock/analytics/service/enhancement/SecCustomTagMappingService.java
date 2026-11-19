@@ -49,6 +49,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Currency;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -59,6 +60,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 2.4B 一次性 SEC 自訂／非預設標準 XBRL 標籤顯式映射服務（全面參照 IndustryValuationProposalService 隔離範本）。
@@ -75,6 +77,9 @@ public class SecCustomTagMappingService {
     private static final LocalDate BACKFILL_START = LocalDate.of(2016, 1, 1);
     private static final Set<String> STANDARD_WHITELIST_US_GAAP = Set.copyOf(SecFinancialFactConverter.US_GAAP_TAGS);
     private static final Set<String> PERIODIC_FORMS = Set.of("10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A");
+    private static final Set<String> VALID_ISO_CURRENCIES = Currency.getAvailableCurrencies().stream()
+            .map(Currency::getCurrencyCode)
+            .collect(Collectors.toUnmodifiableSet());
 
     /** 受控白名單：目標概念 -> 標準 us-gaap 投影標籤（僅於該期間缺同概念任何標準標籤時確定性補洞，絕不覆寫或衝突標準事實）。 */
     public static final Map<String, String> CONCEPT_TO_CANONICAL_US_GAAP_TAG = buildConceptMap();
@@ -93,7 +98,7 @@ public class SecCustomTagMappingService {
         map.put("DEPRECIATION_AMORTIZATION", "DepreciationAndAmortization");
         map.put("STOCKHOLDERS_EQUITY", "StockholdersEquity");
         map.put("CASH_AND_EQUIVALENTS", "CashAndCashEquivalentsAtCarryingValue");
-        map.put("LONG_TERM_DEBT", "LongTermDebt");
+        map.put("LONG_TERM_DEBT", "LongTermDebtNoncurrent");
         map.put("CURRENT_DEBT", "DebtCurrent");
         return Map.copyOf(map);
     }
@@ -120,6 +125,7 @@ public class SecCustomTagMappingService {
                 "ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"));
         map.put("DEPRECIATION_AMORTIZATION", Set.of(
                 "DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+                "DepreciationAmortizationAndAccretionNet",
                 "Depreciation", "AmortizationOfIntangibleAssets", "DepreciationAndAmortizationOther"));
         map.put("STOCKHOLDERS_EQUITY", Set.of(
                 "StockholdersEquity",
@@ -129,9 +135,11 @@ public class SecCustomTagMappingService {
                 "CashCashEquivalentsAndShortTermInvestments",
                 "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"));
         map.put("LONG_TERM_DEBT", Set.of(
-                "LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"));
+                "LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations",
+                "DebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities"));
         map.put("CURRENT_DEBT", Set.of(
-                "DebtCurrent", "ShortTermBorrowings", "LongTermDebtCurrent", "CommercialPaper"));
+                "DebtCurrent", "ShortTermBorrowings", "LongTermDebtCurrent", "CommercialPaper",
+                "DebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities"));
         return Map.copyOf(map);
     }
 
@@ -319,6 +327,9 @@ public class SecCustomTagMappingService {
             if (item == null || blank(item.taxonomy()) || blank(item.customTag()) || blank(item.unit()) || blank(item.targetConcept())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_TAG_ITEM_FIELDS_REQUIRED");
             }
+            if (!isValidMonetaryUnit(item.unit())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_TAG_MONETARY_UNIT_INVALID");
+            }
             String targetConcept = item.targetConcept().trim().toUpperCase(Locale.ROOT);
             if (!CONCEPT_TO_CANONICAL_US_GAAP_TAG.containsKey(targetConcept)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_TAG_CONCEPT_NOT_ALLOWED:" + targetConcept);
@@ -464,19 +475,50 @@ public class SecCustomTagMappingService {
             for (SecFinancialFact sf : existingStandardFactsByCik.getOrDefault(cik, List.of())) {
                 if (!"us-gaap".equals(sf.getTaxonomy())) continue;
                 for (String concept : standardTagToConcepts.getOrDefault(sf.getTag(), Set.of())) {
-                    coveredConceptPeriods.add(coverageKey(cik, concept, sf.getPeriodStart(), sf.getPeriodEnd()));
+                    coveredConceptPeriods.add(coverageKey(cik, concept, sf.getUnit(), sf.getPeriodStart(), sf.getPeriodEnd()));
                 }
             }
         }
 
+        List<SecCustomFinancialFact> sortedCustomFacts = new ArrayList<>(rawCustomFacts);
+        sortedCustomFacts.sort((a, b) -> {
+            SecCustomTagMapping ma = mappingByKey.get(a.getCik() + "|" + candidateKey(a.getTaxonomy(), a.getTag(), a.getUnit()));
+            SecCustomTagMapping mb = mappingByKey.get(b.getCik() + "|" + candidateKey(b.getTaxonomy(), b.getTag(), b.getUnit()));
+            int cmp = Comparator.<Long>nullsLast(Comparator.naturalOrder()).compare(
+                    ma == null ? null : ma.getId(), mb == null ? null : mb.getId());
+            if (cmp != 0) return cmp;
+            cmp = Comparator.<String>nullsLast(Comparator.naturalOrder()).compare(
+                    ma == null ? null : candidateKey(ma.getTaxonomy(), ma.getCustomTag(), ma.getUnit()),
+                    mb == null ? null : candidateKey(mb.getTaxonomy(), mb.getCustomTag(), mb.getUnit()));
+            if (cmp != 0) return cmp;
+            cmp = Comparator.<LocalDate>nullsLast(Comparator.naturalOrder()).compare(a.getPeriodEnd(), b.getPeriodEnd());
+            if (cmp != 0) return cmp;
+            cmp = Comparator.<LocalDate>nullsLast(Comparator.naturalOrder()).compare(a.getPeriodStart(), b.getPeriodStart());
+            if (cmp != 0) return cmp;
+            cmp = Comparator.<LocalDate>nullsLast(Comparator.naturalOrder()).compare(a.getFiled(), b.getFiled());
+            if (cmp != 0) return cmp;
+            return Comparator.<String>nullsLast(Comparator.naturalOrder()).compare(a.getAccession(), b.getAccession());
+        });
+
+        Map<String, String> claimedMappingByConceptPeriod = new HashMap<>();
         Map<String, List<SecFinancialFact>> projectedByCik = new LinkedHashMap<>();
-        for (SecCustomFinancialFact cf : rawCustomFacts) {
+        for (SecCustomFinancialFact cf : sortedCustomFacts) {
+            if (!isValidMonetaryUnit(cf.getUnit())) continue;
             SecCustomTagMapping mapping = mappingByKey.get(cf.getCik() + "|" + candidateKey(cf.getTaxonomy(), cf.getTag(), cf.getUnit()));
             if (mapping == null) continue;
             String canonicalTag = CONCEPT_TO_CANONICAL_US_GAAP_TAG.get(mapping.getTargetConcept());
             if (canonicalTag == null) continue;
-            if (coveredConceptPeriods.contains(coverageKey(cf.getCik(), mapping.getTargetConcept(), cf.getPeriodStart(), cf.getPeriodEnd()))) {
-                // 同概念任一標準 us-gaap 事實（如 SalesRevenueNet、RevenueFromContract...）已存在時嚴格跳過，絕不覆寫或引發衝突
+            String covKey = coverageKey(cf.getCik(), mapping.getTargetConcept(), cf.getUnit(), cf.getPeriodStart(), cf.getPeriodEnd());
+            if (coveredConceptPeriods.contains(covKey)) {
+                // 同概念同幣別任一標準 us-gaap 事實（如 SalesRevenueNet、RevenueFromContract...）已存在時嚴格跳過，絕不覆寫或引發衝突
+                continue;
+            }
+            String mappingIdentity = mapping.getId() != null
+                    ? "ID:" + mapping.getId()
+                    : "KEY:" + candidateKey(mapping.getTaxonomy(), mapping.getCustomTag(), mapping.getUnit());
+            String claimedBy = claimedMappingByConceptPeriod.putIfAbsent(covKey, mappingIdentity);
+            if (claimedBy != null && !claimedBy.equals(mappingIdentity)) {
+                // 同一 (concept, unit, period) 已有另一條 CONFIRMED 自訂映射補洞時嚴格跳過，避免雙重投影衝突
                 continue;
             }
             SecFinancialFact projected = new SecFinancialFact();
@@ -531,6 +573,9 @@ public class SecCustomTagMappingService {
             String unit = item.path("unit").asText("").trim();
             String concept = item.path("targetConcept").asText("").trim().toUpperCase(Locale.ROOT);
             String rationale = item.path("rationale").asText("").trim();
+            if (!isValidMonetaryUnit(unit)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_TAG_MONETARY_UNIT_INVALID");
+            }
             if (!CONCEPT_TO_CANONICAL_US_GAAP_TAG.containsKey(concept)) {
                 continue;
             }
@@ -580,6 +625,7 @@ public class SecCustomTagMappingService {
                 while (unitIt.hasNext()) {
                     Map.Entry<String, JsonNode> u = unitIt.next();
                     String unit = u.getKey();
+                    if (!isValidMonetaryUnit(unit)) continue;
                     if (!u.getValue().isArray() || u.getValue().isEmpty()) continue;
                     // 取最近一筆定期申報值
                     JsonNode latest = null;
@@ -638,6 +684,9 @@ public class SecCustomTagMappingService {
 
         Map<String, ParsedXbrlFact> latestByKey = new LinkedHashMap<>();
         for (ParsedXbrlFact f : facts) {
+            if (!isValidMonetaryUnit(f.unit())) {
+                continue;
+            }
             String key = candidateKey(f.taxonomy(), f.tag(), f.unit());
             ParsedXbrlFact prev = latestByKey.get(key);
             if (prev == null || f.periodEnd().isAfter(prev.periodEnd())) {
@@ -926,7 +975,25 @@ public class SecCustomTagMappingService {
             }
             return null;
         }
-        return stripUnitPrefix(firstLocalText(unitEl, "measure"));
+        NodeList measures = unitEl.getElementsByTagNameNS("*", "measure");
+        if (measures.getLength() != 1 || !(measures.item(0) instanceof Element measureEl)) {
+            return null;
+        }
+        String raw = measureEl.getTextContent();
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        int colon = trimmed.indexOf(':');
+        String prefix = colon >= 0 ? trimmed.substring(0, colon).trim() : null;
+        String local = colon >= 0 ? trimmed.substring(colon + 1).trim() : trimmed;
+        String nsUri = measureEl.lookupNamespaceURI(prefix);
+        boolean isIso4217 = "http://www.xbrl.org/2003/iso4217".equals(nsUri)
+                || "https://www.xbrl.org/2003/iso4217".equals(nsUri);
+        if (isIso4217) {
+            return local;
+        }
+        return colon >= 0 ? trimmed : "unqualified:" + trimmed;
     }
 
     private String stripUnitPrefix(String measure) {
@@ -1032,8 +1099,9 @@ public class SecCustomTagMappingService {
                 + (unit == null ? "" : unit.trim());
     }
 
-    private static String coverageKey(String cik, String tag, LocalDate start, LocalDate end) {
-        return cik + "|" + tag + "|" + (start == null ? "INSTANT" : start) + "|" + end;
+    private static String coverageKey(String cik, String concept, String unit, LocalDate start, LocalDate end) {
+        String normUnit = unit == null ? "" : unit.trim().toUpperCase(Locale.ROOT);
+        return cik + "|" + concept + "|" + normUnit + "|" + (start == null ? "INSTANT" : start) + "|" + end;
     }
 
     private static String customFactKey(SecCustomFinancialFact f) {
@@ -1092,6 +1160,11 @@ public class SecCustomTagMappingService {
     }
 
     private static boolean blank(String s) { return s == null || s.isBlank(); }
+
+    /** 僅允許受認可之大寫 ISO 4217 貨幣碼（例如 USD/EUR/JPY），拒收 FOO、shares、pure 或 USD/shares 等非貨幣單位。 */
+    public static boolean isValidMonetaryUnit(String unit) {
+        return unit != null && VALID_ISO_CURRENCIES.contains(unit.trim());
+    }
 
     private static String truncate(String s, int max) {
         if (s == null) return null;

@@ -128,7 +128,7 @@ public class SecInsiderAndInstitutionalService {
                 .toLocalDate().minusDays(120);
         List<Form4FilingMeta> candidates = new ArrayList<>();
         int count = Math.min(forms.size(), accessions.size());
-        for (int i = 0; i < count && candidates.size() < FORM4_MAX_FILINGS_PER_SYNC; i++) {
+        for (int i = 0; i < count; i++) {
             String form = forms.get(i).asText("").trim();
             if (!"4".equals(form) && !"4/A".equals(form)) {
                 continue;
@@ -157,6 +157,9 @@ public class SecInsiderAndInstitutionalService {
         for (Form4FilingMeta meta : candidates) {
             if (existingAccs.contains(meta.accession())) {
                 continue;
+            }
+            if (scanned >= FORM4_MAX_FILINGS_PER_SYNC) {
+                break;
             }
             scanned++;
             try {
@@ -305,14 +308,21 @@ public class SecInsiderAndInstitutionalService {
             return InsiderSummaryDto.unavailable("INSUFFICIENT_DATA", "SEC_CIK_MISSING", null);
         }
         String cik = SecEdgarClient.normalizeCik(stock.getCik());
-        List<SecForm4Transaction> allRecent = form4Repository.findTop100ByCikOrderByTransactionDateDescFilingDateDescIdDesc(cik).stream()
+        List<SecForm4Transaction> allRecent = form4Repository
+                .findTop100ByCikAndFilingDateLessThanEqualOrderByTransactionDateDescFilingDateDescIdDesc(cik, asOfDate).stream()
                 .filter(t -> t.getFilingDate() != null && !t.getFilingDate().isAfter(asOfDate))
                 .toList();
         if (allRecent.isEmpty()) {
             return InsiderSummaryDto.unavailable("INSUFFICIENT_DATA", "NO_FORM4_FILINGS_SYNCED", cik);
         }
         LocalDate windowStart = asOfDate.minusDays(INSIDER_LOOKBACK_DAYS);
-        InsiderWindowStats stats = computeInsiderWindowStats(allRecent, windowStart, asOfDate, valuationVerdict);
+        // 60 日統計走完整交易日視窗查詢（並於 SQL 限制 filingDate <= asOfDate），避免高頻薪酬交易超過 100 筆時截斷漏算 Code P 買入
+        List<SecForm4Transaction> windowTxs = form4Repository
+                .findByCikAndTransactionDateBetweenAndFilingDateLessThanEqualOrderByTransactionDateDescFilingDateDescIdDesc(
+                        cik, windowStart, asOfDate, asOfDate).stream()
+                .filter(t -> t.getFilingDate() != null && !t.getFilingDate().isAfter(asOfDate))
+                .toList();
+        InsiderWindowStats stats = computeInsiderWindowStats(windowTxs, windowStart, asOfDate, valuationVerdict);
         List<Form4TransactionDto> txDtos = allRecent.stream().limit(30).map(this::toForm4Dto).toList();
         LocalDate latestFiling = allRecent.stream().map(SecForm4Transaction::getFilingDate).max(Comparator.naturalOrder()).orElse(null);
 
@@ -834,7 +844,6 @@ public class SecInsiderAndInstitutionalService {
             return Institutional13fSummaryDto.unavailable("INSUFFICIENT_DATA", "NO_13F_HOLDINGS_MATCHED");
         }
         List<StockSplit> splits = splitRepository.findByFigiOrderByExecutionDateAsc(stock.getFigi());
-        LocalDate latestPeriod = all.stream().map(Sec13fHolding::getReportPeriod).max(Comparator.naturalOrder()).orElse(null);
 
         // 按 managerCik + putCall 分組比對最新兩季
         Map<String, List<Sec13fHolding>> byManagerKey = new LinkedHashMap<>();
@@ -853,9 +862,19 @@ public class SecInsiderAndInstitutionalService {
             Sec13fHolding current = series.getFirst();
             // 檢查該機構截至 asOfDate 已公開申報（filingDate <= asOfDate）之最新報告期是否跨過 current.reportPeriod
             List<LocalDate> managerPeriods = holding13fRepository.findDistinctReportPeriodsByManagerCikVisibleAt(current.getManagerCik(), asOfDate);
-            LocalDate managerLatest = managerPeriods.stream().filter(d -> !d.isAfter(asOfDate)).findFirst().orElse(current.getReportPeriod());
+            List<LocalDate> visibleManagerPeriods = managerPeriods.stream()
+                    .filter(d -> d != null && !d.isAfter(asOfDate))
+                    .toList();
+            LocalDate managerLatest = visibleManagerPeriods.isEmpty() ? current.getReportPeriod() : visibleManagerPeriods.getFirst();
 
             if (managerLatest.isAfter(current.getReportPeriod())) {
+                // 僅在「緊鄰上一季仍持有、最新已公開季消失」時標註為當季退出（NOT_LISTED）；更早清倉或中間缺季均跳過不誤報
+                boolean exitedInLatestQuarter = visibleManagerPeriods.size() >= 2
+                        && current.getReportPeriod().equals(visibleManagerPeriods.get(1))
+                        && isImmediatelyPrecedingQuarter(current.getReportPeriod(), managerLatest);
+                if (!exitedInLatestQuarter) {
+                    continue;
+                }
                 // 若最新季原表仍以相同 CUSIP 持有（僅因 FIGI 未映射），絕不誤報為 NOT_LISTED / -100% 減持
                 boolean stillPresentByCusip = holding13fRepository.existsByManagerCikAndReportPeriodAndCusipAndShareTypeAndPutCall(
                         current.getManagerCik(), managerLatest, current.getCusip(), current.getShareType(), current.getPutCall());
@@ -886,7 +905,7 @@ public class SecInsiderAndInstitutionalService {
             BigDecimal changePct = null;
             String action;
             if (prev == null) {
-                boolean hasEarlierManagerQuarter = managerPeriods.stream().anyMatch(d -> d.isBefore(current.getReportPeriod()));
+                boolean hasEarlierManagerQuarter = visibleManagerPeriods.stream().anyMatch(d -> d.isBefore(current.getReportPeriod()));
                 action = hasEarlierManagerQuarter ? "NEW" : "HOLDING";
                 if ("NEW".equals(action)) addOrNewCount++;
             } else {
@@ -925,6 +944,14 @@ public class SecInsiderAndInstitutionalService {
                     action
             ));
         }
+        if (rows.isEmpty()) {
+            return Institutional13fSummaryDto.unavailable("INSUFFICIENT_DATA", "NO_13F_HOLDINGS_MATCHED");
+        }
+        LocalDate latestPeriod = rows.stream()
+                .map(Institutional13fRowDto::reportPeriod)
+                .filter(d -> d != null)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
         rows.sort(Comparator.comparing(Institutional13fRowDto::marketValueUsd, Comparator.nullsLast(Comparator.reverseOrder())));
         return new Institutional13fSummaryDto(
                 "AVAILABLE",
@@ -952,6 +979,13 @@ public class SecInsiderAndInstitutionalService {
             }
         }
         return factor;
+    }
+
+    private static boolean isImmediatelyPrecedingQuarter(LocalDate prevPeriod, LocalDate latestPeriod) {
+        if (prevPeriod == null || latestPeriod == null || !latestPeriod.isAfter(prevPeriod)) {
+            return false;
+        }
+        return java.time.YearMonth.from(prevPeriod).plusMonths(3).equals(java.time.YearMonth.from(latestPeriod));
     }
 
     public record Form4FilingMeta(String accession, String formType, LocalDate filingDate, Instant acceptedAt, String rawXmlFile) {}

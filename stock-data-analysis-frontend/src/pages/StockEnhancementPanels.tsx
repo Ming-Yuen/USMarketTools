@@ -24,7 +24,7 @@ import {
   Typography,
 } from "@mui/material";
 import { ContentCopy, Refresh, AutoAwesome, CheckCircleOutline, DeleteOutline } from "@mui/icons-material";
-import { enhancementApi } from "../services/enhancementApi";
+import { enhancementApi, EnhancementReportContext } from "../services/enhancementApi";
 import {
   CustomTagCandidate,
   CustomTagConfirmItemRequest,
@@ -38,6 +38,7 @@ import { formatHongKongDateTime } from "../utils/hongKongTime";
 interface Props {
   figi: string;
   asOfDate?: string | null;
+  reportContext?: EnhancementReportContext;
   onValuationRebuilt?: () => Promise<unknown>;
 }
 
@@ -84,7 +85,7 @@ const safeUrl = (url?: string | null) => {
   }
 };
 
-export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: Props) {
+export function StockEnhancementPanels({ figi, asOfDate, reportContext, onValuationRebuilt }: Props) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState(0);
@@ -103,11 +104,33 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
   const [tagPreview, setTagPreview] = useState<CustomTagProposalPreview | null>(null);
   const [selectedTags, setSelectedTags] = useState<Record<string, boolean>>({});
 
-  const queryKey = ["stock-enhancements", figi, asOfDate ?? ""];
+  const queryKey = [
+    "stock-enhancements",
+    figi,
+    asOfDate ?? "",
+    reportContext?.protectiveStopPrice ?? null,
+    reportContext?.closePrice ?? null,
+    reportContext?.verdict ?? "",
+    reportContext?.fundamentalBacking ?? "",
+    reportContext?.resistanceBreakout ?? false,
+  ];
+  const invalidateEnhancementsForFigi = () =>
+    queryClient.invalidateQueries({ queryKey: ["stock-enhancements", figi] }, { throwOnError: true });
+  const syncAfterRefresh = async () => {
+    const tasks: Promise<unknown>[] = [invalidateEnhancementsForFigi()];
+    if (onValuationRebuilt) {
+      tasks.push(onValuationRebuilt());
+    }
+    const results = await Promise.allSettled(tasks);
+    const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (rejected) {
+      throw rejected.reason;
+    }
+  };
   const overviewQuery = useQuery<StockEnhancementOverview>({
     queryKey,
     enabled: Boolean(figi),
-    queryFn: () => enhancementApi.getOverview(figi, asOfDate || undefined),
+    queryFn: () => enhancementApi.getOverview(figi, asOfDate || undefined, reportContext),
   });
   const data = overviewQuery.data;
 
@@ -167,10 +190,7 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
       const res = await enhancementApi.confirmCustomTags(figi, tagPreview.provider, chosen);
       setTagPreview(null);
       setTagImportJson("");
-      await queryClient.invalidateQueries({ queryKey });
-      if (onValuationRebuilt) {
-        await onValuationRebuilt();
-      }
+      await syncAfterRefresh();
       setNotice(
         t("enhancements.customTags.confirmSuccess", {
           mappings: res.confirmedMappingCount,
@@ -243,8 +263,12 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                   disabled={busy !== null}
                   onClick={() =>
                     runAction("REFRESH_OPTIONS", async () => {
-                      await enhancementApi.refreshOptions(figi);
-                      await queryClient.invalidateQueries({ queryKey });
+                      await enhancementApi.refreshOptions(figi, {
+                        contextDate: asOfDate || undefined,
+                        protectiveStopPrice: reportContext?.protectiveStopPrice,
+                        closePrice: reportContext?.closePrice,
+                      });
+                      await syncAfterRefresh();
                       setNotice(t("enhancements.options.refreshed"));
                     })
                   }
@@ -361,8 +385,11 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                     disabled={busy !== null}
                     onClick={() =>
                       runAction("REFRESH_INSIDERS", async () => {
-                        await enhancementApi.refreshInsiders(figi);
-                        await queryClient.invalidateQueries({ queryKey });
+                        await enhancementApi.refreshInsiders(figi, {
+                          contextDate: asOfDate || undefined,
+                          verdict: reportContext?.verdict,
+                        });
+                        await syncAfterRefresh();
                         setNotice(t("enhancements.insiders.refreshed"));
                       })
                     }
@@ -533,8 +560,12 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                   disabled={busy !== null}
                   onClick={() =>
                     runAction("REFRESH_SHORT", async () => {
-                      await enhancementApi.refreshShortInterest(figi);
-                      await queryClient.invalidateQueries({ queryKey });
+                      await enhancementApi.refreshShortInterest(figi, {
+                        contextDate: asOfDate || undefined,
+                        fundamentalBacking: reportContext?.fundamentalBacking,
+                        resistanceBreakout: reportContext?.resistanceBreakout,
+                      });
+                      await syncAfterRefresh();
                       setNotice(t("enhancements.shortInterest.refreshed"));
                     })
                   }
@@ -616,7 +647,7 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                     onClick={() =>
                       runAction("REFRESH_NEWS", async () => {
                         await enhancementApi.refreshNews(figi);
-                        await queryClient.invalidateQueries({ queryKey });
+                        await invalidateEnhancementsForFigi();
                         setNotice(t("enhancements.news.refreshed"));
                       })
                     }
@@ -632,7 +663,7 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                       onClick={() =>
                         runAction("SUMMARIZE_NEWS", async () => {
                           const res = await enhancementApi.summarizeNewsAutomated(figi);
-                          await queryClient.invalidateQueries({ queryKey });
+                          await invalidateEnhancementsForFigi();
                           if (res.status === "COMPLETED") {
                             setNotice(t("enhancements.news.summarized"));
                           } else if (res.status === "IN_PROGRESS") {
@@ -701,7 +732,7 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                         await enhancementApi.importNewsManual(figi, newsImportJson, newsPrompt.inputFingerprint);
                         setNewsImportJson("");
                         setNewsPrompt(null);
-                        await queryClient.invalidateQueries({ queryKey });
+                        await invalidateEnhancementsForFigi();
                         setNotice(t("enhancements.news.manualImported"));
                       })
                     }
@@ -1040,8 +1071,7 @@ export function StockEnhancementPanels({ figi, asOfDate, onValuationRebuilt }: P
                               onClick={() =>
                                 runAction(`DISABLE_${m.id}`, async () => {
                                   await enhancementApi.disableCustomTag(figi, m.id);
-                                  await queryClient.invalidateQueries({ queryKey });
-                                  if (onValuationRebuilt) await onValuationRebuilt();
+                                  await syncAfterRefresh();
                                   setNotice(t("enhancements.customTags.disabledSuccess"));
                                 })
                               }

@@ -52,7 +52,7 @@
 | `treasury_par_yield_daily` | `observation_date` | 美國財政部國債殖利率資料 |
 | `market_sentiment_daily` | `market_date` | 市場情緒指標、VIX 與觀察時間 |
 | `market_event` | `event_key` | 個股財報日曆與宏觀事件 |
-| `macro_credit_spread_daily` | `(observation_date, series_id)` | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）日頻原始觀測值 |
+| `macro_credit_spread_daily` | `observation_date` | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）日頻原始觀測值 |
 | `stock_options_summary` | `(figi, snapshot_date)` | 目標股／ETF 輕量期權快照（ATM Straddle Implied Move、ATM IV／HV20、偏度 Skew、Put/Call Ratio 與主力到期日最大 Call／Put OI 牆） |
 | `sec_form4_transaction` | `(accession, transaction_index)` | SEC Form 4 內部人交易明細（精準標記公開市場買進 `Code P` 與薪酬／`10b5-1` 例行交易） |
 | `sec_13f_holding` | `(manager_cik, report_period, cusip, share_type, put_call)` | 旗艦機構 SEC 13F-HR 季度聚合持倉與 FIGI 解析對應 |

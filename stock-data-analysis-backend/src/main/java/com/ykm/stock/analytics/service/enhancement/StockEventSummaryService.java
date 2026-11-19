@@ -183,12 +183,10 @@ public class StockEventSummaryService {
         }
 
         // 2. SEC 8-K（美企）與 6-K（外企／ADR）近 5 日公告＋官方 EX-99.1 摘錄
-        int secCount = 0;
         if (!SecurityTypePolicy.isEtfType(stock.getStockType())
                 && stock.getCik() != null && !stock.getCik().isBlank() && secEdgarClient.isConfigured()) {
             try {
                 List<StockNewsEventCache> secEvents = fetchRecent8k6k(stock, now);
-                secCount = secEvents.size();
                 fetched.addAll(secEvents);
             } catch (RuntimeException ex) {
                 if (SecEdgarClient.isAuthFailure(ex)) {
@@ -198,23 +196,32 @@ public class StockEventSummaryService {
             }
         }
 
-        int saved = persistNewsCache(fetched);
+        PersistCounts savedCounts = persistNewsCache(fetched);
         List<StockNewsEventDto> recent = listRecentNewsEvents(stock.getFigi());
-        return new NewsRefreshResult(Math.max(0, saved - secCount), secCount, recent);
+        return new NewsRefreshResult(savedCounts.newsSaved(), savedCounts.secFilingsSaved(), recent);
     }
 
-    public int persistNewsCache(List<StockNewsEventCache> incoming) {
+    public record PersistCounts(int newsSaved, int secFilingsSaved) {}
+
+    public PersistCounts persistNewsCache(List<StockNewsEventCache> incoming) {
         if (incoming == null || incoming.isEmpty()) {
-            return 0;
+            return new PersistCounts(0, 0);
         }
-        Integer savedCount = transactions.execute(txStatus -> {
-            int saved = 0;
+        PersistCounts savedCounts = transactions.execute(txStatus -> {
+            int newsSaved = 0;
+            int secSaved = 0;
             for (StockNewsEventCache row : incoming) {
+                boolean isSecFiling = StockNewsEventCache.SOURCE_SEC_8K.equals(row.getSourceType())
+                        || StockNewsEventCache.SOURCE_SEC_6K.equals(row.getSourceType());
                 Optional<StockNewsEventCache> existing = cacheRepository.findByFigiAndSourceTypeAndExternalId(
                         row.getFigi(), row.getSourceType(), row.getExternalId());
                 if (existing.isEmpty()) {
                     cacheRepository.save(row);
-                    saved++;
+                    if (isSecFiling) {
+                        secSaved++;
+                    } else {
+                        newsSaved++;
+                    }
                 } else {
                     StockNewsEventCache cur = existing.get();
                     boolean changed = false;
@@ -224,7 +231,7 @@ public class StockEventSummaryService {
                         cur.setUpdatedAtSource(row.getUpdatedAtSource());
                         changed = true;
                     }
-                    if (cur.getExhibit991Excerpt() == null && row.getExhibit991Excerpt() != null) {
+                    if (!isReusableExtractedExhibit(cur) && isReusableExtractedExhibit(row)) {
                         cur.setExhibit991Url(row.getExhibit991Url());
                         cur.setExhibit991Excerpt(row.getExhibit991Excerpt());
                         cur.setExhibitExtractionStatus(row.getExhibitExtractionStatus());
@@ -232,12 +239,17 @@ public class StockEventSummaryService {
                     }
                     if (changed) {
                         cacheRepository.save(cur);
+                        if (isSecFiling) {
+                            secSaved++;
+                        } else {
+                            newsSaved++;
+                        }
                     }
                 }
             }
-            return saved;
+            return new PersistCounts(newsSaved, secSaved);
         });
-        return savedCount == null ? 0 : savedCount;
+        return savedCounts == null ? new PersistCounts(0, 0) : savedCounts;
     }
 
     @Transactional(readOnly = true)
@@ -595,9 +607,21 @@ public class StockEventSummaryService {
                     ? secEdgarClient.buildArchiveUrl(cik, acc, doc)
                     : secEdgarClient.buildFilingIndexHtmlUrl(cik, acc);
 
-            // 若為 8-K 含 2.02/7.01/8.01 或 6-K，檢查是否有官方 EX-99.1 HTML 業績新聞稿
-            ExhibitExtract exhibit = extractExhibit991IfApplicable(cik, acc, form, itemsStr);
             String sourceType = form.startsWith("6-K") ? StockNewsEventCache.SOURCE_SEC_6K : StockNewsEventCache.SOURCE_SEC_8K;
+            // 若快取已成功提取過該筆公告的 EX-99.1 原文（含完整 EXTRACTED 或長篇 TRUNCATED 且 URL/摘錄齊全），直接短路重用，避免重複下載 SEC HTML
+            Optional<StockNewsEventCache> cached = cacheRepository.findByFigiAndSourceTypeAndExternalId(
+                    stock.getFigi(), sourceType, acc);
+            ExhibitExtract exhibit;
+            if (cached.isPresent() && isReusableExtractedExhibit(cached.get())) {
+                StockNewsEventCache existingRow = cached.get();
+                exhibit = new ExhibitExtract(
+                        existingRow.getExhibit991Url(),
+                        existingRow.getExhibit991Excerpt(),
+                        existingRow.getExhibitExtractionStatus());
+            } else {
+                // 若為 8-K 含 2.02/7.01/8.01 或 6-K，檢查是否有官方 EX-99.1 HTML 業績新聞稿
+                exhibit = extractExhibit991IfApplicable(cik, acc, form, itemsStr);
+            }
             String headline = form + (itemsStr == null || itemsStr.isBlank() ? "" : " (Items " + itemsStr + ")")
                     + " · " + stock.getSymbol() + " · " + filingDate;
 
@@ -623,6 +647,17 @@ public class StockEventSummaryService {
     }
 
     private record ExhibitExtract(String url, String excerpt, String status) {}
+
+    private static boolean isReusableExtractedExhibit(StockNewsEventCache row) {
+        if (row == null) {
+            return false;
+        }
+        String status = row.getExhibitExtractionStatus();
+        boolean extractedStatus = "EXTRACTED".equals(status) || "TRUNCATED".equals(status);
+        return extractedStatus
+                && row.getExhibit991Url() != null && !row.getExhibit991Url().isBlank()
+                && row.getExhibit991Excerpt() != null && !row.getExhibit991Excerpt().isBlank();
+    }
 
     private ExhibitExtract extractExhibit991IfApplicable(String cik, String accession, String form, String itemsStr) {
         boolean shouldInspect = form.startsWith("6-K")

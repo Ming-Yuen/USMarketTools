@@ -196,6 +196,16 @@ public class MacroCreditSpreadService {
             macroCautionTriggered = false;
         }
 
+        java.util.ArrayList<String> triggers = new java.util.ArrayList<>();
+        if (!stale) {
+            if (stress) {
+                triggers.add(TRIGGER_HY_OAS_STRESS);
+            }
+            if (widening) {
+                triggers.add(TRIGGER_HY_OAS_WIDENING);
+            }
+        }
+
         return new CreditSpreadSummaryDto(
                 latest.getSeriesId(),
                 oasPct,
@@ -205,24 +215,25 @@ public class MacroCreditSpreadService {
                 status,
                 macroCautionTriggered,
                 stale,
-                latest.getObservedAt()
+                latest.getObservedAt(),
+                List.copyOf(triggers)
         );
     }
 
-    /** 判定是否應寫入 MacroCautionDto.triggerCodes（僅 STRESS 與 WIDENING 觸發縮倉，ELEVATED 僅顯示警示）。 */
+    /** 判定是否應寫入 MacroCautionDto.triggerCodes（依未四捨五入之雙重獨立判定，可同時輸出 STRESS 與 WIDENING，ELEVATED 僅顯示警示）。 */
     public static List<String> resolveMacroCautionTriggers(CreditSpreadSummaryDto spread) {
         if (spread == null || spread.stale() || !spread.macroCautionTriggered()) {
             return List.of();
         }
-        java.util.ArrayList<String> triggers = new java.util.ArrayList<>();
-        if (spread.oasPct() != null && spread.oasPct().compareTo(THRESHOLD_STRESS_PCT) >= 0) {
-            triggers.add(TRIGGER_HY_OAS_STRESS);
+        if (spread.resolvedTriggerCodes() != null && !spread.resolvedTriggerCodes().isEmpty()) {
+            return List.copyOf(spread.resolvedTriggerCodes());
         }
-        if (spread.oasPct() != null && spread.deltaVsPrior20Bps() != null
-                && spread.oasPct().compareTo(THRESHOLD_WIDENING_MIN_OAS_PCT) >= 0
-                && spread.deltaVsPrior20Bps().compareTo(THRESHOLD_WIDENING_DELTA_BPS) >= 0) {
-            triggers.add(TRIGGER_HY_OAS_WIDENING);
+        if (STATUS_STRESS.equals(spread.status())) {
+            return List.of(TRIGGER_HY_OAS_STRESS);
         }
-        return List.copyOf(triggers);
+        if (STATUS_WIDENING.equals(spread.status())) {
+            return List.of(TRIGGER_HY_OAS_WIDENING);
+        }
+        return List.of();
     }
 }

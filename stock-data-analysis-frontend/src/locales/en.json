@@ -56,7 +56,137 @@
     "marketSummary": {"STRONG_BUT_OVERHEATED":"Risk appetite is strong, but sentiment is overheated","HOT_BUT_DIVERGING":"Sentiment is hot while price momentum diverges","FEAR_WITH_RECOVERY":"Prices are recovering amid fearful sentiment","WEAK_AND_FEARFUL":"Risk appetite is weak and sentiment is fearful","BULLISH_NON_EXTREME":"Momentum is bullish without extreme sentiment","BEARISH":"Momentum is bearish; manage downside risk","DIVERGING":"Market direction is mixed; await a clearer signal"},
     "execution": {"EXECUTION_BIAS":"Execution bias","HIGH_RISK":"Multiple risk conditions are active. Reduce chasing and high-volatility exposure until RSI, MA distance or volume normalizes.","SELECTIVE":"Some risk conditions are active. Stay selective and confirm volume and MA distance before adding exposure.","BULLISH":"ETF momentum is broadly bullish with no major risk trigger. A bullish bias is reasonable with defined risk limits.","DEFENSIVE":"ETF momentum is broadly weak without a confirmed reversal. Keep exposure conservative and await a volume-backed recovery.","NEUTRAL":"Data is limited or direction is mixed. Maintain neutral exposure until price-volume signals become clearer."},
     "hongKongTime":"Hong Kong time","noUpcomingEvents":"No confirmed market-moving events in the next 14 days.","eventCategory":{"MACRO":"Macro","FED":"Fed","EARNINGS":"Earnings","TREASURY":"Treasury","DERIVATIVES":"Derivatives","INDEX_REBALANCE":"Index changes","POLICY":"Policy","OTHER":"Other"},
-    "eventLevel": {"HIGH":"High","MEDIUM":"Medium","LOW":"Low"}, "event": {"CPI":"Consumer Price Index (CPI)","CORE_CPI":"Core Consumer Price Index","PCE":"PCE Price Index","CORE_PCE":"Core PCE Price Index","EMPLOYMENT_SITUATION":"Employment situation (payrolls and unemployment)","NONFARM_PAYROLLS":"Nonfarm payrolls","NFP":"Nonfarm payrolls","UNEMPLOYMENT_RATE":"Unemployment rate","INITIAL_JOBLESS_CLAIMS":"Initial jobless claims","JOBLESS_CLAIMS":"Initial jobless claims","FACTORY_ORDERS":"Factory orders","JOLTS":"JOLTS job openings","ISM_MANUFACTURING":"ISM Manufacturing PMI","ISM_SERVICES":"ISM Services PMI","GDP":"Gross domestic product (GDP)","RETAIL_SALES":"Retail sales","PPI":"Producer Price Index (PPI)","FOMC":"FOMC interest-rate decision","EARNINGS_REPORT":"{{symbol}} earnings release","MONTHLY_OPEX":"Monthly options expiration","QUARTERLY_OPEX":"Quarterly options expiration (triple witching)"}
+    "eventLevel": {"HIGH":"High","MEDIUM":"Medium","LOW":"Low"}, "event": {"CPI":"Consumer Price Index (CPI)","CORE_CPI":"Core Consumer Price Index","PCE":"PCE Price Index","CORE_PCE":"Core PCE Price Index","EMPLOYMENT_SITUATION":"Employment situation (payrolls and unemployment)","NONFARM_PAYROLLS":"Nonfarm payrolls","NFP":"Nonfarm payrolls","UNEMPLOYMENT_RATE":"Unemployment rate","INITIAL_JOBLESS_CLAIMS":"Initial jobless claims","JOBLESS_CLAIMS":"Initial jobless claims","FACTORY_ORDERS":"Factory orders","JOLTS":"JOLTS job openings","ISM_MANUFACTURING":"ISM Manufacturing PMI","ISM_SERVICES":"ISM Services PMI","GDP":"Gross domestic product (GDP)","RETAIL_SALES":"Retail sales","PPI":"Producer Price Index (PPI)","FOMC":"FOMC interest-rate decision","EARNINGS_REPORT":"{{symbol}} earnings release","MONTHLY_OPEX":"Monthly options expiration","QUARTERLY_OPEX":"Quarterly options expiration (triple witching)"},
+    "marketRegime": {
+      "title": "Market Regime",
+      "headwindBanner": "Market is in {{regime}} headwind mode. The opportunity radar is tightened to deep-value strong-fundamental watch-only names, and new buy signals are paused.",
+      "correctionBanner": "Market is in correction. Strong leader pullback starters are paused; undervalued candidates require right-side confirmation with reduced sizing.",
+      "vixLabel": "VIX Close",
+      "asOfDate": "As of"
+    },
+    "sectorEtfs": {
+      "title": "11 Sector ETFs Momentum & Relative Strength",
+      "subtitle": "Excess returns vs. SPY and 20-day RVOL to track sector rotation",
+      "empty": "No sector ETF market data available.",
+      "symbol": "ETF",
+      "sector": "Sector",
+      "close": "Close",
+      "ret5d": "5D Ret",
+      "ret20d": "20D Ret",
+      "ret60d": "60D Ret",
+      "rvol20": "RVOL20",
+      "excess5d": "5D vs SPY",
+      "excess20d": "20D vs SPY",
+      "excess60d": "60D vs SPY",
+      "sectors": {
+        "TECHNOLOGY": "Technology",
+        "FINANCIALS": "Financials",
+        "ENERGY": "Energy",
+        "HEALTH_CARE": "Health Care",
+        "INDUSTRIALS": "Industrials",
+        "COMMUNICATION_SERVICES": "Communication Services",
+        "CONSUMER_DISCRETIONARY": "Consumer Discretionary",
+        "CONSUMER_STAPLES": "Consumer Staples",
+        "UTILITIES": "Utilities",
+        "MATERIALS": "Materials",
+        "REAL_ESTATE": "Real Estate"
+      }
+    },
+    "sectorFlow": {
+      "title": "Sector Money Flow & Internal Breadth",
+      "subtitle": "Computed from USD tracked operating stocks OHLCV to detect narrow index leadership",
+      "coverage": "Universe: {{total}} tracked operating stocks · Classified coverage {{coverage}}",
+      "empty": "No sector money flow snapshot yet. Wait for the daily post-close valuation task.",
+      "sortBy": "Sort by",
+      "sortCmf20d": "20D CMF (High to Low)",
+      "sortShareDelta": "5D Market Share Shift",
+      "sortBreadth50": "Above SMA50 Breadth",
+      "sortDollarVol1d": "1D Dollar Volume",
+      "industry": "Industry",
+      "stockCount": "Stocks",
+      "cmf5d": "5D CMF",
+      "cmf20d": "20D CMF",
+      "share1d": "1D Share",
+      "shareDelta": "5D vs 20D Share Δ",
+      "breadth50": "Above SMA50",
+      "breadth200": "Above SMA200",
+      "ret20dMedian": "20D Median Ret",
+      "flowState": "Flow State",
+      "flowStates": {
+        "INFLOW": "Inflow",
+        "NEUTRAL": "Mixed",
+        "OUTFLOW": "Outflow"
+      }
+    },
+    "radar": {
+      "title": "Daily Dual-Track Opportunity Radar",
+      "subtitle": "Two-stage post-close scan (REITs and earnings within 14 days auto-excluded); click symbol for full analysis",
+      "headwindNotice": "Headwind caution active: entries below are watch-only and not immediate buy signals.",
+      "tabValue": "Value + Support Confluence ({{count}})",
+      "tabStarter": "Strong Leader Pullback Starter ({{count}})",
+      "emptyValue": "No candidates currently meet Value + Support confluence.",
+      "emptyStarter": "No candidates currently qualify for Strong Leader Pullback (uses cached annual consensus only; paused in headwinds).",
+      "filterSearch": "Search symbol or name",
+      "filterIndustry": "Industry",
+      "filterIndustryAll": "All industries",
+      "filterTier": "Market Cap Tier",
+      "filterTierAll": "All tiers",
+      "filterMaxDist": "Max Support Dist (%)",
+      "filterMinRr": "Min Net R/R",
+      "headwindWatchTag": "Headwind Watch Only",
+      "cols": {
+        "symbol": "Ticker",
+        "industry": "Industry & Sector Flow",
+        "close": "Close",
+        "refBand": "Ref Band [L / M / H]",
+        "anchorZone": "Support / Pullback Anchor",
+        "discountOrPeg": "Discount / Fwd Growth",
+        "stop": "Protective Stop",
+        "targetRr": "Target & Net R/R",
+        "earningsDays": "Next Earnings",
+        "stance": "Stance"
+      },
+      "daysUnit": "{{days}}d",
+      "noEarningsDate": "None scheduled",
+      "hyperGrowthTag": "Hyper-Growth Fwd P/E {{pe}}x",
+      "pegTag": "Fwd PEG {{peg}}",
+      "tiers": {
+        "MEGA_LARGE": "Mega/Large Cap",
+        "MID": "Mid Cap",
+        "SMALL": "Small Cap"
+      }
+    },
+    "signalStats": {
+      "title": "Signal Outcome Tracking & Hit-Rate Verification",
+      "subtitle": "Immutable historical log with split-adjusted +5D / +20D / +60D settlement",
+      "disclaimer": "Statistics reflect split-adjusted price performance after signal trigger, excluding dividends, fees, and slippage.",
+      "empty": "No tracked signals yet. Daily radar triggers are logged automatically and settled at +5/+20/+60 trading sessions.",
+      "totalSignals": "Total Signals",
+      "pendingCount": "Tracking",
+      "winRate20d": "+20D Win Rate",
+      "avgReturn20d": "+20D Expectancy",
+      "targetHitRate": "Target-First Rate",
+      "tabByType": "By Signal Type",
+      "tabByRegime": "By Market Regime",
+      "tabByIndustry": "By Industry",
+      "tabByTier": "By Cap Tier",
+      "cols": {
+        "group": "Group",
+        "total": "Signals",
+        "settled20d": "+20D Settled",
+        "winRate20d": "+20D Win Rate",
+        "avg5d": "+5D Avg",
+        "avg20d": "+20D Avg",
+        "avg60d": "+60D Avg",
+        "targetHitRate": "Target-First",
+        "mfeMae": "Avg MFE / MAE"
+      },
+      "signalTypes": {
+        "ACCUMULATE_AT_SUPPORT": "Accumulate at Support",
+        "TREND_PULLBACK_STARTER": "Trend Pullback Starter"
+      },
+      "unknownGroup": "Unclassified"
+    }
   },
   "analysisReport": {
     "historicalFairValue": "Own-history valuation reference",
@@ -475,6 +605,27 @@
       "pegBasis": {
         "TRAILING_EPS_CAGR_3Y": "3Y EPS CAGR basis",
         "TRAILING_EPS_YOY": "1Y EPS YoY basis"
+      }
+    },
+    "peerRelativeStrength": {
+      "title": "Stock vs. Peer Median vs. SPY Relative Strength (20D / 60D)",
+      "basisIndustry": "Basis: Industry Median",
+      "basisCustom": "Basis: Custom Peer Median",
+      "window20d": "20-Session Return",
+      "window60d": "60-Session Return",
+      "stockLabel": "Stock",
+      "peerLabel": "Peer Median",
+      "spyLabel": "SPY",
+      "sectorCmf": "Sector 20D CMF",
+      "breadth50": "Sector > SMA50",
+      "breadth200": "Sector > SMA200",
+      "sampleCount": "{{count}} valid peers",
+      "labels": {
+        "SECTOR_STRONG_STOCK_LEADING": "Strong Sector · Stock Leading",
+        "SECTOR_STRONG_STOCK_LAGGING": "Strong Sector · Catch-Up Candidate (Watch)",
+        "SECTOR_WEAK_STOCK_OUTPERFORMING": "Weak Sector · Stock Outperforming",
+        "SECTOR_WEAK_COLLECTIVE_DECLINE": "Weak Sector · Broad Decline (Avoid Catching Knife)",
+        "NEUTRAL_INLINE": "In Line with Sector & SPY"
       }
     }
   },

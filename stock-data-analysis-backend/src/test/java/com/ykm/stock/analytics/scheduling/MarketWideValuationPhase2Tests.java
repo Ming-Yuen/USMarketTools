@@ -100,7 +100,11 @@ class MarketWideValuationPhase2Tests {
                 stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
                 industries, industryConfigs, periodRepo, latestRepo, customPeerRepo, calendar, clock,
                 new SecIssuerHistory(""), tx, entityManager);
-        task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager);
+        task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager,
+                latestRepo,
+                mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class),
+                mock(com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService.class),
+                mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class));
 
         when(clock.now()).thenReturn(NOW);
         when(clock.nowLocalDateTime()).thenReturn(LocalDateTime.of(2026, 11, 13, 16, 0));

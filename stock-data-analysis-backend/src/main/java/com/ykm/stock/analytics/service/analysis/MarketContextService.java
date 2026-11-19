@@ -40,6 +40,67 @@ public class MarketContextService {
     private final QuoteNormalizationService quotes;
     private final MarketStatusService calendar;
 
+    /** 預載之共用大盤背景（SPY/QQQ 基準序列、情緒、利率與宏觀事件），供兩階段雷達與儀表板零重複 DB 查詢共用。 */
+    public record PreloadedMarketData(
+            LocalDate through,
+            Instant observationCutoff,
+            MetricResult<NormalizedPriceSeriesDto> spy,
+            MetricResult<NormalizedPriceSeriesDto> qqq,
+            Map<String, List<Observation>> inputs,
+            List<MarketEvent> marketWideEvents,
+            MetricResult<MarketSnapshotDto> marketSnapshot,
+            MetricResult<BigDecimal> vixClose
+    ) {}
+
+    /** 一次載入 SPY/QQQ 272 個交易日基準日線（與單股 MarketRegime 視窗完全一致，避免 273+ 日舊缺口誤殺）、近 400 日情緒與美債殖利率及宏觀事件。 */
+    @Transactional(readOnly = true)
+    public PreloadedMarketData preloadMarketData(LocalDate through, Instant observationCutoff) {
+        Instant cutoff = calendar.getSessionCloseAt(through);
+        Instant obsCutoff = observationCutoff != null ? observationCutoff : cutoff;
+        AnalysisContext baseContext = new AnalysisContext("MARKET_PRELOAD", cutoff, obsCutoff, AnalysisHorizon.POSITION);
+        List<LocalDate> sessions = calendar.getTradingDays(through.minusDays(460), through);
+        LocalDate from = sessions.size() >= MarketRegimeCalculator.REQUIRED_SESSIONS
+                ? sessions.get(sessions.size() - MarketRegimeCalculator.REQUIRED_SESSIONS)
+                : (sessions.isEmpty() ? through.minusYears(1) : sessions.getFirst());
+        MetricResult<NormalizedPriceSeriesDto> spy = benchmark(baseContext, "SPY", from, through);
+        MetricResult<NormalizedPriceSeriesDto> qqq = benchmark(baseContext, "QQQ", from, through);
+        Map<String, List<Observation>> inputs = loadInputs(through);
+        MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", baseContext, inputs, 1);
+        MetricResult<MarketSnapshotDto> snapshot = market(baseContext, spy, qqq, inputs, vixClose);
+        List<MarketEvent> macroEvents = events.findVisibleMarketWide(through.minusDays(10), through.plusDays(20), obsCutoff);
+        return new PreloadedMarketData(through, obsCutoff, spy, qqq, inputs, macroEvents, snapshot, vixClose);
+    }
+
+    /** 供兩階段雷達批次精算呼叫：完全複用預載大盤資料並嚴守與單股 evaluate(...) 一致之 272 日基準對齊視窗，零額外 DB 查詢。 */
+    public MetricResult<MarketContextDto> evaluateWithPreloaded(
+            AnalysisContext context,
+            NormalizedPriceSeriesDto stockPrice,
+            PriceStructureDto structures,
+            List<MarketEvent> pastEarnings,
+            List<MarketEvent> stockWindowEvents,
+            PreloadedMarketData preloaded) {
+        if (stockPrice == null || stockPrice.bars().isEmpty()) return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                AnalysisReasonDto.of("PRICE_REQUIRED", "MARKET_CONTEXT", "需要行情資料。"));
+        if (stockPrice.quality() != MetricStatus.AVAILABLE) return MetricResult.unavailable(stockPrice.quality(),
+                AnalysisReasonDto.of("PRICE_UNAVAILABLE", "MARKET_CONTEXT", "行情資料不足。"));
+        List<NormalizedBarDto> bars = stockPrice.bars();
+        LocalDate from = bars.get(Math.max(0, bars.size() - MarketRegimeCalculator.REQUIRED_SESSIONS)).sessionDate();
+        LocalDate through = bars.getLast().sessionDate();
+        MetricResult<NormalizedPriceSeriesDto> spy = slicePreloadedBenchmark(preloaded.spy(), from, through);
+        MetricResult<NormalizedPriceSeriesDto> qqq = slicePreloadedBenchmark(preloaded.qqq(), from, through);
+        Map<String, List<Observation>> inputs = preloaded.inputs();
+        List<MarketEvent> knownEvents = new ArrayList<>();
+        if (preloaded.marketWideEvents() != null) {
+            knownEvents.addAll(preloaded.marketWideEvents());
+        }
+        if (stockWindowEvents != null) {
+            knownEvents.addAll(stockWindowEvents);
+        }
+        knownEvents.sort(Comparator.comparing(MarketEvent::getEventDate, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(MarketEvent::getOccurrenceAt, Comparator.nullsLast(Comparator.naturalOrder())));
+        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents);
+    }
+
     /** 直接讀已入庫的行情、情緒、利率及已知日程；不存在原始檔案或證據再驗證步驟。 */
     @Transactional(readOnly = true)
     public MetricResult<MarketContextDto> evaluate(AnalysisContext context, NormalizedPriceSeriesDto stockPrice, PriceStructureDto structures) {
@@ -60,6 +121,22 @@ public class MarketContextService {
         MetricResult<NormalizedPriceSeriesDto> spy = benchmark(context, "SPY", from, through);
         MetricResult<NormalizedPriceSeriesDto> qqq = benchmark(context, "QQQ", from, through);
         Map<String, List<Observation>> inputs = loadInputs(through);
+        List<MarketEvent> knownEvents = events.findVisible(context.figi(), context.analysisAsOf().atZone(NY).toLocalDate().minusDays(10),
+                context.analysisAsOf().atZone(NY).toLocalDate().plusDays(20), context.observationCutoff());
+        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents);
+    }
+
+    private MetricResult<MarketContextDto> evaluateCore(
+            AnalysisContext context,
+            NormalizedPriceSeriesDto stockPrice,
+            PriceStructureDto structures,
+            List<MarketEvent> pastEarnings,
+            MetricResult<NormalizedPriceSeriesDto> spy,
+            MetricResult<NormalizedPriceSeriesDto> qqq,
+            Map<String, List<Observation>> inputs,
+            List<MarketEvent> knownEvents) {
+        List<NormalizedBarDto> bars = stockPrice.bars();
+        LocalDate through = bars.getLast().sessionDate();
         MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", context, inputs, 1);
         MomentumAnalysisDto momentum = momentumCalculator.calculate(bars);
         EarningsAnchorSelection earningsAnchor = resolveEarningsAnchor(pastEarnings, through);
@@ -69,8 +146,6 @@ public class MarketContextService {
                 ? relativeStrengthCalculator.calculate(bars, spy.value().bars(), "SPY") : missingRelative(spy);
         MetricResult<MarketSnapshotDto> market = market(context, spy, qqq, inputs, vixClose);
         TreasuryContextDto treasury = treasury(context, inputs);
-        List<MarketEvent> knownEvents = events.findVisible(context.figi(), context.analysisAsOf().atZone(NY).toLocalDate().minusDays(10),
-                context.analysisAsOf().atZone(NY).toLocalDate().plusDays(20), context.observationCutoff());
         List<EventRiskDto> risks = knownEvents.stream().map(event -> new EventRiskDto(event.getEventKey(), event.getEventType(),
                 event.getEventSubtype(), event.getTitle(), event.getEventDate(), event.getOccurrenceAt(), event.getTimePrecision(),
                 event.getObservedAt(), event.getSource(), "EARNINGS".equals(event.getEventType()) && earningsBlock(context, event.getEventDate()))).toList();
@@ -92,6 +167,27 @@ public class MarketContextService {
         MarketContextDto result = new MarketContextDto(summary, relative, market, risks, constraint(context, market, knownEvents, risks),
                 List.copyOf(reasons), List.of(), momentum, volume, drawdown, treasury, freshness, vixClose);
         return MetricResult.available(result);
+    }
+
+    private MetricResult<NormalizedPriceSeriesDto> slicePreloadedBenchmark(
+            MetricResult<NormalizedPriceSeriesDto> source, LocalDate from, LocalDate through) {
+        if (source == null || source.status() != MetricStatus.AVAILABLE || source.value() == null) {
+            return source;
+        }
+        List<NormalizedBarDto> sliced = source.value().bars().stream()
+                .filter(b -> b != null && b.sessionDate() != null && !b.sessionDate().isBefore(from) && !b.sessionDate().isAfter(through))
+                .toList();
+        if (sliced.isEmpty()) {
+            return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
+                    AnalysisReasonDto.of("PRICE_MISSING", "PRICE", "基準行情於指定視窗內不足。"));
+        }
+        NormalizedPriceSeriesDto base = source.value();
+        PriceSeriesCoverageDto coverage = new PriceSeriesCoverageDto(from, through,
+                sliced.getFirst().sessionDate(), sliced.getLast().sessionDate(),
+                sliced.size(), sliced.size(), List.of(), base.evidenceRefs());
+        return MetricResult.available(new NormalizedPriceSeriesDto(
+                base.figi(), base.timeframe(), sliced, base.priceBasis(), coverage,
+                base.quality(), base.evidenceRefs(), base.inputHash()), base.evidenceRefs());
     }
 
     private MetricResult<NormalizedPriceSeriesDto> benchmark(AnalysisContext context, String symbol, LocalDate from, LocalDate through) {

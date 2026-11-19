@@ -19,7 +19,10 @@ public class SecurityTypePolicy {
     public static final List<String> MARKET_DATA_STOCK_TYPES = List.of(
             "Common Stock", "REIT", "MLP", "NY Reg Shrs", "Ltd Part", "ADR", "ETP", "Closed-End Fund", "Royalty Trst", "Unit");
     public static final List<String> BENCHMARK_ETF_SYMBOLS = List.of(
-            "SPY", "QQQ", "SOXX", "VOO", "URA", "IWM", "DIA");
+            "SPY", "QQQ", "SOXX", "VOO", "URA", "IWM", "DIA",
+            "XLK", "XLF", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLU", "XLB", "XLRE");
+    public static final List<String> SECTOR_ETF_SYMBOLS = List.of(
+            "XLK", "XLF", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLU", "XLB", "XLRE");
 
     private static final Set<String> STOCK_MASTER_TYPES = Set.of("CS", "OS", "ADRC", "ETF");
     private static final Set<String> OPERATING_COMPANY_TYPES_UPPER = OPERATING_STOCK_TYPES.stream()

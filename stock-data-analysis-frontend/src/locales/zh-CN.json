@@ -522,7 +522,137 @@
       "marketSummary":{"STRONG_BUT_OVERHEATED":"风险偏好偏强，但情绪已过热","HOT_BUT_DIVERGING":"情绪偏热，但价格动能出现分化","FEAR_WITH_RECOVERY":"恐慌情绪下出现价格修复","WEAK_AND_FEARFUL":"风险偏好偏弱，市场处于恐慌区","BULLISH_NON_EXTREME":"市场动能偏多，情绪尚未进入极端区","BEARISH":"市场动能偏弱，宜控制下行风险","DIVERGING":"市场方向分化，等待更明确信号"},
       "execution":{"EXECUTION_BIAS":"执行倾向","HIGH_RISK":"多项风险条件同时成立，宜降低追价与高波动部位，等待 RSI、均线偏离或量能恢复正常。","SELECTIVE":"部分风险条件已触发，维持选择性部署，新增部位应优先确认量能及均线偏离。","BULLISH":"ETF 动能整体偏多且未触发主要风险条件，可维持偏多思路并设置风险边界。","DEFENSIVE":"ETF 动能整体偏弱且未见明确反转确认，宜保守控制仓位并等待放量回升。","NEUTRAL":"当前数据不足或方向分化，宜维持中性仓位并等待更明确的量价信号。"},
       "hongKongTime":"香港时间","noUpcomingEvents":"未来 14 天暂无已确认的市场催化事件。","eventCategory":{"MACRO":"宏观","FED":"美联储","EARNINGS":"财报","TREASURY":"美债","DERIVATIVES":"衍生品","INDEX_REBALANCE":"指数调整","POLICY":"政策","OTHER":"其他"},
-      "eventLevel":{"HIGH":"高","MEDIUM":"中","LOW":"低"},"event":{"CPI":"消费者价格指数（CPI）","CORE_CPI":"核心消费者价格指数","PCE":"个人消费支出价格指数（PCE）","CORE_PCE":"核心 PCE 价格指数","EMPLOYMENT_SITUATION":"就业报告（非农及失业率）","NONFARM_PAYROLLS":"非农就业数据","NFP":"非农就业数据","UNEMPLOYMENT_RATE":"失业率","INITIAL_JOBLESS_CLAIMS":"首次申请失业救济人数","JOBLESS_CLAIMS":"首次申请失业救济人数","FACTORY_ORDERS":"工厂订单","JOLTS":"JOLTS 职位空缺","ISM_MANUFACTURING":"ISM 制造业 PMI","ISM_SERVICES":"ISM 服务业 PMI","GDP":"国内生产总值（GDP）","RETAIL_SALES":"零售销售","PPI":"生产者价格指数（PPI）","FOMC":"FOMC 利率决议","EARNINGS_REPORT":"{{symbol}} 财报发布","MONTHLY_OPEX":"月度期权到期日","QUARTERLY_OPEX":"季度期权到期日（三巫日）"}
+      "eventLevel":{"HIGH":"高","MEDIUM":"中","LOW":"低"},"event":{"CPI":"消费者价格指数（CPI）","CORE_CPI":"核心消费者价格指数","PCE":"个人消费支出价格指数（PCE）","CORE_PCE":"核心 PCE 价格指数","EMPLOYMENT_SITUATION":"就业报告（非农及失业率）","NONFARM_PAYROLLS":"非农就业数据","NFP":"非农就业数据","UNEMPLOYMENT_RATE":"失业率","INITIAL_JOBLESS_CLAIMS":"首次申请失业救济人数","JOBLESS_CLAIMS":"首次申请失业救济人数","FACTORY_ORDERS":"工厂订单","JOLTS":"JOLTS 职位空缺","ISM_MANUFACTURING":"ISM 制造业 PMI","ISM_SERVICES":"ISM 服务业 PMI","GDP":"国内生产总值（GDP）","RETAIL_SALES":"零售销售","PPI":"生产者价格指数（PPI）","FOMC":"FOMC 利率决议","EARNINGS_REPORT":"{{symbol}} 财报发布","MONTHLY_OPEX":"月度期权到期日","QUARTERLY_OPEX":"季度期权到期日（三巫日）"},
+      "marketRegime": {
+        "title": "大盘市况",
+        "headwindBanner": "大盘处于{{regime}}逆风警戒，机会雷达已自动收紧至深度低估且基本面强劲之仅观察名单，并暂停新增主动买入信号。",
+        "correctionBanner": "大盘处于修正期，强势回踩试单暂停，低估标的须等待右侧确认并建议缩减仓位。",
+        "vixLabel": "VIX 收盘",
+        "asOfDate": "基准日"
+      },
+      "sectorEtfs": {
+        "title": "11 大板块代表 ETF 动能与相对强弱",
+        "subtitle": "对照 SPY 超额回报与 20 日量比，捕捉板块资金轮动",
+        "empty": "暂无 11 大板块 ETF 行情数据。",
+        "symbol": "ETF",
+        "sector": "板块",
+        "close": "收盘价",
+        "ret5d": "5D 涨跌",
+        "ret20d": "20D 涨跌",
+        "ret60d": "60D 涨跌",
+        "rvol20": "RVOL20",
+        "excess5d": "5D vs SPY",
+        "excess20d": "20D vs SPY",
+        "excess60d": "60D vs SPY",
+        "sectors": {
+          "TECHNOLOGY": "科技",
+          "FINANCIALS": "金融",
+          "ENERGY": "能源",
+          "HEALTH_CARE": "医疗保健",
+          "INDUSTRIALS": "工业",
+          "COMMUNICATION_SERVICES": "通信服务",
+          "CONSUMER_DISCRETIONARY": "非必需消费",
+          "CONSUMER_STAPLES": "必需消费",
+          "UTILITIES": "公用事业",
+          "MATERIALS": "原材料",
+          "REAL_ESTATE": "房地产"
+        }
+      },
+      "sectorFlow": {
+        "title": "板块量价资金流与内部均线广度",
+        "subtitle": "基于全市场 USD 追踪运营股 OHLCV 计算，识破权重股虚撑指数",
+        "coverage": "样本母体：{{total}} 档追踪运营股 · 已分类覆盖率 {{coverage}}",
+        "empty": "暂无板块资金流快照，请待每日收市估值排程完成。",
+        "sortBy": "排序依据",
+        "sortCmf20d": "20D CMF 由高至低",
+        "sortShareDelta": "5D 资金占比增幅",
+        "sortBreadth50": "站上 SMA50 广度",
+        "sortDollarVol1d": "当日成交额",
+        "industry": "产业板块",
+        "stockCount": "档数",
+        "cmf5d": "5D CMF",
+        "cmf20d": "20D CMF",
+        "share1d": "当日占比",
+        "shareDelta": "5D vs 20D 占比差",
+        "breadth50": "站上 SMA50",
+        "breadth200": "站上 SMA200",
+        "ret20dMedian": "20D 中位回报",
+        "flowState": "资金状态",
+        "flowStates": {
+          "INFLOW": "量价流入",
+          "NEUTRAL": "多空分歧",
+          "OUTFLOW": "量价流出"
+        }
+      },
+      "radar": {
+        "title": "每日双轨机会雷达",
+        "subtitle": "收盘后两阶段自动扫描（默认排除 REITs 与 14 日内财报标的）；点击代码直达个股分析页",
+        "headwindNotice": "当前处于大盘逆风警戒期，下列标的仅供观察追踪，不代表可立即入场。",
+        "tabValue": "低估支撑低接（{{count}}）",
+        "tabStarter": "强势成长股趋势回踩试单（{{count}}）",
+        "emptyValue": "当前无符合低估支撑合流条件之标的。",
+        "emptyStarter": "当前无符合强势成长股回踩试单条件之标的（仅读取已缓存年度共识，逆风期自动暂停）。",
+        "filterSearch": "搜索代码或名称",
+        "filterIndustry": "产业",
+        "filterIndustryAll": "全部产业",
+        "filterTier": "市值量级",
+        "filterTierAll": "全部量级",
+        "filterMaxDist": "距支撑上限（%）",
+        "filterMinRr": "最低净盈亏比",
+        "headwindWatchTag": "逆风仅观察",
+        "cols": {
+          "symbol": "标的",
+          "industry": "产业与板块资金",
+          "close": "收盘价",
+          "refBand": "参考价带 [L / M / H]",
+          "anchorZone": "支撑／回踩均线",
+          "discountOrPeg": "折价／前瞻成长",
+          "stop": "保护止损",
+          "targetRr": "目标与净 R/R",
+          "earningsDays": "距下次财报",
+          "stance": "观察倾向"
+        },
+        "daysUnit": "{{days}} 天",
+        "noEarningsDate": "无已知排程",
+        "hyperGrowthTag": "高成长豁免 Fwd P/E {{pe}}x",
+        "pegTag": "Fwd PEG {{peg}}",
+        "tiers": {
+          "MEGA_LARGE": "大型股",
+          "MID": "中型股",
+          "SMALL": "小型股"
+        }
+      },
+      "signalStats": {
+        "title": "信号事后追踪与胜率验证",
+        "subtitle": "历史信号记录不可篡改，跨拆股日线自动结算 +5D / +20D / +60D 表现",
+        "disclaimer": "统计仅反映信号触发后经拆股对齐之价格表现，不含股息、交易手续费与滑点。",
+        "empty": "暂无历史信号追踪记录，每日雷达触发信号后将自动记账并于满 5/20/60 交易日结算。",
+        "totalSignals": "累计信号",
+        "pendingCount": "追踪中",
+        "winRate20d": "+20D 胜率",
+        "avgReturn20d": "+20D 期望回报",
+        "targetHitRate": "双边目标先中率",
+        "tabByType": "按信号类型",
+        "tabByRegime": "按大盘市况",
+        "tabByIndustry": "按产业",
+        "tabByTier": "按市值量级",
+        "cols": {
+          "group": "分组",
+          "total": "信号数",
+          "settled20d": "+20D 已结算",
+          "winRate20d": "+20D 胜率",
+          "avg5d": "+5D 均报",
+          "avg20d": "+20D 均报",
+          "avg60d": "+60D 均报",
+          "targetHitRate": "目标先中率",
+          "mfeMae": "均 MFE / MAE"
+        },
+        "signalTypes": {
+          "ACCUMULATE_AT_SUPPORT": "低估支撑低接",
+          "TREND_PULLBACK_STARTER": "强势回踩试单"
+        },
+        "unknownGroup": "未分类"
+      }
     },
   "analysisReport": {
     "historicalFairValue": "自身历史估值参考",
@@ -941,6 +1071,27 @@
       "pegBasis": {
         "TRAILING_EPS_CAGR_3Y": "按 3 年 EPS 复合增长率",
         "TRAILING_EPS_YOY": "按 1 年 EPS 同比增长率"
+      }
+    },
+    "peerRelativeStrength": {
+      "title": "个股 vs 同行中位数 vs SPY 相对强弱（20D / 60D）",
+      "basisIndustry": "对标口径：全产业中位数",
+      "basisCustom": "对标口径：自定义对标中位数",
+      "window20d": "20 交易日回报",
+      "window60d": "60 交易日回报",
+      "stockLabel": "本股",
+      "peerLabel": "同行中位数",
+      "spyLabel": "SPY",
+      "sectorCmf": "板块 20D CMF",
+      "breadth50": "板块站上 SMA50",
+      "breadth200": "板块站上 SMA200",
+      "sampleCount": "有效样本 {{count}} 档",
+      "labels": {
+        "SECTOR_STRONG_STOCK_LEADING": "板块强势、个股领涨",
+        "SECTOR_STRONG_STOCK_LAGGING": "板块走强、个股落后补涨（重点留意）",
+        "SECTOR_WEAK_STOCK_OUTPERFORMING": "板块走弱、个股逆势抗跌",
+        "SECTOR_WEAK_COLLECTIVE_DECLINE": "板块退潮、集体走弱（勿轻易接刀）",
+        "NEUTRAL_INLINE": "与板块及大盘表现大致同步"
       }
     }
   },

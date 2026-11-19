@@ -16,10 +16,17 @@ public final class QuoteNormalizer {
     // 用途：驗證 OHLCV 的基本金融語義，包括正數價格、高低價關係與非負成交量。
     public static boolean valid(StockQuote q) {
         if (q == null) return false;
-        BigDecimal o=q.getOpenPrice(), h=q.getHighPrice(), l=q.getLowPrice(), c=q.getClosePrice();
-        if (o==null||h==null||l==null||c==null||o.signum()<=0||h.signum()<=0||l.signum()<=0||c.signum()<=0) return false;
-        if (h.compareTo(o.max(c))<0 || l.compareTo(o.min(c))>0 || h.compareTo(l)<0) return false;
-        return q.getVolume()==null || q.getVolume().signum()>=0;
+        return validOhlcv(q.getOpenPrice(), q.getHighPrice(), q.getLowPrice(), q.getClosePrice(), q.getVolume());
+    }
+
+    public static boolean validOhlcv(BigDecimal o, BigDecimal h, BigDecimal l, BigDecimal c, BigDecimal volume) {
+        if (o == null || h == null || l == null || c == null || o.signum() <= 0 || h.signum() <= 0 || l.signum() <= 0 || c.signum() <= 0) {
+            return false;
+        }
+        if (h.compareTo(o.max(c)) < 0 || l.compareTo(o.min(c)) > 0 || h.compareTo(l) < 0) {
+            return false;
+        }
+        return volume == null || volume.signum() >= 0;
     }
 
     // 價格 NUMERIC(19,8)、成交量 NUMERIC(28,8) 必須可精確保存，不能由 DB 靜默取整或溢位。

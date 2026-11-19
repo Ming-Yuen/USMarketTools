@@ -21,4 +21,10 @@ public interface StockIndustryHistoryRepository extends JpaRepository<StockIndus
 
     @Query("select h from StockIndustryHistory h join fetch h.industry where h.figi in :figis and h.observedFrom <= :asOf and (h.observedTo is null or h.observedTo > :asOf)")
     List<StockIndustryHistory> findByFigisAt(@Param("figis") Collection<String> figis, @Param("asOf") Instant asOf);
+
+    /** 批次讀取與 [windowStart, windowEnd] 有重疊之歷史產業歸屬，供板塊量價資金流按各交易日當時已知產業彙總。 */
+    @Query("select h from StockIndustryHistory h join fetch h.industry where h.figi in :figis and h.observedFrom <= :windowEnd and (h.observedTo is null or h.observedTo > :windowStart) order by h.figi asc, h.observedFrom asc")
+    List<StockIndustryHistory> findOverlappingByFigis(@Param("figis") Collection<String> figis,
+                                                      @Param("windowStart") Instant windowStart,
+                                                      @Param("windowEnd") Instant windowEnd);
 }

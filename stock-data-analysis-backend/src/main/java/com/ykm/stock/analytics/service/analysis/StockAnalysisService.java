@@ -10,6 +10,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PeerRelativeStrengthDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceStructureDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.StockAnalysisReportDto;
@@ -51,6 +52,7 @@ public class StockAnalysisService {
     private final MarketContextService market;
     private final StockObservationService stockObservations;
     private final StockValuationService stockValuations;
+    private final SectorMoneyFlowService sectorMoneyFlowService;
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
 
     /** 只讀已入庫行情與財季分母即時組裝估值、14 項財務原料、5 年月末歷史、前瞻預期觀察、技術交易計畫與綜合估值摘要；不觸發外部下載或寫庫。 */
@@ -127,10 +129,20 @@ public class StockAnalysisService {
         MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculate(
                 horizon, valuation, bundle.financials(), bundle.fundamentals(), observations,
                 structure, support, tradePlans, marketResult);
+        PeerRelativeStrengthDto peerRelativeStrength = null;
+        if (sectorMoneyFlowService != null && marketResult.status() == MetricStatus.AVAILABLE && marketResult.value() != null) {
+            peerRelativeStrength = sectorMoneyFlowService.evaluatePeerRelativeStrength(
+                    stock.getFigi(),
+                    industryCode,
+                    resolvedReportDate,
+                    request.valuationDate() != null,
+                    marketResult.value().relativeStrength()
+            );
+        }
         return new StockAnalysisReportDto(stock.getFigi(), stock.getSymbol(), stock.getLongName(), resolvedReportDate,
                 valuation, bundle.financials(), bundle.history(),
                 structure, support, tradePlans, marketResult, observations, reasons,
-                bundle.fundamentals(), summary);
+                bundle.fundamentals(), summary, peerRelativeStrength);
     }
 
     private <T> MetricResult<T> unavailable(String code) {

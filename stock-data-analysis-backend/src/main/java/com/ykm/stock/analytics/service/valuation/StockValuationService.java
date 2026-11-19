@@ -911,9 +911,13 @@ public class StockValuationService {
                             customCandidateRows,
                             industryCandidateRows
                     );
-                    String verdict = ValuationSummaryCalculator.computeObjectiveVerdict(
+                    ValuationSummaryCalculator.ObjectiveBandVerdict bandVerdict = ValuationSummaryCalculator.computeObjectiveBandAndVerdict(
                             freshEval.evaluated().price(), freshEval.historicalRef(), peerRef);
-                    existing.setVerdict(verdict);
+                    existing.setVerdict(bandVerdict.verdict());
+                    existing.setFairValueLow(bandVerdict.low());
+                    existing.setFairValueMid(bandVerdict.mid());
+                    existing.setFairValueHigh(bandVerdict.high());
+                    existing.setFundamentalBacking(freshEval.builtSnapshot().getFundamentalBacking());
                     entityManager.merge(existing);
                     entityManager.flush();
                 }
@@ -1109,9 +1113,12 @@ public class StockValuationService {
             String marketCapTier = resolveMarketCapTier(stock.getCurrency(), marketCap);
             BigDecimal histPercentile = historicalRef != null && "AVAILABLE".equals(historicalRef.status())
                     ? historicalRef.currentPercentile() : null;
+            boolean currentLoss = isCurrentTtmEpsNonPositive(matched, status, stockValDate);
+            String fundamentalBacking = ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
 
             StockValuationLatest snapshot = new StockValuationLatest();
-            populateLatestEntity(snapshot, normalizedEvaluated, marketCap, marketCapTier, revGrowthYoy, roe, fcfMargin, histPercentile, null);
+            populateLatestEntity(snapshot, normalizedEvaluated, marketCap, marketCapTier,
+                    revGrowthYoy, roe, fcfMargin, histPercentile, null, null, null, null, fundamentalBacking);
 
             String resolvedIndustryCode = modelCtx != null && modelCtx.industryCode() != null
                     ? modelCtx.industryCode() : normalizedEvaluated.industryCode();
@@ -1524,7 +1531,7 @@ public class StockValuationService {
                         industryCandidateRows
                 );
 
-                String verdict = ValuationSummaryCalculator.computeObjectiveVerdict(
+                ValuationSummaryCalculator.ObjectiveBandVerdict bandVerdict = ValuationSummaryCalculator.computeObjectiveBandAndVerdict(
                         pending.evaluated().price(), pending.historicalRef(), peerRef);
 
                 if (pending.directRefresh()) {
@@ -1538,7 +1545,11 @@ public class StockValuationService {
                             pending.builtSnapshot().getRoe(),
                             pending.builtSnapshot().getFcfMargin(),
                             pending.builtSnapshot().getHistoricalPercentile(),
-                            verdict
+                            bandVerdict.verdict(),
+                            bandVerdict.low(),
+                            bandVerdict.mid(),
+                            bandVerdict.high(),
+                            pending.builtSnapshot().getFundamentalBacking()
                     );
                     target.setCalculatedAt(calculatedAt);
                     if (existing != null) {
@@ -1552,7 +1563,11 @@ public class StockValuationService {
                     status.setValuationMessage(truncateSummary(valDate + ":" + formatStatusSummary(target)));
                     updatedStatuses.add(status);
                 } else {
-                    existing.setVerdict(verdict);
+                    existing.setVerdict(bandVerdict.verdict());
+                    existing.setFairValueLow(bandVerdict.low());
+                    existing.setFairValueMid(bandVerdict.mid());
+                    existing.setFairValueHigh(bandVerdict.high());
+                    existing.setFundamentalBacking(pending.builtSnapshot().getFundamentalBacking());
                     entityManager.merge(existing);
                 }
             }
@@ -3062,12 +3077,15 @@ public class StockValuationService {
         return "PE";
     }
 
-    private DayDenominators resolveDayDenominators(
-            Stock stock, StockStatus status, StockFinancialPeriod period,
-            List<StockSplit> stockSplits, LocalDate day, ShareEvaluation dayShareEval) {
-        if (period == null || !sameCurrency(stock.getCurrency(), period.getReportingCurrency())) {
+    /** 供估值計算與每日機會雷達共用之交易日拆股對齊 TTM EPS 分母與原因碼解析（含幣別檢查與拆股基準驗證）。 */
+    public record DayEpsResolution(BigDecimal epsAtDay, String peReason) {}
+
+    public static DayEpsResolution resolveDayEps(
+            String quoteCurrency, StockStatus status, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, LocalDate day) {
+        if (period == null || !sameCurrency(quoteCurrency, period.getReportingCurrency())) {
             String mismatchReason = period != null ? "REPORTING_CURRENCY_MISMATCH" : "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE";
-            return new DayDenominators(null, null, mismatchReason);
+            return new DayEpsResolution(null, mismatchReason);
         }
         String splitError = splitSyncError(status);
         BigDecimal epsAtDay = null;
@@ -3089,7 +3107,14 @@ public class StockValuationService {
         } else if (peReason == null) {
             peReason = "DILUTED_EPS_TTM_MISSING";
         }
-        return new DayDenominators(epsAtDay, dayShareEval == null ? null : dayShareEval.sharesAtDay(), peReason);
+        return new DayEpsResolution(epsAtDay, peReason);
+    }
+
+    private DayDenominators resolveDayDenominators(
+            Stock stock, StockStatus status, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, LocalDate day, ShareEvaluation dayShareEval) {
+        DayEpsResolution epsRes = resolveDayEps(stock.getCurrency(), status, period, stockSplits, day);
+        return new DayDenominators(epsRes.epsAtDay(), dayShareEval == null ? null : dayShareEval.sharesAtDay(), epsRes.peReason());
     }
 
     private BigDecimal positiveMetricValue(ValuationResultDto.Metrics metrics, String metricCode) {
@@ -3735,6 +3760,17 @@ public class StockValuationService {
         return lowVal.add(highVal.subtract(lowVal, MC).multiply(weight, MC), MC).setScale(4, RoundingMode.HALF_UP);
     }
 
+    private boolean isCurrentTtmEpsNonPositive(StockFinancialPeriod matched, StockStatus status, LocalDate day) {
+        if (matched == null || matched.getEpsTtm() == null || !MetricStatus.AVAILABLE.name().equals(matched.getEpsTtmStatus())) {
+            return false;
+        }
+        String splitError = splitSyncError(status);
+        if (splitError != null && matched.getEpsShareBasisDate() != null && !matched.getEpsShareBasisDate().equals(day)) {
+            return false;
+        }
+        return matched.getEpsTtm().signum() <= 0;
+    }
+
     private void populateLatestEntity(
             StockValuationLatest entity,
             ValuationResultDto dto,
@@ -3744,7 +3780,11 @@ public class StockValuationService {
             BigDecimal roe,
             BigDecimal fcfMargin,
             BigDecimal historicalPercentile,
-            String verdict) {
+            String verdict,
+            BigDecimal fairValueLow,
+            BigDecimal fairValueMid,
+            BigDecimal fairValueHigh,
+            String fundamentalBacking) {
         entity.setFigi(dto.figi());
         entity.setValuationDate(dto.valuationDate());
         entity.setAnalysisAsOf(dto.analysisAsOf());
@@ -3804,6 +3844,10 @@ public class StockValuationService {
         entity.setFcfMargin(fcfMargin);
         entity.setHistoricalPercentile(historicalPercentile);
         entity.setVerdict(verdict);
+        entity.setFairValueLow(fairValueLow);
+        entity.setFairValueMid(fairValueMid);
+        entity.setFairValueHigh(fairValueHigh);
+        entity.setFundamentalBacking(fundamentalBacking);
     }
 
     private ValuationResultDto unavailableDayResult(
@@ -4116,7 +4160,7 @@ public class StockValuationService {
                 .compareTo(quote.getClosePrice().setScale(8, RoundingMode.HALF_UP)) == 0;
     }
 
-    private String splitSyncError(StockStatus status) {
+    public static String splitSyncError(StockStatus status) {
         if (status == null) return null;
         String msg = status.getSplitMessage();
         if (msg != null && !msg.isBlank() && !msg.startsWith("WARNING:")
@@ -4160,7 +4204,7 @@ public class StockValuationService {
         return "FUTU_AND_SEC";
     }
 
-    private boolean sameCurrency(String first, String second) {
+    private static boolean sameCurrency(String first, String second) {
         return first != null && !first.isBlank() && second != null && first.equalsIgnoreCase(second);
     }
 

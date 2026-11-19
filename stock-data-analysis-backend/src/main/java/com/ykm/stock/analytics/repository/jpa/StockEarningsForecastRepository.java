@@ -44,4 +44,17 @@ public interface StockEarningsForecastRepository extends JpaRepository<StockEarn
 
     boolean existsByFigiAndSourceAndPeriodTypeAndObservationDateGreaterThanEqual(
             String figi, String source, String periodType, LocalDate minObservationDate);
+
+    /** 批次讀取多檔候選股自指定觀察日起之可見盈利預期紀錄（純唯讀 PostgreSQL，供雷達批次前瞻與 90D 下修判定）。 */
+    @Query("""
+            select f from StockEarningsForecast f
+            where f.figi in :figis
+              and f.observationDate between :minObservationDate and :maxObservationDate
+              and f.observedAt <= :cutoff
+            order by f.figi asc, f.observationDate asc, f.observedAt desc
+            """)
+    List<StockEarningsForecast> findVisibleForStocksBetween(@Param("figis") java.util.Collection<String> figis,
+                                                            @Param("minObservationDate") LocalDate minObservationDate,
+                                                            @Param("maxObservationDate") LocalDate maxObservationDate,
+                                                            @Param("cutoff") Instant cutoff);
 }

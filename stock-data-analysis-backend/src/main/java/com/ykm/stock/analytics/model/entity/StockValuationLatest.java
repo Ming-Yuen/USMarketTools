@@ -27,7 +27,8 @@ import java.time.LocalDate;
         @Index(name = "idx_stock_valuation_latest_industry", columnList = "industry_code"),
         @Index(name = "idx_stock_valuation_latest_date", columnList = "valuation_date"),
         @Index(name = "idx_stock_valuation_latest_tier", columnList = "market_cap_tier"),
-        @Index(name = "idx_stock_valuation_latest_verdict", columnList = "verdict")
+        @Index(name = "idx_stock_valuation_latest_verdict", columnList = "verdict"),
+        @Index(name = "idx_stock_valuation_latest_backing", columnList = "fundamental_backing")
 })
 @Comment("最新收市交易日估值快照表，以 FIGI 為主鍵保存五項市場倍數、狀態與原因碼，供全市場選股與同業比較直接查詢。")
 public class StockValuationLatest {
@@ -245,6 +246,22 @@ public class StockValuationLatest {
     @Column(name = "verdict", length = 32)
     @Comment("單軌客觀市場參考帶 [L, M, H] 估值位置結論（DEEP_UNDERVALUED 至 OVERVALUED_RISK，或 INSUFFICIENT_EVIDENCE）。")
     private String verdict;
+
+    @Column(name = "fair_value_low", precision = 20, scale = 4)
+    @Comment("客觀市場參考帶下緣價 L（僅由自身歷史分位與同業市場分位合成，不含產業假設）；無有效客觀錨點時為 NULL。")
+    private BigDecimal fairValueLow;
+
+    @Column(name = "fair_value_mid", precision = 20, scale = 4)
+    @Comment("客觀市場參考帶中位價 M；無有效客觀錨點時為 NULL。")
+    private BigDecimal fairValueMid;
+
+    @Column(name = "fair_value_high", precision = 20, scale = 4)
+    @Comment("客觀市場參考帶上緣價 H；無有效客觀錨點時為 NULL。")
+    private BigDecimal fairValueHigh;
+
+    @Column(name = "fundamental_backing", length = 32)
+    @Comment("基本面支撐度結論（STRONG、MIXED、WEAKENING 或 INSUFFICIENT_DATA），與個股綜合摘要共用同一套規則。")
+    private String fundamentalBacking;
 
     public boolean hasAvailableMetric() {
         return pe != null || pb != null || ps != null || pfcf != null || evEbitda != null;

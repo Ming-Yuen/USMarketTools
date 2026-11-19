@@ -10,6 +10,9 @@ import java.util.Collection;
 import java.util.List;
 
 public interface StockValuationLatestRepository extends JpaRepository<StockValuationLatest, String> {
+    @Query("select max(v.valuationDate) from StockValuationLatest v where v.valuationDate <= :maxDate")
+    java.util.Optional<LocalDate> findMaxValuationDateAtOrBefore(@Param("maxDate") LocalDate maxDate);
+
     List<StockValuationLatest> findByFigiIn(Collection<String> figis);
 
     /** 讀取同產業、同估值交易日且有效持續追蹤股票的最新估值快照，附帶原始發行人鍵 coalesce(cik, figi) 供同業去重。 */
@@ -66,4 +69,81 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
             """)
     List<String> findActiveTrackedFigisByIndustryCodesAndDates(@Param("industryCodes") Collection<String> industryCodes,
                                                                @Param("valuationDates") Collection<LocalDate> valuationDates);
+    /**
+     * 每日機會雷達第一階段 SQL 初篩（主清單：低估支撐低接）：
+     * 1. 限定當日估值快照、ACTIVE + tracked=true + 正式營運股類型
+     * 2. 雙重排除 REIT（同時檢查 stock.stock_type 與 stock_valuation_latest.model_code）
+     * 3. 限定估值結論（DEEP_UNDERVALUED / MODERATELY_UNDERVALUED / FAIR_LOWER）與基本面支撐（STRONG / MIXED）
+     * 4. 排除 [targetDate, earningsCutoffDate] 內已知可見未取消財報事件
+     */
+    @Query("""
+            select v, s
+            from StockValuationLatest v
+            join Stock s on s.figi = v.figi
+            where v.valuationDate = :targetDate
+              and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
+              and s.tracked = true
+              and s.stockType in :operatingTypes
+              and upper(coalesce(s.stockType, '')) <> 'REIT'
+              and upper(coalesce(v.modelCode, '')) <> 'REIT'
+              and v.verdict in :verdicts
+              and v.fundamentalBacking in :backings
+              and not exists (
+                  select 1 from MarketEvent e
+                  where e.figi = v.figi
+                    and e.eventType = 'EARNINGS'
+                    and e.status <> 'CANCELLED'
+                    and e.eventDate between :targetDate and :earningsCutoffDate
+                    and e.observedAt <= :observationCutoff
+                    and (e.sourcePublishedAt is null or e.sourcePublishedAt <= :observationCutoff)
+              )
+            order by v.figi asc
+            """)
+    List<Object[]> findValueRadarCandidates(@Param("targetDate") LocalDate targetDate,
+                                            @Param("earningsCutoffDate") LocalDate earningsCutoffDate,
+                                            @Param("observationCutoff") java.time.Instant observationCutoff,
+                                            @Param("operatingTypes") Collection<String> operatingTypes,
+                                            @Param("verdicts") Collection<String> verdicts,
+                                            @Param("backings") Collection<String> backings);
+
+    /**
+     * 每日機會雷達第一階段 SQL 初篩（次清單：強勢成長股趨勢回踩試單）：
+     * 嚴格只讀 PostgreSQL stock_earnings_forecast 既有 45 日內 ANNUAL 共識快取，絕不觸發外部 Alpha Vantage API。
+     */
+    @Query("""
+            select v, s
+            from StockValuationLatest v
+            join Stock s on s.figi = v.figi
+            where v.valuationDate = :targetDate
+              and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
+              and s.tracked = true
+              and s.stockType in :operatingTypes
+              and upper(coalesce(s.stockType, '')) <> 'REIT'
+              and upper(coalesce(v.modelCode, '')) <> 'REIT'
+              and v.verdict in ('FAIR_UPPER', 'MODERATELY_OVERVALUED')
+              and v.fundamentalBacking = 'STRONG'
+              and exists (
+                  select 1 from StockEarningsForecast f
+                  where f.figi = v.figi
+                    and upper(f.periodType) = 'ANNUAL'
+                    and f.observationDate between :minAnnualObsDate and :maxAnnualObsDate
+                    and f.observedAt <= :observationCutoff
+              )
+              and not exists (
+                  select 1 from MarketEvent e
+                  where e.figi = v.figi
+                    and e.eventType = 'EARNINGS'
+                    and e.status <> 'CANCELLED'
+                    and e.eventDate between :targetDate and :earningsCutoffDate
+                    and e.observedAt <= :observationCutoff
+                    and (e.sourcePublishedAt is null or e.sourcePublishedAt <= :observationCutoff)
+              )
+            order by v.figi asc
+            """)
+    List<Object[]> findStarterRadarCandidates(@Param("targetDate") LocalDate targetDate,
+                                              @Param("earningsCutoffDate") LocalDate earningsCutoffDate,
+                                              @Param("minAnnualObsDate") LocalDate minAnnualObsDate,
+                                              @Param("maxAnnualObsDate") LocalDate maxAnnualObsDate,
+                                              @Param("observationCutoff") java.time.Instant observationCutoff,
+                                              @Param("operatingTypes") Collection<String> operatingTypes);
 }

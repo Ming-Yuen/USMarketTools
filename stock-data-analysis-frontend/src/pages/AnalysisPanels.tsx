@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { TFunction } from "i18next";
 import { apiClient } from "../services/apiClient";
 import { apiConfig } from "../apiConfig";
-import { AnalysisReason, FundamentalSnapshot, MetricResult, MomentumAnalysis, MomentumVolume } from "../services/types/dto/analysis";
+import { AnalysisReason, FundamentalSnapshot, MetricResult, MomentumAnalysis, MomentumVolume, PeerRelativeStrength } from "../services/types/dto/analysis";
 import { StockScreenItem, StockScreenResponse } from "../services/types/dto/stock";
 import { CustomPeerGroup, CustomPeerItem, ValuationReference } from "../services/types/dto/valuation";
 
@@ -475,7 +475,7 @@ function CustomPeerDialog({ open, onClose, figi, symbol }: {
 }
 
 export function ValuationReferencePanel({
-  title, description, reference, currency, figi, symbol, fundamentals, isHistoricalDate,
+  title, description, reference, currency, figi, symbol, fundamentals, isHistoricalDate, peerRelativeStrength,
 }: {
   title: string;
   description: string;
@@ -485,6 +485,7 @@ export function ValuationReferencePanel({
   symbol?: string | null;
   fundamentals?: FundamentalSnapshot | null;
   isHistoricalDate?: boolean;
+  peerRelativeStrength?: PeerRelativeStrength | null;
 }) {
   const { t } = useTranslation();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -629,6 +630,70 @@ export function ValuationReferencePanel({
           </Typography>
         )}
       </>}
+      {peerRelativeStrength && (
+        <Box data-testid="peer-relative-strength-panel" sx={{ mt: 0.8, p: 1.2, bgcolor: "background.default", border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 0.6 }}>
+            <Typography variant="caption" fontWeight={700}>
+              {t("analysisReport.peerRelativeStrength.title")}
+            </Typography>
+            {peerRelativeStrength.relativeLabelCode && (
+              <Chip
+                size="small"
+                color={
+                  peerRelativeStrength.relativeLabelCode === "SECTOR_STRONG_STOCK_LEADING" ? "success"
+                    : peerRelativeStrength.relativeLabelCode === "SECTOR_STRONG_STOCK_LAGGING" ? "info"
+                      : peerRelativeStrength.relativeLabelCode === "SECTOR_WEAK_COLLECTIVE_DECLINE" ? "error"
+                        : peerRelativeStrength.relativeLabelCode === "SECTOR_WEAK_STOCK_OUTPERFORMING" ? "warning"
+                          : "default"
+                }
+                label={t(`analysisReport.peerRelativeStrength.labels.${peerRelativeStrength.relativeLabelCode}`, {
+                  defaultValue: peerRelativeStrength.relativeLabelCode,
+                })}
+              />
+            )}
+          </Stack>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+            {peerRelativeStrength.peerBasis === "CUSTOM_PEERS_MEDIAN"
+              ? t("analysisReport.peerRelativeStrength.basisCustom")
+              : t("analysisReport.peerRelativeStrength.basisIndustry")}
+            {peerRelativeStrength.tradeDate ? ` · ${peerRelativeStrength.tradeDate}` : ""}
+            {peerRelativeStrength.peerSampleCount20d != null
+              ? ` · ${t("analysisReport.peerRelativeStrength.sampleCount", { count: peerRelativeStrength.peerSampleCount20d })}`
+              : ""}
+          </Typography>
+          <Stack spacing={0.3}>
+            <Typography variant="caption" color="text.secondary">
+              {t("analysisReport.peerRelativeStrength.window20d")}：
+              {t("analysisReport.peerRelativeStrength.stockLabel")} <b>{formatPctValue(peerRelativeStrength.stockReturn20d, true)}</b>
+              {" · "}
+              {t("analysisReport.peerRelativeStrength.peerLabel")} <b>{formatPctValue(peerRelativeStrength.peerReturn20d, true)}</b>
+              {" · "}
+              {t("analysisReport.peerRelativeStrength.spyLabel")} <b>{formatPctValue(peerRelativeStrength.spyReturn20d, true)}</b>
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {t("analysisReport.peerRelativeStrength.window60d")}：
+              {t("analysisReport.peerRelativeStrength.stockLabel")} <b>{formatPctValue(peerRelativeStrength.stockReturn60d, true)}</b>
+              {" · "}
+              {t("analysisReport.peerRelativeStrength.peerLabel")} <b>{formatPctValue(peerRelativeStrength.peerReturn60d, true)}</b>
+              {" · "}
+              {t("analysisReport.peerRelativeStrength.spyLabel")} <b>{formatPctValue(peerRelativeStrength.spyReturn60d, true)}</b>
+            </Typography>
+            {(peerRelativeStrength.sectorCmf20d != null || peerRelativeStrength.breadthAboveSma50Pct != null) && (
+              <Typography variant="caption" color="text.secondary">
+                {peerRelativeStrength.sectorCmf20d != null
+                  ? `${t("analysisReport.peerRelativeStrength.sectorCmf")}：${formatNumber(peerRelativeStrength.sectorCmf20d, 3)}`
+                  : ""}
+                {peerRelativeStrength.breadthAboveSma50Pct != null
+                  ? ` · ${t("analysisReport.peerRelativeStrength.breadth50")} ${formatPctValue(peerRelativeStrength.breadthAboveSma50Pct)}`
+                  : ""}
+                {peerRelativeStrength.breadthAboveSma200Pct != null
+                  ? ` · ${t("analysisReport.peerRelativeStrength.breadth200")} ${formatPctValue(peerRelativeStrength.breadthAboveSma200Pct)}`
+                  : ""}
+              </Typography>
+            )}
+          </Stack>
+        </Box>
+      )}
       <Typography variant="caption" color="text.secondary">{assumption
         ? "這是經確認的產業假設情境，不是市場實際成交估值。"
         : historical

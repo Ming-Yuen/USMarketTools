@@ -43,6 +43,19 @@ public interface FinancialReportRepository extends JpaRepository<FinancialReport
             """)
     List<KnownReportPeriod> findKnownReportPeriods(@Param("figi") String figi, @Param("cutoff") Instant cutoff);
 
+    record FigiKnownReportPeriod(String figi, LocalDate periodEnd, int periodType, Integer fiscalYear, String period, Instant observedAt) {}
+
+    /** 批次讀取多檔候選股之已公布富途財報報期元資料（不載入 JSONB items），供雷達前瞻估值零 N+1 批次計算。 */
+    @Query("""
+            select new com.ykm.stock.analytics.repository.jpa.FinancialReportRepository$FigiKnownReportPeriod(
+                f.figi, f.periodEnd, f.periodType, f.fiscalYear, f.period, f.observedAt)
+            from FinancialReport f
+            where f.figi in :figis and f.observedAt <= :cutoff
+            order by f.figi asc, f.periodEnd asc, f.periodType asc
+            """)
+    List<FigiKnownReportPeriod> findKnownReportPeriodsForFigis(@Param("figis") Collection<String> figis,
+                                                               @Param("cutoff") Instant cutoff);
+
     @Query("""
             select f.currency from FinancialReport f
             where f.figi = :figi and f.currency is not null and trim(f.currency) <> ''

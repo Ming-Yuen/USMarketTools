@@ -522,7 +522,137 @@
     "marketSummary":{"STRONG_BUT_OVERHEATED":"風險偏好偏強，但情緒已過熱","HOT_BUT_DIVERGING":"情緒偏熱，但價格動能出現分化","FEAR_WITH_RECOVERY":"恐慌情緒下出現價格修復","WEAK_AND_FEARFUL":"風險偏好偏弱，市場處於恐慌區","BULLISH_NON_EXTREME":"市場動能偏多，情緒尚未進入極端區","BEARISH":"市場動能偏弱，宜控制下行風險","DIVERGING":"市場方向分化，等待更明確信號"},
     "execution":{"EXECUTION_BIAS":"執行傾向","HIGH_RISK":"多項風險條件同時成立，宜降低追價與高波動部位，等待 RSI、均線偏離或量能回復正常。","SELECTIVE":"部分風險條件已觸發，維持選擇性部署，新增部位應優先確認量能及均線偏離。","BULLISH":"ETF 動能整體偏多且未觸發主要風險條件，可維持偏多思路並設定風險界線。","DEFENSIVE":"ETF 動能整體偏弱且未見明確反轉確認，宜保守控制倉位並等待放量回升。","NEUTRAL":"目前數據不足或方向分化，宜維持中性倉位並等待更明確的量價信號。"},
     "hongKongTime":"香港時間","noUpcomingEvents":"未來 14 天暫無已確認的市場催化事件。","eventCategory":{"MACRO":"宏觀","FED":"聯儲局","EARNINGS":"財報","TREASURY":"美債","DERIVATIVES":"衍生品","INDEX_REBALANCE":"指數調整","POLICY":"政策","OTHER":"其他"},
-    "eventLevel":{"HIGH":"高","MEDIUM":"中","LOW":"低"},"event":{"CPI":"消費者物價指數（CPI）","CORE_CPI":"核心消費者物價指數","PCE":"個人消費支出物價指數（PCE）","CORE_PCE":"核心 PCE 物價指數","EMPLOYMENT_SITUATION":"就業報告（非農及失業率）","NONFARM_PAYROLLS":"非農就業數據","NFP":"非農就業數據","UNEMPLOYMENT_RATE":"失業率","INITIAL_JOBLESS_CLAIMS":"首次申領失業救濟人數","JOBLESS_CLAIMS":"首次申領失業救濟人數","FACTORY_ORDERS":"工廠訂單","JOLTS":"JOLTS 職位空缺","ISM_MANUFACTURING":"ISM 製造業 PMI","ISM_SERVICES":"ISM 服務業 PMI","GDP":"本地生產總值（GDP）","RETAIL_SALES":"零售銷售","PPI":"生產者物價指數（PPI）","FOMC":"FOMC 利率決議","EARNINGS_REPORT":"{{symbol}} 業績公布","MONTHLY_OPEX":"月度期權到期日","QUARTERLY_OPEX":"季度期權到期日（三巫日）"}
+    "eventLevel":{"HIGH":"高","MEDIUM":"中","LOW":"低"},"event":{"CPI":"消費者物價指數（CPI）","CORE_CPI":"核心消費者物價指數","PCE":"個人消費支出物價指數（PCE）","CORE_PCE":"核心 PCE 物價指數","EMPLOYMENT_SITUATION":"就業報告（非農及失業率）","NONFARM_PAYROLLS":"非農就業數據","NFP":"非農就業數據","UNEMPLOYMENT_RATE":"失業率","INITIAL_JOBLESS_CLAIMS":"首次申領失業救濟人數","JOBLESS_CLAIMS":"首次申領失業救濟人數","FACTORY_ORDERS":"工廠訂單","JOLTS":"JOLTS 職位空缺","ISM_MANUFACTURING":"ISM 製造業 PMI","ISM_SERVICES":"ISM 服務業 PMI","GDP":"本地生產總值（GDP）","RETAIL_SALES":"零售銷售","PPI":"生產者物價指數（PPI）","FOMC":"FOMC 利率決議","EARNINGS_REPORT":"{{symbol}} 業績公布","MONTHLY_OPEX":"月度期權到期日","QUARTERLY_OPEX":"季度期權到期日（三巫日）"},
+    "marketRegime": {
+      "title": "大盤市況",
+      "headwindBanner": "大盤處於{{regime}}逆風警戒，機會雷達已自動收緊至深度低估且基本面強勁之僅觀察名單，並暫停新增主動買入訊號。",
+      "correctionBanner": "大盤處於修正期，強勢回踩試單暫停，低估標的須等待右側確認並建議縮減倉位。",
+      "vixLabel": "VIX 收盤",
+      "asOfDate": "基準日"
+    },
+    "sectorEtfs": {
+      "title": "11 大板塊代表 ETF 動能與相對強弱",
+      "subtitle": "對照 SPY 超額報酬與 20 日量比，捕捉板塊資金輪動",
+      "empty": "尚無 11 大板塊 ETF 行情資料。",
+      "symbol": "ETF",
+      "sector": "板塊",
+      "close": "收盤價",
+      "ret5d": "5D 漲跌",
+      "ret20d": "20D 漲跌",
+      "ret60d": "60D 漲跌",
+      "rvol20": "RVOL20",
+      "excess5d": "5D vs SPY",
+      "excess20d": "20D vs SPY",
+      "excess60d": "60D vs SPY",
+      "sectors": {
+        "TECHNOLOGY": "科技",
+        "FINANCIALS": "金融",
+        "ENERGY": "能源",
+        "HEALTH_CARE": "醫療保健",
+        "INDUSTRIALS": "工業",
+        "COMMUNICATION_SERVICES": "通訊服務",
+        "CONSUMER_DISCRETIONARY": "非必需消費",
+        "CONSUMER_STAPLES": "必需消費",
+        "UTILITIES": "公用事業",
+        "MATERIALS": "原物料",
+        "REAL_ESTATE": "房地產"
+      }
+    },
+    "sectorFlow": {
+      "title": "板塊量價資金流與內部均線廣度",
+      "subtitle": "基於全市場 USD 追蹤營運股 OHLCV 計算，識破權重股虛撐指數",
+      "coverage": "樣本母體：{{total}} 檔追蹤營運股 · 已分類覆蓋率 {{coverage}}",
+      "empty": "尚無板塊資金流快照，請待每日收市估值排程完成。",
+      "sortBy": "排序依據",
+      "sortCmf20d": "20D CMF 由高至低",
+      "sortShareDelta": "5D 資金佔比增幅",
+      "sortBreadth50": "站上 SMA50 廣度",
+      "sortDollarVol1d": "當日成交額",
+      "industry": "產業板塊",
+      "stockCount": "檔數",
+      "cmf5d": "5D CMF",
+      "cmf20d": "20D CMF",
+      "share1d": "當日佔比",
+      "shareDelta": "5D vs 20D 佔比差",
+      "breadth50": "站上 SMA50",
+      "breadth200": "站上 SMA200",
+      "ret20dMedian": "20D 中位報酬",
+      "flowState": "資金狀態",
+      "flowStates": {
+        "INFLOW": "量價流入",
+        "NEUTRAL": "多空分歧",
+        "OUTFLOW": "量價流出"
+      }
+    },
+    "radar": {
+      "title": "每日雙軌機會雷達",
+      "subtitle": "收盤後兩階段自動掃描（預設排除 REITs 與 14 日內財報標的）；點擊代碼直達個股分析頁",
+      "headwindNotice": "目前處於大盤逆風警戒期，下列標的僅供觀察追蹤，不代表可立即入場。",
+      "tabValue": "低估支撐低接（{{count}}）",
+      "tabStarter": "強勢成長股趨勢回踩試單（{{count}}）",
+      "emptyValue": "目前無符合低估支撐合流條件之標的。",
+      "emptyStarter": "目前無符合強勢成長股回踩試單條件之標的（僅讀取已快取年度共識，逆風期自動暫停）。",
+      "filterSearch": "搜尋代碼或名稱",
+      "filterIndustry": "產業",
+      "filterIndustryAll": "全部產業",
+      "filterTier": "市值量級",
+      "filterTierAll": "全部量級",
+      "filterMaxDist": "距支撐上限（%）",
+      "filterMinRr": "最低淨賺賠比",
+      "headwindWatchTag": "逆風僅觀察",
+      "cols": {
+        "symbol": "標的",
+        "industry": "產業與板塊資金",
+        "close": "收盤價",
+        "refBand": "參考價帶 [L / M / H]",
+        "anchorZone": "支撐／回踩均線",
+        "discountOrPeg": "折價／前瞻成長",
+        "stop": "保護止損",
+        "targetRr": "目標與淨 R/R",
+        "earningsDays": "距下次財報",
+        "stance": "觀察傾向"
+      },
+      "daysUnit": "{{days}} 天",
+      "noEarningsDate": "無已知排程",
+      "hyperGrowthTag": "高成長豁免 Fwd P/E {{pe}}x",
+      "pegTag": "Fwd PEG {{peg}}",
+      "tiers": {
+        "MEGA_LARGE": "大型股",
+        "MID": "中型股",
+        "SMALL": "小型股"
+      }
+    },
+    "signalStats": {
+      "title": "訊號事後追蹤與勝率驗證",
+      "subtitle": "歷史訊號紀錄不可竄改，跨拆股日線自動結算 +5D / +20D / +60D 表現",
+      "disclaimer": "統計僅反映訊號觸發後經拆股對齊之價格表現，不含股息、交易手續費與滑價。",
+      "empty": "尚無歷史訊號追蹤紀錄，每日雷達觸發訊號後將自動記帳並於滿 5/20/60 交易日結算。",
+      "totalSignals": "累計訊號",
+      "pendingCount": "追蹤中",
+      "winRate20d": "+20D 勝率",
+      "avgReturn20d": "+20D 期望報酬",
+      "targetHitRate": "雙邊目標先中率",
+      "tabByType": "按訊號類型",
+      "tabByRegime": "按大盤市況",
+      "tabByIndustry": "按產業",
+      "tabByTier": "按市值量級",
+      "cols": {
+        "group": "分組",
+        "total": "訊號數",
+        "settled20d": "+20D 已結算",
+        "winRate20d": "+20D 勝率",
+        "avg5d": "+5D 均報",
+        "avg20d": "+20D 均報",
+        "avg60d": "+60D 均報",
+        "targetHitRate": "目標先中率",
+        "mfeMae": "均 MFE / MAE"
+      },
+      "signalTypes": {
+        "ACCUMULATE_AT_SUPPORT": "低估支撐低接",
+        "TREND_PULLBACK_STARTER": "強勢回踩試單"
+      },
+      "unknownGroup": "未分類"
+    }
   },
   "analysisReport": {
     "historicalFairValue": "自身歷史估值參考",
@@ -941,6 +1071,27 @@
       "pegBasis": {
         "TRAILING_EPS_CAGR_3Y": "按 3 年 EPS 複合成長率",
         "TRAILING_EPS_YOY": "按 1 年 EPS 年增率"
+      }
+    },
+    "peerRelativeStrength": {
+      "title": "個股 vs 同業中位數 vs SPY 相對強弱（20D / 60D）",
+      "basisIndustry": "對標口徑：全產業中位數",
+      "basisCustom": "對標口徑：自訂對標中位數",
+      "window20d": "20 交易日報酬",
+      "window60d": "60 交易日報酬",
+      "stockLabel": "本股",
+      "peerLabel": "同業中位數",
+      "spyLabel": "SPY",
+      "sectorCmf": "板塊 20D CMF",
+      "breadth50": "板塊站上 SMA50",
+      "breadth200": "板塊站上 SMA200",
+      "sampleCount": "有效樣本 {{count}} 檔",
+      "labels": {
+        "SECTOR_STRONG_STOCK_LEADING": "板塊強勢、個股領漲",
+        "SECTOR_STRONG_STOCK_LAGGING": "板塊走強、個股落後補漲（重點留意）",
+        "SECTOR_WEAK_STOCK_OUTPERFORMING": "板塊走弱、個股逆勢抗跌",
+        "SECTOR_WEAK_COLLECTIVE_DECLINE": "板塊退潮、集體走弱（勿輕易接刀）",
+        "NEUTRAL_INLINE": "與板塊及大盤表現大致同步"
       }
     }
   },

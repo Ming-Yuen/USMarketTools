@@ -319,6 +319,30 @@ export interface FutuObservations {
   forward?: ForwardMetrics | null;
 }
 
+export interface PeerRelativeStrength {
+  peerBasis: "INDUSTRY_MEDIAN" | "CUSTOM_PEERS_MEDIAN" | string;
+  industryCode?: string | null;
+  industryName?: string | null;
+  tradeDate?: string | null;
+  stockReturn20d?: number | null;
+  peerReturn20d?: number | null;
+  spyReturn20d?: number | null;
+  stockVsPeer20d?: number | null;
+  peerVsSpy20d?: number | null;
+  peerSampleCount20d?: number | null;
+  stockReturn60d?: number | null;
+  peerReturn60d?: number | null;
+  spyReturn60d?: number | null;
+  stockVsPeer60d?: number | null;
+  peerVsSpy60d?: number | null;
+  peerSampleCount60d?: number | null;
+  sectorCmf20d?: number | null;
+  sectorFlowState?: string | null;
+  breadthAboveSma50Pct?: number | null;
+  breadthAboveSma200Pct?: number | null;
+  relativeLabelCode?: string | null;
+}
+
 export interface StockAnalysisReport {
   figi: string;
   symbol: string;
@@ -335,4 +359,5 @@ export interface StockAnalysisReport {
   reasons: AnalysisReason[];
   fundamentals?: FundamentalSnapshot | null;
   summary?: MetricResult<InvestmentSummary> | null;
+  peerRelativeStrength?: PeerRelativeStrength | null;
 }

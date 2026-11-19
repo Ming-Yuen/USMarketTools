@@ -19,6 +19,22 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
     List<StockQuote> findStoredQuotes(@Param("figis") Collection<String> figis, @Param("from") LocalDate from,
                                     @Param("through") LocalDate through);
 
+    /** 輕量日線投影，避免全市場板塊資金流與雷達掃描載入完整 Hibernate Entity 造成堆記憶體膨脹。 */
+    record QuoteBarRow(String figi, LocalDate quoteDate, java.math.BigDecimal openPrice, java.math.BigDecimal highPrice,
+                       java.math.BigDecimal lowPrice, java.math.BigDecimal closePrice, java.math.BigDecimal volume,
+                       java.time.Instant observedAt) {}
+
+    @Query("""
+            select new com.ykm.stock.analytics.repository.jpa.StockQuoteRepository$QuoteBarRow(
+                q.figi, q.quoteDate, q.openPrice, q.highPrice, q.lowPrice, q.closePrice, q.volume, q.observedAt)
+            from StockQuote q
+            where q.figi in :figis and q.quoteDate between :from and :through
+            order by q.figi asc, q.quoteDate asc
+            """)
+    List<QuoteBarRow> findQuoteBarsOrdered(@Param("figis") Collection<String> figis,
+                                           @Param("from") LocalDate from,
+                                           @Param("through") LocalDate through);
+
     StockQuote findByFigiAndQuoteDate(String figi, LocalDate quoteDate);
     StockQuote findFirstByFigiOrderByQuoteDateDesc(String figi);
     List<StockQuote> findByFigiOrderByQuoteDateDesc(String figi, Limit limit);

@@ -43,4 +43,28 @@ public interface MarketEventRepository extends JpaRepository<MarketEvent, String
     List<MarketEvent> findVisiblePastEarnings(@Param("figi") String figi,
                                               @Param("through") LocalDate through,
                                               @Param("cutoff") Instant cutoff);
+    @Query("""
+            select e from MarketEvent e
+            where e.figi in :figis
+              and e.eventType = 'EARNINGS'
+              and e.status <> 'CANCELLED'
+              and e.observedAt <= :cutoff
+              and (e.sourcePublishedAt is null or e.sourcePublishedAt <= :cutoff)
+            order by e.figi asc, e.eventDate asc, e.occurrenceAt asc, e.eventKey asc
+            """)
+    List<MarketEvent> findVisibleEarningsForFigis(@Param("figis") java.util.Collection<String> figis,
+                                                  @Param("cutoff") Instant cutoff);
+
+    @Query("""
+            select e from MarketEvent e
+            where e.figi is null
+              and e.eventDate between :from and :through
+              and e.observedAt <= :cutoff
+              and (e.sourcePublishedAt is null or e.sourcePublishedAt <= :cutoff)
+              and e.status <> 'CANCELLED'
+            order by e.eventDate asc, e.occurrenceAt asc
+            """)
+    List<MarketEvent> findVisibleMarketWide(@Param("from") LocalDate from,
+                                            @Param("through") LocalDate through,
+                                            @Param("cutoff") Instant cutoff);
 }

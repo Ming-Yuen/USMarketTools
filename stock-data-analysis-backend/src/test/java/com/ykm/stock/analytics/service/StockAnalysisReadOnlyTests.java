@@ -89,8 +89,11 @@ class StockAnalysisReadOnlyTests {
     private final MarketContextService market = mock(MarketContextService.class);
     private final StockObservationService stockObservations = mock(StockObservationService.class);
     private final StockValuationService stockValuations = mock(StockValuationService.class);
+    private final com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService sectorMoneyFlowService =
+            mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class);
     private final StockAnalysisService service = new StockAnalysisService(
-            stocks, industries, marketEvents, calendar, prices, structures, levels, plans, market, stockObservations, stockValuations);
+            stocks, industries, marketEvents, calendar, prices, structures, levels, plans, market,
+            stockObservations, stockValuations, sectorMoneyFlowService);
 
     private Stock testStock;
 
@@ -252,7 +255,8 @@ class StockAnalysisReadOnlyTests {
         ExecutionCostCalculator costs = new ExecutionCostCalculator();
         TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
         StockAnalysisService reportService = new StockAnalysisService(
-                stocks, industries, marketEvents, calendar, prices, structures, levels, realPlans, market, stockObservations, localValuation);
+                stocks, industries, marketEvents, calendar, prices, structures, levels, realPlans, market,
+                stockObservations, localValuation, sectorMoneyFlowService);
         Instant confirmedAt = CLOSE.minusSeconds(86400);
         when(calendar.getNextTradingDay(DAY.minusDays(1))).thenReturn(DAY);
         NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),

@@ -89,6 +89,9 @@ class StockValuationDailyTaskTests {
 
     private StockValuationService valuationService;
     private StockValuationDailyTask task;
+    private com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService sectorMoneyFlowService;
+    private com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService dailyOpportunityRadarService;
+    private com.ykm.stock.analytics.service.analysis.SignalTrackingService signalTrackingService;
 
     @BeforeEach
     void setUp() {
@@ -97,7 +100,11 @@ class StockValuationDailyTaskTests {
                 stocks, statuses, quotes, splits, reports, secFacts, shareObservations,
                 industries, industryConfigs, periodRepo, latestRepo, customPeerRepo, calendar, clock,
                 new SecIssuerHistory(""), tx, entityManager);
-        task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager);
+        sectorMoneyFlowService = mock(com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.class);
+        dailyOpportunityRadarService = mock(com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService.class);
+        signalTrackingService = mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class);
+        task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager,
+                latestRepo, sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService);
 
         when(clock.now()).thenReturn(NOW);
         when(clock.nowLocalDateTime()).thenReturn(LocalDateTime.of(2026, 11, 13, 18, 0));
@@ -430,6 +437,108 @@ class StockValuationDailyTaskTests {
         RuntimeException err3 = task.refreshShareObservations(List.of(target));
         assertThat(err3).isNull();
         assertThat(persistedObs).isEmpty();
+    }
+
+    /**
+     * Scenario：手動指定歷史 valuationDate 或局部 figis 重跑估值排程時，
+     * 絕不得觸發步驟 4（板塊資金流、每日機會雷達、歷史訊號追蹤），避免倒序覆寫快照或污染訊號帳本。
+     */
+    @Test
+    void manualHistoricalOrScopedValuationRunSkipsDownstreamRadarAndSignalTracking() throws Exception {
+        ActiveStockWithStatus target = stockWithStatus("F_OK", "OK");
+        stubStock(target, "80", 10000000L);
+        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(target));
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of());
+        currentReports.addAll(fourConsecutiveQuarters("F_OK",
+                new String[]{"2025-09-30", "3", "2025", "1.00"},
+                new String[]{"2025-12-31", "4", "2025", "1.00"},
+                new String[]{"2026-03-31", "1", "2026", "1.00"},
+                new String[]{"2026-06-30", "2", "2026", "1.00"}));
+
+        JobDataMap historicalParams = new JobDataMap();
+        historicalParams.put("valuationDate", DAY_NOV_12.toString());
+        JobExecutionContext ctx = mock(JobExecutionContext.class);
+        when(ctx.getMergedJobDataMap()).thenReturn(historicalParams);
+
+        task.execute(ctx);
+
+        org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService);
+    }
+
+    /**
+     * Scenario：StockSplitDailyTask 寫入 ERROR:SPLIT_STORED_EVENT_NOT_RETURNED:... 時，
+     * 共用的 StockValuationService.resolveDayEps 必須與 evaluateSingleDay 保持一致的拆股錯誤豁免語意，正常回傳拆股對齊 EPS。
+     */
+    @Test
+    void resolveDayEpsPreservesStoredSplitEventErrorExemptionSemantics() {
+        StockStatus status = new StockStatus();
+        status.setFigi("F_SPLIT_WARN");
+        status.setSplitFromDate(LocalDate.of(2015, 1, 1));
+        status.setSplitDate(DAY_NOV_12);
+        status.setSplitMessage("ERROR:SPLIT_STORED_EVENT_NOT_RETURNED:2026-06-10");
+
+        StockFinancialPeriod period = new StockFinancialPeriod();
+        period.setFigi("F_SPLIT_WARN");
+        period.setReportingCurrency("USD");
+        period.setEpsTtm(new BigDecimal("10.00"));
+        period.setEpsTtmStatus("AVAILABLE");
+        period.setEpsShareBasisDate(LocalDate.of(2026, 3, 31));
+
+        com.ykm.stock.analytics.model.entity.StockSplit split = new com.ykm.stock.analytics.model.entity.StockSplit();
+        split.setSourceEventId("WARN-2-1");
+        split.setFigi("F_SPLIT_WARN");
+        split.setExecutionDate(LocalDate.of(2026, 6, 10));
+        split.setSplitFrom(BigDecimal.ONE);
+        split.setSplitTo(new BigDecimal("2"));
+
+        StockValuationService.DayEpsResolution res = StockValuationService.resolveDayEps(
+                "USD", status, period, List.of(split), DAY_NOV_12);
+        assertThat(res.peReason()).isNull();
+        assertThat(res.epsAtDay()).isEqualByComparingTo("5.00");
+
+        // 其他實質拆股同步失敗仍須回傳 SPLIT_SYNC_ERROR
+        status.setSplitMessage("ERROR:FUTU_TIMEOUT");
+        StockValuationService.DayEpsResolution errRes = StockValuationService.resolveDayEps(
+                "USD", status, period, List.of(split), DAY_NOV_12);
+        assertThat(errRes.epsAtDay()).isNull();
+        assertThat(errRes.peReason()).isEqualTo("SPLIT_SYNC_ERROR");
+    }
+
+    /**
+     * Scenario：行情分批同步尚未完成時（第一批已到 D 日、第二批仍停在 D-1，覆蓋率 50% < 95%），
+     * 即使已有部分 D 日估值，絕不得提前觸發雷達發布與凍結；待第二批行情補齊至 D 日（覆蓋率 100%）後重跑，才一併發布下游。
+     */
+    @Test
+    void downstreamRadarDefersWhenMarketQuoteBatchIncompleteAndPublishesOnceComplete() throws Exception {
+        ActiveStockWithStatus batch1 = stockWithStatus("F_B1", "BONE");
+        ActiveStockWithStatus batch2 = stockWithStatus("F_B2", "BTWO");
+        batch1.status().setQuoteDate(DAY_NOV_12);
+        batch2.status().setQuoteDate(DAY_NOV_12.minusDays(1));
+
+        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(batch1, batch2));
+        when(stocks.findAllById(anyCollection())).thenReturn(List.of(batch1.stock(), batch2.stock()));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(batch1.status(), batch2.status()));
+        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(batch1.status(), batch2.status()));
+        when(latestRepo.findMaxValuationDateAtOrBefore(DAY_NOV_12)).thenReturn(Optional.of(DAY_NOV_12));
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of());
+
+        JobExecutionContext ctx = mock(JobExecutionContext.class);
+        when(ctx.getMergedJobDataMap()).thenReturn(new JobDataMap());
+
+        // 1) 第二批行情仍在 D-1：覆蓋率 1/2 = 50% < 95% -> 延後下游，不凍結也不記訊號
+        task.execute(ctx);
+        org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService);
+
+        // 2) 第二批行情補齊至 D 日：覆蓋率 2/2 = 100% -> 觸發板塊資金流、雷達發布與歷史訊號結算
+        batch2.status().setQuoteDate(DAY_NOV_12);
+        task.execute(ctx);
+        org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(signalTrackingService).settlePendingSignals(DAY_NOV_12);
     }
 
     private StockShareObservation persistedObsFrom(FutuService.ShareSnapshot snap, long shares) {

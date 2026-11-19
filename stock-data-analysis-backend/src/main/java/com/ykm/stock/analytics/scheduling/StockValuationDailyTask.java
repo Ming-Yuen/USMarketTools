@@ -8,6 +8,10 @@ import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
+import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
+import com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService;
+import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService;
+import com.ykm.stock.analytics.service.analysis.SignalTrackingService;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
@@ -40,6 +44,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class StockValuationDailyTask implements Job {
     private static final int SHARE_SNAPSHOT_BATCH_SIZE = 400;
+    /** 日常全市場發布下游板塊資金流與機會雷達前，目標營運股收齊當日行情的最低覆蓋百分比（容許極少數停牌／缺棒，擋住行情分批同步未完成時提前凍結）。 */
+    private static final int MIN_MARKET_QUOTE_COVERAGE_PCT = 95;
 
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
@@ -50,6 +56,10 @@ public class StockValuationDailyTask implements Job {
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactions;
     private final EntityManager entityManager;
+    private final StockValuationLatestRepository latestValuations;
+    private final SectorMoneyFlowService sectorMoneyFlowService;
+    private final DailyOpportunityRadarService dailyOpportunityRadarService;
+    private final SignalTrackingService signalTrackingService;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -58,8 +68,10 @@ public class StockValuationDailyTask implements Job {
         LocalDate requestedDate = requestedValuationDate(params.getString("valuationDate"), startedAt);
         LocalDate targetDate = requestedDate != null ? requestedDate : calendar.getLastClosedTradingDay(startedAt);
         boolean forceRebuildPeriods = Boolean.parseBoolean(params.getString("rebuildPeriods"));
+        String configuredFigis = params.getString("figis");
+        boolean marketWideRun = configuredFigis == null || configuredFigis.isBlank();
 
-        List<ActiveStockWithStatus> targets = findValuationTargets(requestedDate, params.getString("figis"));
+        List<ActiveStockWithStatus> targets = findValuationTargets(requestedDate, configuredFigis);
         if (targets.isEmpty()) return;
 
         // 1. 日常執行時同步富途最新股數與估值快照（僅在股數變動或當日尚無收市快照時寫入）
@@ -81,10 +93,37 @@ public class StockValuationDailyTask implements Job {
         log.info("Daily valuation refresh completed | valuationDate={} targets={} rebuiltPeriods={}",
                 targetDate, targetFigis.size(), toRebuild.size());
 
-        // 4. 保存可算估值後回報股數快照連線異常
+        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標營運股當日行情批次已達覆蓋門檻（>= 95%）且估值就緒時，
+        //    串接板塊量價資金流、每日機會雷達（同交易原子寫入當日新訊號）與歷史訊號到期結算
+        if (requestedDate == null && marketWideRun
+                && sectorMoneyFlowService != null && dailyOpportunityRadarService != null && signalTrackingService != null) {
+            long readyQuotes = targets.stream()
+                    .filter(row -> row.status() != null && targetDate.equals(row.status().getQuoteDate()))
+                    .count();
+            boolean quotesBatchReady = readyQuotes * 100L >= (long) targets.size() * MIN_MARKET_QUOTE_COVERAGE_PCT;
+            LocalDate snapshotDate = resolveEffectiveSnapshotDate(targetDate);
+            if (quotesBatchReady && targetDate.equals(snapshotDate)) {
+                sectorMoneyFlowService.refreshDaily(snapshotDate, startedAt);
+                dailyOpportunityRadarService.refreshDaily(snapshotDate, startedAt);
+                int settled = signalTrackingService.settlePendingSignals(snapshotDate);
+                log.info("Signal tracking settlement completed | tradeDate={} updatedSettlements={}", snapshotDate, settled);
+            } else {
+                log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={}",
+                        targetDate, readyQuotes, targets.size(), snapshotDate);
+            }
+        }
+
+        // 5. 保存可算估值後回報股數快照連線異常
         if (shareFailure != null) {
             throw new IllegalStateException("SHARE_OBSERVATION_SYNC_FAILED", shareFailure);
         }
+    }
+
+    private LocalDate resolveEffectiveSnapshotDate(LocalDate targetDate) {
+        if (latestValuations == null) {
+            return targetDate;
+        }
+        return latestValuations.findMaxValuationDateAtOrBefore(targetDate).orElse(null);
     }
 
     private LocalDate requestedValuationDate(String configuredDate, Instant startedAt) {

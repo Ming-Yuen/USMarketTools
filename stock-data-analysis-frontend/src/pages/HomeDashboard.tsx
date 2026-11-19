@@ -20,6 +20,8 @@ import {
   TableRow,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import Grid from "@mui/material/Grid";
@@ -118,6 +120,7 @@ const HomeDashboard: React.FC = () => {
   const [radarMaxDistPct, setRadarMaxDistPct] = useState("");
   const [radarMinRr, setRadarMinRr] = useState("");
   const [flowSort, setFlowSort] = useState<"cmf20d" | "shareDelta" | "breadth50" | "dollarVol1d">("cmf20d");
+  const [flowOrder, setFlowOrder] = useState<"TOP" | "BOTTOM">("TOP");
   const [statsTab, setStatsTab] = useState<"TYPE" | "REGIME" | "INDUSTRY" | "TIER">("TYPE");
 
   const opportunityRadar = data?.opportunityRadar ?? null;
@@ -179,20 +182,20 @@ const HomeDashboard: React.FC = () => {
 
   const sortedSectorFlows: SectorMoneyFlowRow[] = useMemo(() => {
     const rows = [...(sectorFlow?.rows ?? [])];
-    const numDesc = (a?: number | null, b?: number | null) => {
+    const numCompare = (a?: number | null, b?: number | null) => {
       if (a == null && b == null) return 0;
       if (a == null) return 1;
       if (b == null) return -1;
-      return b - a;
+      return flowOrder === "BOTTOM" ? a - b : b - a;
     };
     rows.sort((a, b) => {
-      if (flowSort === "shareDelta") return numDesc(a.volumeShareDelta5dVs20d, b.volumeShareDelta5dVs20d);
-      if (flowSort === "breadth50") return numDesc(a.breadthAboveSma50Pct, b.breadthAboveSma50Pct);
-      if (flowSort === "dollarVol1d") return numDesc(a.dollarVolume1d, b.dollarVolume1d);
-      return numDesc(a.cmf20d, b.cmf20d);
+      if (flowSort === "shareDelta") return numCompare(a.volumeShareDelta5dVs20d, b.volumeShareDelta5dVs20d);
+      if (flowSort === "breadth50") return numCompare(a.breadthAboveSma50Pct, b.breadthAboveSma50Pct);
+      if (flowSort === "dollarVol1d") return numCompare(a.dollarVolume1d, b.dollarVolume1d);
+      return numCompare(a.cmf20d, b.cmf20d);
     });
     return rows.slice(0, 20);
-  }, [sectorFlow, flowSort]);
+  }, [sectorFlow, flowSort, flowOrder]);
 
   const activeStatsGroups: SignalTrackingGroupStats[] = useMemo(() => {
     if (!signalStats) return [];
@@ -706,19 +709,40 @@ const HomeDashboard: React.FC = () => {
                       : ""}
                   </Typography>
                 </Box>
-                <FormControl size="small" sx={{ minWidth: 190 }}>
-                  <InputLabel>{t("dashboard.sectorFlow.sortBy")}</InputLabel>
-                  <Select
-                    label={t("dashboard.sectorFlow.sortBy")}
-                    value={flowSort}
-                    onChange={(e) => setFlowSort(e.target.value as typeof flowSort)}
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <ToggleButtonGroup
+                    size="small"
+                    exclusive
+                    value={flowOrder}
+                    onChange={(_e, val) => {
+                      if (val === "TOP" || val === "BOTTOM") setFlowOrder(val);
+                    }}
                   >
-                    <MenuItem value="cmf20d">{t("dashboard.sectorFlow.sortCmf20d")}</MenuItem>
-                    <MenuItem value="shareDelta">{t("dashboard.sectorFlow.sortShareDelta")}</MenuItem>
-                    <MenuItem value="breadth50">{t("dashboard.sectorFlow.sortBreadth50")}</MenuItem>
-                    <MenuItem value="dollarVol1d">{t("dashboard.sectorFlow.sortDollarVol1d")}</MenuItem>
-                  </Select>
-                </FormControl>
+                    <ToggleButton value="TOP">
+                      {flowSort === "dollarVol1d"
+                        ? t("dashboard.sectorFlow.orderTopDollarVol")
+                        : t("dashboard.sectorFlow.orderTop")}
+                    </ToggleButton>
+                    <ToggleButton value="BOTTOM">
+                      {flowSort === "dollarVol1d"
+                        ? t("dashboard.sectorFlow.orderBottomDollarVol")
+                        : t("dashboard.sectorFlow.orderBottom")}
+                    </ToggleButton>
+                  </ToggleButtonGroup>
+                  <FormControl size="small" sx={{ minWidth: 190 }}>
+                    <InputLabel>{t("dashboard.sectorFlow.sortBy")}</InputLabel>
+                    <Select
+                      label={t("dashboard.sectorFlow.sortBy")}
+                      value={flowSort}
+                      onChange={(e) => setFlowSort(e.target.value as typeof flowSort)}
+                    >
+                      <MenuItem value="cmf20d">{t("dashboard.sectorFlow.sortCmf20d")}</MenuItem>
+                      <MenuItem value="shareDelta">{t("dashboard.sectorFlow.sortShareDelta")}</MenuItem>
+                      <MenuItem value="breadth50">{t("dashboard.sectorFlow.sortBreadth50")}</MenuItem>
+                      <MenuItem value="dollarVol1d">{t("dashboard.sectorFlow.sortDollarVol1d")}</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Stack>
               </Stack>
 
               {sortedSectorFlows.length === 0 ? (

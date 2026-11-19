@@ -156,11 +156,11 @@ public class DailyOpportunityRadar {
     private BigDecimal protectiveStop;
 
     @Column(name = "first_target_price", precision = 20, scale = 4)
-    @Comment("匹配交易計畫之第一止盈阻力目標價；次清單或無固定阻力目標時為 NULL。")
+    @Comment("匹配交易計畫之第一止盈阻力目標價（僅當第一目標嚴格高於當日收盤價 close_price 時寫入，不跳過未突破之第一阻力；否則與 net_risk_reward 同步為 NULL）。")
     private BigDecimal firstTargetPrice;
 
     @Column(name = "net_risk_reward", precision = 12, scale = 4)
-    @Comment("匹配交易計畫之成本後風險報酬比（Net R/R）；無有效雙邊計畫時為 NULL。")
+    @Comment("以當日收盤價（close_price）、保護止損與匹配計畫目標組計算之成本後風險報酬比（Net R/R）；第一目標低於或等於收盤價或無有效雙邊計畫時同步為 NULL。")
     private BigDecimal netRiskReward;
 
     @Column(name = "plan_status", length = 32)

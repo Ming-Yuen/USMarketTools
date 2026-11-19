@@ -134,6 +134,7 @@ public class ValuationSummaryCalculator {
             LevelZoneDto supportZone,
             boolean stopBreachedOrReclaim,
             boolean highRiskBreakdown,
+            boolean confirmationPending,
             MarketRegime marketRegime,
             MacroCautionDto macroCaution,
             TrendPullbackStarterDto trendPullbackStarter
@@ -458,6 +459,7 @@ public class ValuationSummaryCalculator {
                 supportZone,
                 stopBreachedOrReclaim,
                 anyHighRiskBreakdown,
+                confirmationPending,
                 marketRegime,
                 macroCaution,
                 trendPullbackStarter

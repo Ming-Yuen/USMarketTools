@@ -258,8 +258,10 @@ public class OverviewService {
         ExecutionBias executionBias = new ExecutionBias("EXECUTION_BIAS", executionDescriptionCode);
 
         // Batch 03：大盤 MarketRegime、11 大板塊 ETF、板塊量價資金流、每日機會雷達快照與訊號勝率統計
-        PreloadedMarketData preloaded = marketDate == null ? null : marketContextService.preloadMarketData(marketDate, now);
-        MarketRegimeBanner marketRegimeBanner = buildMarketRegimeBanner(marketDate, preloaded);
+        // 大盤與各 ETF 各自封頂於已入庫交易日，避免行情分批同步期間因單檔推進至 T 日導致尚未同步的基準／ETF 暫時變 UNAVAILABLE 或消失
+        LocalDate benchmarkDate = resolveBenchmarkDate(marketDate);
+        PreloadedMarketData preloaded = benchmarkDate == null ? null : marketContextService.preloadMarketData(benchmarkDate, now);
+        MarketRegimeBanner marketRegimeBanner = buildMarketRegimeBanner(benchmarkDate, preloaded);
         List<SectorEtfRow> sectorEtfs = buildSectorEtfRows(marketDate, now, preloaded);
         SectorMoneyFlowSummary sectorMoneyFlow = buildSectorMoneyFlowSummary();
         OpportunityRadarSummary opportunityRadar = buildOpportunityRadarSummary(marketRegimeBanner);
@@ -301,7 +303,27 @@ public class OverviewService {
         return new MarketRegimeBanner(regime.name(), vix, headwind, correction, asOf == null ? null : asOf.toString());
     }
 
-    /** 批次載入 11 大板塊代表 ETF 與 SPY，計算 5D/20D/60D 漲跌幅、RVOL20 與相對 SPY 超額報酬。 */
+    /** 取 SPY 與 QQQ 共同最新已入庫交易日並封頂於 marketDate，避免行情分批同步期間因單一股票先推進至 T 日導致大盤市況暫時 UNAVAILABLE。 */
+    private LocalDate resolveBenchmarkDate(LocalDate marketDate) {
+        if (marketDate == null) {
+            return null;
+        }
+        List<Stock> benchmarks = stockRepository.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ"));
+        if (benchmarks == null || benchmarks.isEmpty()) {
+            return marketDate;
+        }
+        List<String> figis = benchmarks.stream().map(Stock::getFigi).distinct().toList();
+        LocalDate capped = null;
+        for (StockStatus st : stockStatusRepository.findAllById(figis)) {
+            if (st != null && st.getQuoteDate() != null) {
+                LocalDate effective = st.getQuoteDate().isBefore(marketDate) ? st.getQuoteDate() : marketDate;
+                capped = capped == null || effective.isBefore(capped) ? effective : capped;
+            }
+        }
+        return capped != null ? capped : marketDate;
+    }
+
+    /** 批次載入 11 大板塊代表 ETF 與 SPY，各自按已入庫最新交易日（封頂於 marketDate）計算 5D/20D/60D 漲跌幅、RVOL20 與同日對齊相對 SPY 超額報酬。 */
     private List<SectorEtfRow> buildSectorEtfRows(LocalDate marketDate, Instant now, PreloadedMarketData preloaded) {
         if (marketDate == null) {
             return List.of();
@@ -316,19 +338,30 @@ public class OverviewService {
             stockBySymbol.putIfAbsent(s.getSymbol(), s);
         }
         List<String> figis = stockBySymbol.values().stream().map(Stock::getFigi).toList();
-        LocalDate from = marketDate.minusDays(140);
-        Instant sessionCutoff = marketStatusService.getSessionCloseAt(marketDate);
+        Map<String, StockStatus> statusByFigi = stockStatusRepository.findAllById(figis).stream()
+                .collect(Collectors.toMap(StockStatus::getFigi, row -> row, (a, b) -> a));
+
+        LocalDate queryFrom = marketDate.minusDays(140);
+        Map<String, LocalDate> throughByFigi = new HashMap<>();
+        for (String figi : figis) {
+            StockStatus st = statusByFigi.get(figi);
+            LocalDate etfThrough = st != null && st.getQuoteDate() != null && st.getQuoteDate().isBefore(marketDate)
+                    ? st.getQuoteDate() : marketDate;
+            throughByFigi.put(figi, etfThrough);
+            LocalDate candidateFrom = etfThrough.minusDays(140);
+            if (candidateFrom.isBefore(queryFrom)) {
+                queryFrom = candidateFrom;
+            }
+        }
 
         Map<String, List<QuoteBarRow>> quotesByFigi = new HashMap<>();
-        for (QuoteBarRow bar : stockQuoteRepository.findQuoteBarsOrdered(figis, from, marketDate)) {
+        for (QuoteBarRow bar : stockQuoteRepository.findQuoteBarsOrdered(figis, queryFrom, marketDate)) {
             quotesByFigi.computeIfAbsent(bar.figi(), k -> new ArrayList<>()).add(bar);
         }
         Map<String, List<StockSplit>> splitsByFigi = new HashMap<>();
         for (StockSplit sp : stockSplitRepository.findByFigiInOrderByExecutionDateAsc(figis)) {
             splitsByFigi.computeIfAbsent(sp.getFigi(), k -> new ArrayList<>()).add(sp);
         }
-        Map<String, StockStatus> statusByFigi = stockStatusRepository.findAllById(figis).stream()
-                .collect(Collectors.toMap(StockStatus::getFigi, row -> row, (a, b) -> a));
 
         List<NormalizedBarDto> spyBars = preloaded != null && preloaded.spy() != null
                 && preloaded.spy().status() == MetricStatus.AVAILABLE && preloaded.spy().value() != null
@@ -344,9 +377,12 @@ public class OverviewService {
         for (String symbol : symbols) {
             Stock stock = stockBySymbol.get(symbol);
             if (stock == null) continue;
+            LocalDate etfThrough = throughByFigi.getOrDefault(stock.getFigi(), marketDate);
+            LocalDate etfFrom = etfThrough.minusDays(140);
+            Instant sessionCutoff = marketStatusService.getSessionCloseAt(etfThrough);
             AnalysisContext ctx = new AnalysisContext(stock.getFigi(), sessionCutoff, now, AnalysisHorizon.SWING);
             MetricResult<NormalizedPriceSeriesDto> norm = quoteNormalizationService.normalizeFromLoaded(
-                    ctx, from, marketDate, stock, statusByFigi.get(stock.getFigi()),
+                    ctx, etfFrom, etfThrough, stock, statusByFigi.get(stock.getFigi()),
                     quotesByFigi.get(stock.getFigi()), splitsByFigi.getOrDefault(stock.getFigi(), List.of()));
             if (norm.status() != MetricStatus.AVAILABLE || norm.value() == null || norm.value().bars().isEmpty()) {
                 continue;

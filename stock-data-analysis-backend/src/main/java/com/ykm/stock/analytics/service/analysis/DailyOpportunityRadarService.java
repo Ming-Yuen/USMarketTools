@@ -16,7 +16,9 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceStructureDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.RiskRewardDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.SupportResistanceDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TargetDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
@@ -46,6 +48,7 @@ import com.ykm.stock.analytics.repository.jpa.StockSplitRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.analysis.MarketContextService.PreloadedMarketData;
+import com.ykm.stock.analytics.service.analysis.calculator.ExecutionCostCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.ValuationSummaryCalculator.RadarEvaluationResult;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
@@ -90,7 +93,7 @@ public class DailyOpportunityRadarService {
     private static final MathContext MC = MathContext.DECIMAL128;
     private static final int TECH_BATCH_SIZE = 50;
     private static final long EARNINGS_EXCLUSION_CALENDAR_DAYS = 14L;
-    private static final BigDecimal MAX_SUPPORT_DISTANCE_PCT = new BigDecimal("0.03");
+    private static final BigDecimal MAX_SUPPORT_UPPER_FACTOR = new BigDecimal("1.03");
     private static final BigDecimal HALF_ATR = new BigDecimal("0.50");
     private static final List<String> VALUE_VERDICTS = List.of(
             "DEEP_UNDERVALUED", "MODERATELY_UNDERVALUED", "FAIR_LOWER");
@@ -123,6 +126,7 @@ public class DailyOpportunityRadarService {
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
     private final ForwardValuationCalculator forwardCalculator = new ForwardValuationCalculator();
+    private final ExecutionCostCalculator costCalculator = new ExecutionCostCalculator();
 
     private record CandidateRow(StockValuationLatest valuation, Stock stock, boolean valueTrack, boolean starterTrack) {}
 
@@ -400,10 +404,14 @@ public class DailyOpportunityRadarService {
         // 主清單：低估支撐低接（VALUE_SUPPORT）
         if (candidate.valueTrack()) {
             LevelZoneDto supportZone = eval.supportZone();
-            BigDecimal supportDistPct = computeSupportDistancePct(latestClose, supportZone);
-            boolean nearOrInSupport = supportDistPct != null
-                    && supportDistPct.signum() >= 0
-                    && supportDistPct.compareTo(MAX_SUPPORT_DISTANCE_PCT) <= 0;
+            BigDecimal supportDistPct = computeSupportDistancePct(evalPrice, supportZone);
+            // 直接以實際收盤價 evalPrice 與 [lower, upper * 1.03] 比較，避免六位小數進位放行略超 3% 標的
+            boolean nearOrInSupport = supportZone != null
+                    && supportZone.lower() != null
+                    && supportZone.upper() != null
+                    && supportZone.upper().signum() > 0
+                    && evalPrice.compareTo(supportZone.lower()) >= 0
+                    && evalPrice.compareTo(supportZone.upper().multiply(MAX_SUPPORT_UPPER_FACTOR, MC)) <= 0;
 
             boolean eligibleValue;
             boolean watchOnlyFlag = false;
@@ -418,9 +426,12 @@ public class DailyOpportunityRadarService {
                         && "WAIT_FOR_MARKET_STABILIZATION".equals(eval.stance());
                 watchOnlyFlag = eligibleValue;
             } else {
+                // 非 CORRECTION 情境下，WATCH_PULLBACK_TO_BAND（含 FAIR_LOWER）同樣不得於 confirmationPending 時放行，避免比 DEEP_UNDERVALUED 更寬鬆
+                boolean confirmationOk = eval.marketRegime() == MarketRegime.CORRECTION || !eval.confirmationPending();
                 boolean stanceAllows = "ACCUMULATE_AT_SUPPORT".equals(eval.stance())
-                        || ("WATCH_PULLBACK_TO_BAND".equals(eval.stance()) && nearOrInSupport);
-                eligibleValue = !eval.forwardValueTrap()
+                        || ("WATCH_PULLBACK_TO_BAND".equals(eval.stance()) && confirmationOk);
+                eligibleValue = nearOrInSupport
+                        && !eval.forwardValueTrap()
                         && !eval.highRiskBreakdown()
                         && !eval.stopBreachedOrReclaim()
                         && stanceAllows;
@@ -429,12 +440,8 @@ public class DailyOpportunityRadarService {
             if (eligibleValue) {
                 TradePlanDto matchedPlan = findMatchingPlan(planList, supportZone);
                 BigDecimal protectiveStop = resolveValueProtectiveStop(matchedPlan, supportZone);
-                BigDecimal firstTarget = matchedPlan != null && !matchedPlan.targets().isEmpty()
-                        ? matchedPlan.targets().getFirst().price() : null;
-                BigDecimal netRr = matchedPlan != null && matchedPlan.riskReward() != null
-                        && matchedPlan.riskReward().status() == MetricStatus.AVAILABLE
-                        && matchedPlan.riskReward().value() != null
-                        ? matchedPlan.riskReward().value().netRR() : null;
+                BigDecimal firstTarget = resolveFirstTargetAbovePrice(matchedPlan, evalPrice);
+                BigDecimal netRr = firstTarget == null ? null : resolveEvalPriceNetRr(matchedPlan, evalPrice, protectiveStop);
                 String planStatus = matchedPlan != null && matchedPlan.status() != null
                         ? matchedPlan.status().name() : null;
                 BigDecimal discountToMid = computeDiscountToMid(evalPrice, v.getFairValueMid());
@@ -633,6 +640,27 @@ public class DailyOpportunityRadarService {
             return stop.signum() > 0 ? stop : null;
         }
         return null;
+    }
+
+    /** 與 TradePlanService 一致：僅於第一道阻力目標嚴格高於 evalPrice 時採用，絕不跳過未突破的第一阻力改取後續目標。 */
+    private BigDecimal resolveFirstTargetAbovePrice(TradePlanDto matchedPlan, BigDecimal evalPrice) {
+        if (matchedPlan == null || matchedPlan.targets() == null || matchedPlan.targets().isEmpty() || evalPrice == null) {
+            return null;
+        }
+        TargetDto first = matchedPlan.targets().getFirst();
+        if (first != null && first.price() != null && first.price().compareTo(evalPrice) > 0) {
+            return first.price();
+        }
+        return null;
+    }
+
+    private BigDecimal resolveEvalPriceNetRr(TradePlanDto matchedPlan, BigDecimal evalPrice, BigDecimal protectiveStop) {
+        if (matchedPlan == null || matchedPlan.targets() == null || matchedPlan.targets().isEmpty()
+                || evalPrice == null || protectiveStop == null) {
+            return null;
+        }
+        MetricResult<RiskRewardDto> evalRr = costCalculator.calculate(evalPrice, protectiveStop, matchedPlan.targets());
+        return evalRr.status() == MetricStatus.AVAILABLE && evalRr.value() != null ? evalRr.value().netRR() : null;
     }
 
     private BigDecimal computeDiscountToMid(BigDecimal price, BigDecimal mid) {

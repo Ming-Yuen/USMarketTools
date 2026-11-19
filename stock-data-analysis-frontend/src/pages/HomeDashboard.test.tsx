@@ -544,4 +544,120 @@ describe("Batch 03 trilingual locales & HomeDashboard / PeerRelativeStrength ren
     );
     expect(screen.getByTestId("peer-relative-strength-panel")).toBeInTheDocument();
   });
+
+  test("toggles sector money flow between Top 20 and Bottom 20 keeping nulls last and adapting dollar volume labels", () => {
+    const base = sampleDashboard(false);
+    base.sectorMoneyFlow = {
+      tradeDate: "2026-11-17",
+      marketTotalStockCount: 3944,
+      classifiedCoveragePct: 0.962,
+      rows: [
+        {
+          industryCode: "I_STRONG",
+          industryName: "StrongSector",
+          stockCount: 20,
+          dollarVolume1d: 50_000_000_000,
+          dollarVolume5d: 250_000_000_000,
+          marketVolumeShare1d: 0.10,
+          marketVolumeShare5d: 0.10,
+          marketVolumeShare20d: 0.08,
+          volumeShareDelta5dVs20d: 0.02,
+          cmf5d: 0.20,
+          cmf20d: 0.25,
+          breadthAboveSma50Count: 18,
+          breadthSma50Total: 20,
+          breadthAboveSma50Pct: 0.9,
+          breadthAboveSma200Count: 16,
+          breadthSma200Total: 20,
+          breadthAboveSma200Pct: 0.8,
+          return20dMedian: 0.10,
+          return60dMedian: 0.20,
+          flowState: "INFLOW",
+        },
+        {
+          industryCode: "I_WEAK",
+          industryName: "WeakSector",
+          stockCount: 15,
+          dollarVolume1d: 10_000_000_000,
+          dollarVolume5d: 50_000_000_000,
+          marketVolumeShare1d: 0.02,
+          marketVolumeShare5d: 0.02,
+          marketVolumeShare20d: 0.05,
+          volumeShareDelta5dVs20d: -0.03,
+          cmf5d: -0.22,
+          cmf20d: -0.31,
+          breadthAboveSma50Count: 2,
+          breadthSma50Total: 15,
+          breadthAboveSma50Pct: 0.133,
+          breadthAboveSma200Count: 1,
+          breadthSma200Total: 15,
+          breadthAboveSma200Pct: 0.067,
+          return20dMedian: -0.12,
+          return60dMedian: -0.18,
+          flowState: "OUTFLOW",
+        },
+        {
+          industryCode: "I_NULL",
+          industryName: "NullCmfSector",
+          stockCount: 3,
+          dollarVolume1d: 500_000_000,
+          dollarVolume5d: 2_000_000_000,
+          marketVolumeShare1d: 0.001,
+          marketVolumeShare5d: 0.001,
+          marketVolumeShare20d: 0.001,
+          volumeShareDelta5dVs20d: null,
+          cmf5d: null,
+          cmf20d: null,
+          breadthAboveSma50Count: 0,
+          breadthSma50Total: 0,
+          breadthAboveSma50Pct: null,
+          breadthAboveSma200Count: 0,
+          breadthSma200Total: 0,
+          breadthAboveSma200Pct: null,
+          return20dMedian: null,
+          return60dMedian: null,
+          flowState: null,
+        },
+      ],
+    };
+    mockDashboardData = base;
+    const i18nInstance = createRealI18n("zh-HK");
+    render(
+      <I18nextProvider i18n={i18nInstance}>
+        <HomeDashboard />
+      </I18nextProvider>
+    );
+
+    const flowSection = screen.getByRole("region", { name: String(i18nInstance.t("dashboard.sectorFlow.title")) });
+    const getRowOrder = () => {
+      const bodyRows = within(flowSection).getAllByRole("row").slice(1);
+      return bodyRows.map((r) => r.textContent ?? "");
+    };
+
+    // 預設 Top 20（20D CMF 降冪）：StrongSector -> WeakSector -> NullCmfSector（null 固定置尾）
+    const topOrder = getRowOrder();
+    expect(topOrder[0]).toContain("StrongSector");
+    expect(topOrder[1]).toContain("WeakSector");
+    expect(topOrder[2]).toContain("NullCmfSector");
+
+    // 切換至 Bottom 20（20D CMF 升冪）：WeakSector 排第 1，NullCmfSector 仍固定置尾
+    fireEvent.click(within(flowSection).getByRole("button", {
+      name: String(i18nInstance.t("dashboard.sectorFlow.orderBottom")),
+    }));
+    const bottomOrder = getRowOrder();
+    expect(bottomOrder[0]).toContain("WeakSector");
+    expect(bottomOrder[1]).toContain("StrongSector");
+    expect(bottomOrder[2]).toContain("NullCmfSector");
+
+    // 切換排序依據為當日成交額：Bottom 標籤切為「成交額最低 20」（不誤標為流出最多），且 NullCmfSector（最低成交額 $500M）排第 1
+    fireEvent.mouseDown(within(flowSection).getByRole("combobox"));
+    fireEvent.click(screen.getByRole("option", {
+      name: String(i18nInstance.t("dashboard.sectorFlow.sortDollarVol1d")),
+    }));
+    expect(within(flowSection).getByRole("button", {
+      name: String(i18nInstance.t("dashboard.sectorFlow.orderBottomDollarVol")),
+    })).toBeInTheDocument();
+    const bottomVolOrder = getRowOrder();
+    expect(bottomVolOrder[0]).toContain("NullCmfSector");
+  });
 });

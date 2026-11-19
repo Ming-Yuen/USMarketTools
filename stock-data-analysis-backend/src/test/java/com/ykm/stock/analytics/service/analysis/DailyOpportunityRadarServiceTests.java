@@ -373,6 +373,112 @@ class DailyOpportunityRadarServiceTests {
         assertThat(published).isEmpty();
     }
 
+    @Test
+    void refreshDailyExcludesAccumulateAtSupportWhenCloseFarAboveSupportZone() {
+        // 低估股收盤 100，最近有效週線支撐區為 78–80（距支撐上緣 +25% > 3%）-> 不得放行進主清單，也不得入帳訊號
+        stubPreloadedMarket(MarketRegime.RISK_ON);
+        Stock stock = operatingStock("F_FAR", "FARR");
+        StockValuationLatest latest = valuationSnapshot("F_FAR", "DEEP_UNDERVALUED", "STRONG", "100", "110", "130", "150");
+        when(latestValuations.findValueRadarCandidates(eq(RADAR_DATE), any(), any(), anyCollection(), anyCollection(), anyCollection()))
+                .thenReturn(List.<Object[]>of(new Object[]{latest, stock}));
+        when(latestValuations.findStarterRadarCandidates(eq(RADAR_DATE), any(), any(), any(), any(), anyCollection()))
+                .thenReturn(List.of());
+        when(forecasts.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(List.of());
+        stubTechnicalStack("F_FAR", "100", "78", "80", "75", "125", MarketRegime.RISK_ON, EntryPermission.ALLOW, "UPTREND", null);
+
+        List<DailyOpportunityRadar> published = service.refreshDaily(RADAR_DATE, NOW);
+        assertThat(published).isEmpty();
+    }
+
+    @Test
+    void refreshDailyComputesFirstTargetAndNetRrAgainstEvalPriceWhenSlightlyAboveSupport() {
+        // 1) 現價 102 距支撐 98–100 為 +2%（<= 3%），但第一目標 T1=101.90 <= 102（已頂入第一道阻力前置緩衝區）、T2=120.00：
+        //    不得跳過 T1 改取 T2 充當第一目標價，firstTargetPrice 與 netRiskReward 必須同步為 NULL
+        stubPreloadedMarket(MarketRegime.RISK_ON);
+        Stock stock = operatingStock("F_NEAR", "NEAR");
+        StockValuationLatest latest = valuationSnapshot("F_NEAR", "DEEP_UNDERVALUED", "STRONG", "102", "110", "130", "150");
+        when(latestValuations.findValueRadarCandidates(eq(RADAR_DATE), any(), any(), anyCollection(), anyCollection(), anyCollection()))
+                .thenReturn(List.<Object[]>of(new Object[]{latest, stock}));
+        when(latestValuations.findStarterRadarCandidates(eq(RADAR_DATE), any(), any(), any(), any(), anyCollection()))
+                .thenReturn(List.of());
+        when(forecasts.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(List.of());
+        stubTechnicalStack("F_NEAR", "102", "98", "100", "94", "101.90", MarketRegime.RISK_ON, EntryPermission.ALLOW, "UPTREND", null);
+
+        TradePlanDto blockedT1Plan = new TradePlanDto("p-near-blocked", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, null, null,
+                new StopRuleDto(
+                        new BigDecimal("94"), new BigDecimal("94"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("2"), AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), List.of()),
+                List.of(
+                        new TargetDto(new BigDecimal("101.90"), new BigDecimal("0.5"), TargetAction.PARTIAL_SELL, "res-1", "RESISTANCE", List.of()),
+                        new TargetDto(new BigDecimal("120.00"), new BigDecimal("0.5"), TargetAction.TAKE_PROFIT, "res-2", "RESISTANCE", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("100"), new BigDecimal("94"), new BigDecimal("6"), new BigDecimal("10.95"),
+                        new BigDecimal("1.82"), new BigDecimal("6.3"), new BigDecimal("10.5"), new BigDecimal("1.66"),
+                        new BigDecimal("10.95"), new BigDecimal("6"))),
+                TradePlanStatus.WAITING_TRIGGER, List.of(), "sup-w-1", 1, AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), null, List.of());
+        when(tradePlanService.build(any(), any(), any(), any(), any()))
+                .thenReturn(MetricResult.available(new TradePlanResultDto(List.of(blockedT1Plan), new BigDecimal("102"), RADAR_DATE,
+                        blockedT1Plan.riskReward(), List.of(), List.of(), true)));
+
+        List<DailyOpportunityRadar> blockedPublished = service.refreshDaily(RADAR_DATE, NOW);
+        assertThat(blockedPublished).hasSize(1);
+        assertThat(blockedPublished.getFirst().getFirstTargetPrice()).isNull();
+        assertThat(blockedPublished.getFirst().getNetRiskReward()).isNull();
+
+        // 2) 當 T1=120.00 > evalPrice=102 時：寫入 firstTargetPrice=120.0000，且 netRiskReward 按收盤價 102（而非支撐上緣 100）重算
+        TradePlanDto validT1Plan = new TradePlanDto("p-near-valid", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, null, null,
+                new StopRuleDto(
+                        new BigDecimal("94"), new BigDecimal("94"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("2"), AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), List.of()),
+                List.of(new TargetDto(new BigDecimal("120.00"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "res-2", "RESISTANCE", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("100"), new BigDecimal("94"), new BigDecimal("6"), new BigDecimal("20"),
+                        new BigDecimal("3.33"), new BigDecimal("6.3"), new BigDecimal("19.5"), new BigDecimal("3.10"),
+                        new BigDecimal("20"), new BigDecimal("6"))),
+                TradePlanStatus.WAITING_TRIGGER, List.of(), "sup-w-1", 1, AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), null, List.of());
+        when(tradePlanService.build(any(), any(), any(), any(), any()))
+                .thenReturn(MetricResult.available(new TradePlanResultDto(List.of(validT1Plan), new BigDecimal("102"), RADAR_DATE,
+                        validT1Plan.riskReward(), List.of(), List.of(), true)));
+
+        List<DailyOpportunityRadar> validPublished = service.refreshDaily(RADAR_DATE, NOW);
+        assertThat(validPublished).hasSize(1);
+        assertThat(validPublished.getFirst().getFirstTargetPrice()).isEqualByComparingTo("120.0000");
+        // 收盤 102 / 止損 94 / 目標 120：毛 R/R = 18/8 = 2.25，成本後淨 R/R 應接近 2.13（遠低於支撐上緣 100 起算的 3.10）
+        assertThat(validPublished.getFirst().getNetRiskReward()).isBetween(new BigDecimal("2.05"), new BigDecimal("2.20"));
+    }
+
+    @Test
+    void refreshDailyExcludesFairLowerWhenConfirmationPending() {
+        // FAIR_LOWER + STRONG 距支撐 0%，但 matchedPlan 處於 STRUCTURE_CONFIRMATION_REQUIRED（confirmationPending = true）：
+        // 不可比 DEEP_UNDERVALUED（退回 WAIT_FOR_STABILIZATION）更寬鬆而入選雷達主清單
+        stubPreloadedMarket(MarketRegime.RISK_ON);
+        Stock stock = operatingStock("F_FAIR", "FAIR");
+        StockValuationLatest latest = valuationSnapshot("F_FAIR", "FAIR_LOWER", "STRONG", "100", "90", "110", "130");
+        when(latestValuations.findValueRadarCandidates(eq(RADAR_DATE), any(), any(), anyCollection(), anyCollection(), anyCollection()))
+                .thenReturn(List.<Object[]>of(new Object[]{latest, stock}));
+        when(latestValuations.findStarterRadarCandidates(eq(RADAR_DATE), any(), any(), any(), any(), anyCollection()))
+                .thenReturn(List.of());
+        when(forecasts.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(List.of());
+        stubTechnicalStack("F_FAIR", "100", "98", "100", "94", "125", MarketRegime.RISK_ON, EntryPermission.ALLOW, "UPTREND", null);
+
+        TradePlanDto pendingPlan = new TradePlanDto("p-fair", AnalysisHorizon.POSITION, SetupType.PULLBACK, null, null, null,
+                new StopRuleDto(
+                        new BigDecimal("94"), new BigDecimal("94"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("2"), AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), List.of()),
+                List.of(new TargetDto(new BigDecimal("125"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "res-1", "RESISTANCE", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("100"), new BigDecimal("94"), new BigDecimal("6"), new BigDecimal("25"),
+                        new BigDecimal("4.16"), new BigDecimal("6.3"), new BigDecimal("24"), new BigDecimal("3.8"),
+                        new BigDecimal("25"), new BigDecimal("6"))),
+                TradePlanStatus.WAITING_TRIGGER,
+                List.of(com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto.of(
+                        "STRUCTURE_CONFIRMATION_REQUIRED", "TRADE_PLAN", "結構尚未確認")),
+                "sup-w-1", 1, AnalysisTimeframe.WEEKLY, NOW.minusSeconds(864000), null, List.of());
+        when(tradePlanService.build(any(), any(), any(), any(), any()))
+                .thenReturn(MetricResult.available(new TradePlanResultDto(List.of(pendingPlan), new BigDecimal("100"), RADAR_DATE,
+                        pendingPlan.riskReward(), List.of(), List.of(), true)));
+
+        List<DailyOpportunityRadar> published = service.refreshDaily(RADAR_DATE, NOW);
+        assertThat(published).isEmpty();
+    }
+
     private void stubPreloadedMarket(MarketRegime regime) {
         MarketSnapshotDto snap = new MarketSnapshotDto(
                 regime, MetricResult.available(new BigDecimal("50")), MetricResult.available(new BigDecimal("50")),

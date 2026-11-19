@@ -11,7 +11,10 @@ import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioRiskConfigService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -20,6 +23,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("portfolio")
@@ -59,5 +65,12 @@ public class PortfolioController {
     @GetMapping("/health")
     public PortfolioHealthSummaryDto health(@RequestParam(defaultValue = "false") boolean live) {
         return closingService.getHealthSummary(live);
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> handleResponseStatus(ResponseStatusException ex) {
+        return ResponseEntity.status(ex.getStatusCode())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", ex.getReason() == null ? "PORTFOLIO_OPERATION_FAILED" : ex.getReason()));
     }
 }

@@ -549,4 +549,164 @@ describe("Batch 04 三語詞典對齊與核心介面驗證", () => {
       }));
     });
   });
+
+  test("PositionSizingBlock 依實際 riskPerTradePct 動態顯示風險預算比例，缺值回退無括號標題", () => {
+    const base: PositionSizing = {
+      status: "AVAILABLE",
+      reasonCode: null,
+      planActionable: true,
+      suggestedShares: 25,
+      entryReferencePrice: 100,
+      protectiveStopPrice: 95,
+      riskPerShare: 5,
+      estimatedPositionAmount: 2500,
+      positionCapitalPct: 0.025,
+      maxEstimatedLossAmount: 125,
+      maxEstimatedLossPct: 0.00125,
+      totalCapital: 100000,
+      riskPerTradePct: 0.0025,
+      maxSinglePositionPct: 0.15,
+      maxSectorExposurePct: 0.3,
+      scaleNumerator: 1,
+      scaleDenominator: 1,
+      scaleLabel: "FULL",
+      existingHoldingMarketValue: 0,
+      industryCode: "TECH",
+      currentSectorExposurePct: 0,
+      projectedSectorExposurePct: 0.025,
+      sectorConcentrationWarning: false,
+      excludedHoldingsCount: 0,
+      sizingTags: [],
+    };
+
+    const { rerender } = renderWithProviders(<PositionSizingBlock sizing={base} />, "zh-HK");
+    expect(screen.getByText("倉位風險建議（0.25% 風險預算）")).toBeInTheDocument();
+
+    const enI18n = createRealI18n("en");
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nextProvider i18n={enI18n}>
+          <PositionSizingBlock sizing={{ ...base, riskPerTradePct: 0.005 }} />
+        </I18nextProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Risk-Based Position Sizing (0.5% Risk Budget)")).toBeInTheDocument();
+
+    const cnI18n = createRealI18n("zh-CN");
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nextProvider i18n={cnI18n}>
+          <PositionSizingBlock sizing={{ ...base, riskPerTradePct: null }} />
+        </I18nextProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("仓位风险建议")).toBeInTheDocument();
+  });
+
+  test("PortfolioDrawer 跨組件事件同步、刪除失敗回饋、刪除後重置當前表單且支援 0.01% 風控精度", async () => {
+    const overviewData = {
+      config: {
+        totalCapital: 100000,
+        riskPerTradePct: 0.0025,
+        maxSinglePositionPct: 0.15,
+        maxSectorExposurePct: 0.3,
+        capitalCurrency: "USD",
+      },
+      items: [
+        {
+          figi: "FIGI_A",
+          symbol: "AAA",
+          itemType: "HOLDING" as const,
+          rawShares: 50,
+          rawAvgCost: 100,
+          costBasisDate: "2026-11-18",
+          adjustedShares: 50,
+          adjustedAvgCost: 100,
+          splitAdjusted: false,
+          notes: "A-note",
+        },
+      ],
+      sectorExposures: [],
+      holdingCount: 1,
+      watchlistCount: 0,
+      totalHoldingMarketValueUsd: 5000,
+      totalHoldingCostUsd: 5000,
+      totalUnrealizedPnlUsd: 0,
+      excludedHoldingsCount: 0,
+      coverageWarnings: [],
+    };
+    const fetchOverviewSpy = jest.spyOn(portfolioApi, "fetchPortfolioOverview")
+      .mockResolvedValueOnce(overviewData)
+      .mockResolvedValue({ ...overviewData, items: [], holdingCount: 0 });
+    const deleteSpy = jest.spyOn(portfolioApi, "deletePortfolioItem")
+      .mockRejectedValueOnce({ response: { data: { detail: "DELETE_FORBIDDEN" } } })
+      .mockResolvedValueOnce(undefined);
+    const healthSpy = jest.spyOn(portfolioApi, "fetchPortfolioHealth").mockResolvedValue({
+      tradeDate: "2026-11-18",
+      sourceMode: "LIVE",
+      marketRegime: "RISK_ON",
+      holdingCount: 1,
+      watchlistCount: 0,
+      alertHoldingCount: 0,
+      criticalCount: 0,
+      warningCount: 0,
+      infoCount: 0,
+      structureHealthy: true,
+      completeCoverage: true,
+      excludedHoldingsCount: 0,
+      coverageWarnings: [],
+      holdings: [],
+      watchlistOpportunities: [],
+      sectorExposures: [],
+      sectorAlerts: [],
+    });
+
+    renderWithProviders(
+      <>
+        <PortfolioHealthCard />
+        <PortfolioDrawer open onClose={jest.fn()} initialStock={{ figi: "FIGI_A", symbol: "AAA" }} />
+      </>,
+      "zh-HK",
+    );
+
+    await waitFor(() => {
+      expect(healthSpy).toHaveBeenCalledTimes(1);
+      expect(fetchOverviewSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // 切回列表頁籤嘗試刪除 FIGI_A：第一次失敗應顯示 RFC 7807 detail 錯誤且不觸發跨組件刷新
+    fireEvent.click(screen.getByRole("tab", { name: "持倉與自選清單" }));
+    const delBtn = await screen.findByRole("button", { name: "移除" });
+    fireEvent.click(delBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/移除失敗：DELETE_FORBIDDEN/)).toBeInTheDocument();
+    });
+    expect(deleteSpy).toHaveBeenCalledWith("FIGI_A");
+    expect(healthSpy).toHaveBeenCalledTimes(1);
+
+    // 第二次刪除成功：派發單一 portfolio:updated 事件刷新首頁體檢卡（僅多呼叫 1 次 live=true）且重置 FIGI_A 編輯表單
+    fireEvent.click(delBtn);
+    await waitFor(() => {
+      expect(healthSpy).toHaveBeenCalledTimes(2);
+      expect(healthSpy).toHaveBeenLastCalledWith(true);
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "新增／編輯標的" }));
+    const notesBox = screen.getByLabelText("交易備註") as HTMLTextAreaElement;
+    expect(notesBox.value).toBe("");
+
+    // 切到風控設定驗證 3 個百分比欄位支援 0.01 步進（允許 0.25%）
+    fireEvent.click(screen.getByRole("tab", { name: "資金與風控設定" }));
+    const riskInput = screen.getByLabelText(/單筆最大風險比例/) as HTMLInputElement;
+    const singleInput = screen.getByLabelText(/單一標的最大倉位上限/) as HTMLInputElement;
+    const sectorInput = screen.getByLabelText(/同產業最大集中度上限/) as HTMLInputElement;
+    expect(riskInput.step).toBe("0.01");
+    expect(riskInput.min).toBe("0.01");
+    expect(riskInput.value).toBe("0.25");
+    expect(singleInput.step).toBe("0.01");
+    expect(singleInput.min).toBe("0.01");
+    expect(sectorInput.step).toBe("0.01");
+    expect(sectorInput.min).toBe("0.01");
+  });
 });

@@ -6,7 +6,7 @@ import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip
 import { AccountBalanceWalletOutlined, ArrowBack, ExpandMore } from "@mui/icons-material";
 import { apiClient } from "../services/apiClient";
 import { apiConfig } from "../apiConfig";
-import { fetchPortfolioOverview } from "../services/portfolioApi";
+import { fetchPortfolioOverview, PORTFOLIO_UPDATED_EVENT } from "../services/portfolioApi";
 import { PortfolioDrawer } from "../components/PortfolioDrawer";
 import { PortfolioItemView } from "../services/types/dto/portfolio";
 import { AnalysisHorizon, AnalysisReportRequest, MetricResult, StockAnalysisReport } from "../services/types/dto/analysis";
@@ -51,6 +51,16 @@ export function StockAnalysisPage() {
   useEffect(() => {
     setCurrentPortfolioItem(null);
     reloadPortfolioBadge();
+  }, [reloadPortfolioBadge]);
+
+  useEffect(() => {
+    const handlePortfolioUpdated = () => {
+      reloadPortfolioBadge();
+    };
+    window.addEventListener(PORTFOLIO_UPDATED_EVENT, handlePortfolioUpdated);
+    return () => {
+      window.removeEventListener(PORTFOLIO_UPDATED_EVENT, handlePortfolioUpdated);
+    };
   }, [reloadPortfolioBadge]);
   const reportQuery = useQuery<StockAnalysisReport>({
     queryKey: horizon === "POSITION" ? ["analysis-report", figi, valuationDate] : ["analysis-report", figi, valuationDate, horizon],
@@ -175,10 +185,6 @@ export function StockAnalysisPage() {
     <PortfolioDrawer
       open={portfolioDrawerOpen}
       onClose={() => setPortfolioDrawerOpen(false)}
-      onSaved={() => {
-        reloadPortfolioBadge();
-        reportQuery.refetch?.();
-      }}
       initialStock={figi ? {
         figi,
         symbol: report?.symbol,

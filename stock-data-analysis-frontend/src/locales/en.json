@@ -726,6 +726,7 @@
       "saving": "Saving...",
       "saved": "Portfolio / watchlist item saved.",
       "deleted": "Removed from list.",
+      "deleteFailed": "Failed to remove item: {{message}}",
       "deleteConfirm": "Remove {{symbol}} from your list?",
       "saveFailed": "Save failed: {{message}}",
       "loadFailed": "Failed to load existing portfolio status. Saving is disabled to prevent overwriting an existing holding."
@@ -742,7 +743,8 @@
       "loadFailed": "Failed to load current risk settings. Saving is disabled to prevent overwriting existing values."
     },
     "sizing": {
-      "sectionTitle": "Risk-Based Position Sizing",
+      "sectionTitle": "Risk-Based Position Sizing ({{pct}} Risk Budget)",
+      "sectionTitleNoPct": "Risk-Based Position Sizing",
       "starterSectionTitle": "Trend Pullback Starter Sizing",
       "suggestedShares": "Suggested Shares",
       "sharesUnit": "{{shares}} sh",

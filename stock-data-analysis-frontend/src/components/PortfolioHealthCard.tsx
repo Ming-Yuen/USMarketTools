@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@mui/material";
 import { AccountBalanceWalletOutlined, HealthAndSafetyOutlined, Refresh } from "@mui/icons-material";
-import { fetchPortfolioHealth } from "../services/portfolioApi";
+import { fetchPortfolioHealth, PORTFOLIO_UPDATED_EVENT } from "../services/portfolioApi";
 import { PortfolioHealthSummary } from "../services/types/dto/portfolio";
 import { formatAlertMessage, formatDecimal, formatPct, severityColor } from "./portfolioFormatters";
 import { PortfolioDrawer } from "./PortfolioDrawer";
@@ -56,6 +56,16 @@ export const PortfolioHealthCard: React.FC = () => {
 
   useEffect(() => {
     loadHealth(false);
+  }, [loadHealth]);
+
+  useEffect(() => {
+    const handlePortfolioUpdated = () => {
+      loadHealth(true);
+    };
+    window.addEventListener(PORTFOLIO_UPDATED_EVENT, handlePortfolioUpdated);
+    return () => {
+      window.removeEventListener(PORTFOLIO_UPDATED_EVENT, handlePortfolioUpdated);
+    };
   }, [loadHealth]);
 
   const holdingAlerts = (health?.holdings ?? []).filter((h) => h.alerts.length > 0 || h.dataGapReasons.length > 0);
@@ -276,7 +286,6 @@ export const PortfolioHealthCard: React.FC = () => {
       <PortfolioDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        onSaved={() => loadHealth(true)}
       />
     </>
   );

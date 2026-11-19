@@ -11,9 +11,11 @@ import com.ykm.stock.analytics.service.portfolio.PortfolioManagementService;
 import com.ykm.stock.analytics.service.portfolio.PortfolioRiskConfigService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -131,5 +133,27 @@ class PortfolioAndNotificationControllerTests {
         mockMvc.perform(get("/notifications/briefing/latest").accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.marketRegime").value("RISK_ON"));
+    }
+
+    @Test
+    void portfolioControllerMapsResponseStatusExceptionToJsonMessage() throws Exception {
+        when(portfolioService.upsertItem(eq("F_MISSING"), any()))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND"));
+        when(riskConfigService.updateConfig(any()))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_RISK_PER_TRADE_PCT"));
+
+        mockMvc.perform(put("/portfolio/F_MISSING")
+                        .accept(MediaType.APPLICATION_JSON)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"itemType\":\"WATCHLIST\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("STOCK_NOT_FOUND"));
+
+        mockMvc.perform(put("/portfolio/config")
+                        .accept(MediaType.APPLICATION_JSON)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"totalCapital\":100000,\"riskPerTradePct\":0.5}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("INVALID_RISK_PER_TRADE_PCT"));
     }
 }

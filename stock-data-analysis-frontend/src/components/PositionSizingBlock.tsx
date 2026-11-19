@@ -9,11 +9,21 @@ interface PositionSizingBlockProps {
   starterMode?: boolean;
 }
 
+const RISK_BUDGET_PCT_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "percent",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
 export const PositionSizingBlock: React.FC<PositionSizingBlockProps> = ({ sizing, starterMode = false }) => {
   const { t } = useTranslation();
   if (!sizing) return null;
 
-  const title = starterMode ? t("portfolio.sizing.starterSectionTitle") : t("portfolio.sizing.sectionTitle");
+  const title = starterMode
+    ? t("portfolio.sizing.starterSectionTitle")
+    : (sizing.riskPerTradePct != null && Number.isFinite(sizing.riskPerTradePct)
+      ? t("portfolio.sizing.sectionTitle", { pct: RISK_BUDGET_PCT_FORMATTER.format(sizing.riskPerTradePct) })
+      : t("portfolio.sizing.sectionTitleNoPct"));
 
   if (sizing.status === "NOT_APPLICABLE") {
     const reasonText = sizing.reasonCode

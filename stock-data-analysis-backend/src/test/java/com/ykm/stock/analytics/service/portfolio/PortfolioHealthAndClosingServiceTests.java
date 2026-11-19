@@ -15,6 +15,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketRegime;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketSnapshotDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MomentumAnalysisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedBarDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
@@ -38,6 +39,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TrendState;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.VolumeAnalysisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
@@ -54,6 +56,8 @@ import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
 import com.ykm.stock.analytics.model.entity.SectorMoneyFlowDaily;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
+import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
 import com.ykm.stock.analytics.model.entity.StockSplit;
@@ -649,6 +653,290 @@ class PortfolioHealthAndClosingServiceTests {
 
         // 非 USD 自選股（F_HKW）即使技術 ACTIVE，因 sizing = NOT_APPLICABLE 不得發出自選機會
         assertThat(summary.watchlistOpportunities()).isEmpty();
+    }
+
+    /**
+     * Scenario（P1 隔日事前基準回歸測試）：
+     * 1. 多道支撐（近端 192–195 強度 65 + 遠端大底 120–125 強度 88）：隔日事前止損與 T1/T2 必須選近端有效計畫（189.50 / 215 / 230），不誤綁遠端強支撐；
+     * 2. 近端 WAITING_TRIGGER 計畫若帶 HIGH_RISK_BREAKDOWN_DETECTED 或 RECLAIM_REQUIRED 必須略過，且該失效區不可在 ATR 回退中被選回；
+     * 3. 持倉處於第二軌 TREND_PULLBACK_STARTER（eligible=true 且緊貼均線止損高於水平支撐）時，事前止損收緊為 STARTER_ANCHOR_STOP 並保留上方 T1/T2；
+     * 4. 創高無水平支撐但具備第二軌試單資格時，仍正確記下 STARTER_ANCHOR_STOP（不遺漏止損）。
+     */
+    @Test
+    void holdingNextReferenceUsesNearestValidPlanSkipsDisqualifiedAndTightensWithStarterStop() {
+        PortfolioItem hNear = portfolioItem("F_NEAR", PortfolioItem.TYPE_HOLDING, "20", "180", DAY);
+        PortfolioItem hSkip = portfolioItem("F_SKIP", PortfolioItem.TYPE_HOLDING, "20", "180", DAY);
+        PortfolioItem hOnlyBroken = portfolioItem("F_ONLY_BRK", PortfolioItem.TYPE_HOLDING, "20", "180", DAY);
+        PortfolioItem hStarter = portfolioItem("F_STARTER", PortfolioItem.TYPE_HOLDING, "20", "180", DAY);
+        PortfolioItem hStarterOnly = portfolioItem("F_STARTER_ONLY", PortfolioItem.TYPE_HOLDING, "20", "180", DAY);
+
+        when(itemRepo.findAllByOrderByItemTypeAscUpdatedAtDescFigiAsc())
+                .thenReturn(List.of(hNear, hSkip, hOnlyBroken, hStarter, hStarterOnly));
+        when(stockRepo.findAllById(anyCollection())).thenReturn(List.of(
+                stock("F_NEAR", "NEAR", "USD"),
+                stock("F_SKIP", "SKIP", "USD"),
+                stock("F_ONLY_BRK", "OBRK", "USD"),
+                stock("F_STARTER", "STRT", "USD"),
+                stock("F_STARTER_ONLY", "STOH", "USD")
+        ));
+        when(statusRepo.findAllById(anyCollection())).thenReturn(List.of(
+                splitStatus("F_NEAR"), splitStatus("F_SKIP"), splitStatus("F_ONLY_BRK"),
+                splitStatus("F_STARTER"), splitStatus("F_STARTER_ONLY")));
+        when(splitRepo.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of());
+        when(eventRepo.findVisibleEarningsForFigis(anyCollection(), any())).thenReturn(List.of());
+        when(briefingRepo.findTopByTradeDateBeforeOrderByTradeDateDesc(DAY)).thenReturn(Optional.empty());
+
+        StockIndustry tech = new StockIndustry();
+        tech.setCode("TECH");
+        tech.setIndustry("Technology");
+        List<StockIndustryHistory> ihs = new ArrayList<>();
+        for (String f : List.of("F_NEAR", "F_SKIP", "F_ONLY_BRK", "F_STARTER", "F_STARTER_ONLY")) {
+            StockIndustryHistory ih = new StockIndustryHistory();
+            ih.setFigi(f);
+            ih.setIndustry(tech);
+            ihs.add(ih);
+        }
+        when(industryRepo.findByFigisAt(anyCollection(), any())).thenReturn(ihs);
+
+        when(quoteRepo.findQuoteBarsOrdered(anyCollection(), any(), any())).thenReturn(List.of(
+                barRow("F_NEAR", PRIOR_DAY, "202"), barRow("F_NEAR", DAY, "200"),
+                barRow("F_SKIP", PRIOR_DAY, "202"), barRow("F_SKIP", DAY, "200"),
+                barRow("F_ONLY_BRK", PRIOR_DAY, "202"), barRow("F_ONLY_BRK", DAY, "200"),
+                barRow("F_STARTER", PRIOR_DAY, "202"), barRow("F_STARTER", DAY, "200"),
+                barRow("F_STARTER_ONLY", PRIOR_DAY, "202"), barRow("F_STARTER_ONLY", DAY, "200")
+        ));
+
+        List<StockValuationLatest> vals = new ArrayList<>();
+        for (String f : List.of("F_NEAR", "F_SKIP", "F_ONLY_BRK", "F_STARTER", "F_STARTER_ONLY")) {
+            StockValuationLatest v = valLatest(f, "FAIR_UPPER", "STRONG", "200");
+            v.setFairValueLow(new BigDecimal("150"));
+            v.setFairValueMid(new BigDecimal("180"));
+            v.setFairValueHigh(new BigDecimal("220"));
+            v.setPe(new BigDecimal("20"));
+            vals.add(v);
+        }
+        when(latestValRepo.findByFigiIn(anyCollection())).thenReturn(vals);
+
+        // 讓 F_STARTER 與 F_STARTER_ONLY 透過真實 ForwardValuationCalculator 與 ValuationSummaryCalculator 達成 starter.eligible()=true
+        List<StockFinancialPeriod> starterPeriods = new ArrayList<>();
+        List<StockEarningsForecast> starterForecasts = new ArrayList<>();
+        for (String f : List.of("F_STARTER", "F_STARTER_ONLY")) {
+            StockFinancialPeriod p = new StockFinancialPeriod();
+            p.setFigi(f);
+            p.setPeriodStart(LocalDate.of(2026, 7, 1));
+            p.setPeriodEnd(LocalDate.of(2026, 9, 30));
+            p.setReportingCurrency("USD");
+            p.setEpsTtm(new BigDecimal("10.00"));
+            p.setEpsTtmStatus("AVAILABLE");
+            p.setEpsShareBasisDate(LocalDate.of(2026, 9, 30));
+            starterPeriods.add(p);
+
+            StockEarningsForecast ef = new StockEarningsForecast();
+            ef.setFigi(f);
+            ef.setSource("ALPHA_VANTAGE");
+            ef.setFiscalPeriod("2027-09-30");
+            ef.setPeriodType("ANNUAL");
+            ef.setPeriodEnd(LocalDate.of(2027, 9, 30));
+            ef.setObservationDate(DAY.minusDays(2));
+            ef.setObservedAt(NOW.minusSeconds(172800));
+            ef.setCurrency("USD");
+            ef.setEps(new BigDecimal("12.50"));
+            starterForecasts.add(ef);
+        }
+        when(periodRepo.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(starterPeriods);
+        when(forecastRepo.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(starterForecasts);
+
+        MetricResult<BigDecimal> naMetric = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of());
+        MarketSnapshotDto snap = new MarketSnapshotDto(MarketRegime.RISK_ON, naMetric, naMetric, naMetric, DAY, NOW, List.of(), List.of());
+        when(marketContextService.preloadMarketData(DAY, NOW)).thenReturn(new PreloadedMarketData(
+                DAY, NOW, null, null, Map.of(), List.of(),
+                MetricResult.available(snap), MetricResult.available(new BigDecimal("15.0"))));
+
+        when(quoteNorm.normalizeFromLoaded(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            Stock st = inv.getArgument(3);
+            NormalizedBarDto prevBar = new NormalizedBarDto(PRIOR_DAY,
+                    new BigDecimal("203"), new BigDecimal("205"), new BigDecimal("201"), new BigDecimal("202"),
+                    MetricResult.available(BigDecimal.valueOf(1_200_000)), NOW.minusSeconds(86400), NOW, NOW, NOW, null, "B1");
+            NormalizedBarDto curBar = new NormalizedBarDto(DAY,
+                    new BigDecimal("199"), new BigDecimal("201"), new BigDecimal("198"), new BigDecimal("200"),
+                    MetricResult.available(BigDecimal.valueOf(800_000)), NOW, NOW, NOW, NOW, null, "B1");
+            PriceBasisDescriptor desc = new PriceBasisDescriptor("B1", "STORED", PriceAdjustment.SPLIT_ADJUSTED,
+                    DAY, null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, st.getCurrency(), true, null);
+            return MetricResult.available(new NormalizedPriceSeriesDto(
+                    st.getFigi(), "DAILY", List.of(prevBar, curBar), desc, null, MetricStatus.AVAILABLE, List.of(), "H1"));
+        });
+        when(priceStructures.analyze(any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            AtrPointDto atr = new AtrPointDto(DAY, 14, new BigDecimal("2"), new BigDecimal("0.01"), DAY, 14, 14);
+            StructureTrendDto up = new StructureTrendDto(TrendState.UPTREND, NOW, PriceRelation.HH, PriceRelation.HL, List.of(), NOW);
+            TimeframeStructureDto daily = new TimeframeStructureDto(AnalysisTimeframe.DAILY, s.bars(),
+                    MetricResult.available(atr), List.of(), List.of(),
+                    MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL),
+                    MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            TimeframeStructureDto weekly = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, s.bars(),
+                    MetricResult.available(atr), List.of(), List.of(),
+                    MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL),
+                    MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            return MetricResult.available(new PriceStructureDto(s.figi(), "B1", DAY, List.of(daily, weekly), List.of(), List.of()));
+        });
+        when(marketContextService.evaluateWithPreloaded(any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            boolean starterCandidate = "F_STARTER".equals(s.figi()) || "F_STARTER_ONLY".equals(s.figi());
+            MomentumAnalysisDto mom = starterCandidate
+                    ? new MomentumAnalysisDto(Map.of(
+                            "SMA200", MetricResult.available(new BigDecimal("170.00")),
+                            "SMA50", MetricResult.available(new BigDecimal("198.00")),
+                            "ATR14", MetricResult.available(new BigDecimal("2.00"))),
+                            naMetric, List.of())
+                    : null;
+            VolumeAnalysisDto vol = starterCandidate
+                    ? new VolumeAnalysisDto(MetricResult.available(new BigDecimal("0.75")),
+                            naMetric, naMetric, naMetric,
+                            MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()),
+                            naMetric, List.of(), List.of())
+                    : null;
+            return MetricResult.available(new MarketContextDto(
+                    null, null, MetricResult.available(snap), List.of(),
+                    new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()),
+                    List.of(), List.of(), mom, vol, null, null, Map.of(), MetricResult.available(new BigDecimal("15.0"))));
+        });
+
+        LevelZoneDto zNear = new LevelZoneDto(
+                "Z_NEAR", AnalysisTimeframe.WEEKLY, new BigDecimal("192"), new BigDecimal("195"),
+                ZoneRole.SUPPORT, new BigDecimal("65"), NOW, 2, NOW, ZoneState.ACTIVE,
+                new BigDecimal("193.5"), new BigDecimal("5"), 1, ZoneStrengthLabel.MEDIUM, new BigDecimal("65"),
+                1, NOW, null, List.of(), List.of(), 2, 0, 5,
+                BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, false, List.of());
+        LevelZoneDto zFarStrong = new LevelZoneDto(
+                "Z_FAR", AnalysisTimeframe.WEEKLY, new BigDecimal("120"), new BigDecimal("125"),
+                ZoneRole.SUPPORT, new BigDecimal("88"), NOW, 2, NOW, ZoneState.ACTIVE,
+                new BigDecimal("122.5"), new BigDecimal("6"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("88"),
+                1, NOW, null, List.of(), List.of(), 4, 0, 5,
+                BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, false, List.of());
+        LevelZoneDto zBroken = new LevelZoneDto(
+                "Z_BRK", AnalysisTimeframe.WEEKLY, new BigDecimal("193"), new BigDecimal("196"),
+                ZoneRole.SUPPORT, new BigDecimal("70"), NOW, 2, NOW, ZoneState.ACTIVE,
+                new BigDecimal("194.5"), new BigDecimal("4"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("70"),
+                1, NOW, null, List.of(), List.of(), 2, 0, 5,
+                BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, false, List.of());
+        LevelZoneDto zOkSecond = new LevelZoneDto(
+                "Z_OK2", AnalysisTimeframe.WEEKLY, new BigDecimal("180"), new BigDecimal("184"),
+                ZoneRole.SUPPORT, new BigDecimal("60"), NOW, 2, NOW, ZoneState.ACTIVE,
+                new BigDecimal("182"), new BigDecimal("4"), 1, ZoneStrengthLabel.MEDIUM, new BigDecimal("60"),
+                1, NOW, null, List.of(), List.of(), 2, 0, 5,
+                BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, false, List.of());
+
+        when(supportResistanceService.analyze(any(), any(), any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            if ("F_STARTER_ONLY".equals(s.figi())) {
+                return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of());
+            }
+            if ("F_SKIP".equals(s.figi())) {
+                return MetricResult.available(new SupportResistanceDto(
+                        List.of(zBroken, zOkSecond), List.of(), List.of(), List.of(), List.of(), List.of(), null, List.of()));
+            }
+            if ("F_ONLY_BRK".equals(s.figi())) {
+                return MetricResult.available(new SupportResistanceDto(
+                        List.of(zBroken), List.of(), List.of(), List.of(), List.of(), List.of(), null, List.of()));
+            }
+            return MetricResult.available(new SupportResistanceDto(
+                    List.of(zNear, zFarStrong), List.of(), List.of(), List.of(), List.of(), List.of(), null, List.of()));
+        });
+
+        TradePlanDto nearPlan = new TradePlanDto(
+                "P_NEAR", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                new PriceRangeDto(new BigDecimal("192"), new BigDecimal("195"), "B1"),
+                EntryMethod.ZONE_LIMIT, "trigger",
+                new StopRuleDto(new BigDecimal("189.50"), new BigDecimal("190.75"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("5"), AnalysisTimeframe.WEEKLY, NOW, List.of(), new BigDecimal("5")),
+                List.of(
+                        new TargetDto(new BigDecimal("215"), new BigDecimal("0.5"), TargetAction.TAKE_PROFIT, "R1", "r1", List.of()),
+                        new TargetDto(new BigDecimal("230"), new BigDecimal("0.5"), TargetAction.TAKE_PROFIT, "R2", "r2", List.of())
+                ),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("195"), new BigDecimal("189.50"),
+                        new BigDecimal("5.5"), new BigDecimal("20"), new BigDecimal("3.6"),
+                        new BigDecimal("5.5"), new BigDecimal("19.5"), new BigDecimal("3.5"),
+                        new BigDecimal("20"), new BigDecimal("-5.5"))),
+                TradePlanStatus.WAITING_TRIGGER,
+                List.of(AnalysisReasonDto.of("ENTRY_PRICE_ABOVE_CAP", "TRADE_PLAN", "above cap")),
+                "Z_NEAR", 1, AnalysisTimeframe.WEEKLY, NOW, null, List.of());
+
+        TradePlanDto brokenWaitingPlan = new TradePlanDto(
+                "P_BRK", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                new PriceRangeDto(new BigDecimal("193"), new BigDecimal("196"), "B1"),
+                EntryMethod.ZONE_LIMIT, "trigger",
+                new StopRuleDto(new BigDecimal("191.00"), new BigDecimal("192.00"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("4"), AnalysisTimeframe.WEEKLY, NOW, List.of(), new BigDecimal("4")),
+                List.of(new TargetDto(new BigDecimal("210"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "R1", "r1", List.of())),
+                MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, List.of(), List.of()),
+                TradePlanStatus.WAITING_TRIGGER,
+                List.of(AnalysisReasonDto.of("HIGH_RISK_BREAKDOWN_DETECTED", "TRADE_PLAN", "high risk breakdown")),
+                "Z_BRK", 1, AnalysisTimeframe.WEEKLY, NOW, null, List.of());
+
+        TradePlanDto okSecondPlan = new TradePlanDto(
+                "P_OK2", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                new PriceRangeDto(new BigDecimal("180"), new BigDecimal("184"), "B1"),
+                EntryMethod.ZONE_LIMIT, "trigger",
+                new StopRuleDto(new BigDecimal("178.00"), new BigDecimal("179.00"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("4"), AnalysisTimeframe.WEEKLY, NOW, List.of(), new BigDecimal("4")),
+                List.of(new TargetDto(new BigDecimal("212"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "R1", "r1", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("184"), new BigDecimal("178"),
+                        new BigDecimal("6"), new BigDecimal("28"), new BigDecimal("4.6"),
+                        new BigDecimal("6"), new BigDecimal("27"), new BigDecimal("4.5"),
+                        new BigDecimal("28"), new BigDecimal("-6"))),
+                TradePlanStatus.WAITING_TRIGGER,
+                List.of(AnalysisReasonDto.of("ENTRY_PRICE_ABOVE_CAP", "TRADE_PLAN", "above cap")),
+                "Z_OK2", 1, AnalysisTimeframe.WEEKLY, NOW, null, List.of());
+
+        when(tradePlanService.build(any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            BigDecimal close = s.bars().getLast().close();
+            if ("F_SKIP".equals(s.figi())) {
+                return MetricResult.available(new TradePlanResultDto(List.of(brokenWaitingPlan, okSecondPlan), close, DAY,
+                        MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, List.of(), List.of()), List.of(), List.of(), true));
+            }
+            if ("F_ONLY_BRK".equals(s.figi())) {
+                return MetricResult.available(new TradePlanResultDto(List.of(brokenWaitingPlan), close, DAY,
+                        MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, List.of(), List.of()), List.of(), List.of(), true));
+            }
+            // 注意：故意不在 planList 放入 Z_FAR（模擬 TradePlanService 只取最近 3 道，而 eval.supportZone() 選中遠端強支撐 Z_FAR）
+            return MetricResult.available(new TradePlanResultDto(List.of(nearPlan), close, DAY,
+                    MetricResult.unavailable(MetricStatus.NOT_APPLICABLE, List.of(), List.of()), List.of(), List.of(), true));
+        });
+
+        PortfolioHealthSummaryDto summary = healthService.evaluate(DAY, NOW, PortfolioHealthCheckService.SOURCE_MODE_CLOSING_SNAPSHOT).summary();
+
+        // 1) F_NEAR：選中近端計畫（189.50 / 215 / 230），而非遠端強支撐 Z_FAR（117 / null）
+        HoldingHealthItemDto nearRes = summary.holdings().stream().filter(h -> "F_NEAR".equals(h.figi())).findFirst().orElseThrow();
+        assertThat(nearRes.referenceProtectiveStop()).isEqualByComparingTo("189.5000");
+        assertThat(nearRes.referenceStopSource()).isEqualTo("PLAN_PROTECTIVE_STOP");
+        assertThat(nearRes.referenceTarget1()).isEqualByComparingTo("215.0000");
+        assertThat(nearRes.referenceTarget2()).isEqualByComparingTo("230.0000");
+
+        // 2) F_SKIP：略過帶 HIGH_RISK_BREAKDOWN_DETECTED 的 P_BRK，改選第二道有效計畫 P_OK2
+        HoldingHealthItemDto skipRes = summary.holdings().stream().filter(h -> "F_SKIP".equals(h.figi())).findFirst().orElseThrow();
+        assertThat(skipRes.referenceProtectiveStop()).isEqualByComparingTo("178.0000");
+        assertThat(skipRes.referenceStopSource()).isEqualTo("PLAN_PROTECTIVE_STOP");
+        assertThat(skipRes.referenceTarget1()).isEqualByComparingTo("212.0000");
+
+        // 2b) F_ONLY_BRK：僅有失效支撐 Z_BRK 時，ATR 回退亦不得把剛排除的失效區選回
+        HoldingHealthItemDto onlyBrkRes = summary.holdings().stream().filter(h -> "F_ONLY_BRK".equals(h.figi())).findFirst().orElseThrow();
+        assertThat(onlyBrkRes.referenceProtectiveStop()).isNull();
+        assertThat(onlyBrkRes.referenceStopSource()).isNull();
+
+        // 3) F_STARTER：試單止損（198 - 0.5*2 = 197.00）緊於近端水平止損（189.50），升級為 STARTER_ANCHOR_STOP 並保留上方 T1/T2
+        HoldingHealthItemDto starterRes = summary.holdings().stream().filter(h -> "F_STARTER".equals(h.figi())).findFirst().orElseThrow();
+        assertThat(starterRes.referenceProtectiveStop()).isEqualByComparingTo("197.0000");
+        assertThat(starterRes.referenceStopSource()).isEqualTo("STARTER_ANCHOR_STOP");
+        assertThat(starterRes.referenceTarget1()).isEqualByComparingTo("215.0000");
+        assertThat(starterRes.referenceTarget2()).isEqualByComparingTo("230.0000");
+
+        // 4) F_STARTER_ONLY：創高無水平支撐，仍記錄第二軌緊貼均線止損 197.0000
+        HoldingHealthItemDto starterOnlyRes = summary.holdings().stream().filter(h -> "F_STARTER_ONLY".equals(h.figi())).findFirst().orElseThrow();
+        assertThat(starterOnlyRes.referenceProtectiveStop()).isEqualByComparingTo("197.0000");
+        assertThat(starterOnlyRes.referenceStopSource()).isEqualTo("STARTER_ANCHOR_STOP");
+        assertThat(starterOnlyRes.referenceTarget1()).isNull();
+        assertThat(starterOnlyRes.referenceTarget2()).isNull();
     }
 
     private PortfolioItem portfolioItem(String figi, String type, String shares, String avgCost, LocalDate basisDate) {

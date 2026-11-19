@@ -11,6 +11,14 @@ import {
   UnreadCountResponse,
 } from "./types/dto/portfolio";
 
+export const PORTFOLIO_UPDATED_EVENT = "portfolio:updated";
+
+export function dispatchPortfolioUpdated(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(PORTFOLIO_UPDATED_EVENT));
+  }
+}
+
 export async function fetchPortfolioOverview(): Promise<PortfolioOverview> {
   return (await apiClient.get<PortfolioOverview>("portfolio")).data;
 }

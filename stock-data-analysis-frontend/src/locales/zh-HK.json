@@ -1192,6 +1192,7 @@
       "saving": "儲存中…",
       "saved": "已儲存持倉／自選設定。",
       "deleted": "已自清單移除。",
+      "deleteFailed": "移除失敗：{{message}}",
       "deleteConfirm": "確定要移除 {{symbol}} 嗎？",
       "saveFailed": "儲存失敗：{{message}}",
       "loadFailed": "無法載入既有持倉狀態，為避免誤覆蓋已停用儲存；請重新開啟或稍後再試。"
@@ -1208,7 +1209,8 @@
       "loadFailed": "無法載入目前風控設定，為避免誤覆蓋已停用儲存；請重新開啟或稍後再試。"
     },
     "sizing": {
-      "sectionTitle": "倉位風險建議（1% 風險預算）",
+      "sectionTitle": "倉位風險建議（{{pct}} 風險預算）",
+      "sectionTitleNoPct": "倉位風險建議",
       "starterSectionTitle": "強勢回踩試單建議股數",
       "suggestedShares": "建議買入股數",
       "sharesUnit": "{{shares}} 股",

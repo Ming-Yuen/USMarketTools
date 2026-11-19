@@ -30,12 +30,20 @@ import {
 import { Close, DeleteOutline, EditOutlined } from "@mui/icons-material";
 import {
   deletePortfolioItem,
+  dispatchPortfolioUpdated,
   fetchPortfolioOverview,
   updatePortfolioRiskConfig,
   upsertPortfolioItem,
 } from "../services/portfolioApi";
 import { PortfolioItemType, PortfolioItemView, PortfolioOverview } from "../services/types/dto/portfolio";
 import { formatDecimal, formatMoney, formatPct } from "./portfolioFormatters";
+
+function extractApiErrorMessage(err: unknown): string {
+  const apiErr = err as { response?: { data?: { message?: string; detail?: string } }; message?: string };
+  return apiErr?.response?.data?.message
+    ?? apiErr?.response?.data?.detail
+    ?? (err instanceof Error ? err.message : String(err));
+}
 
 export interface PortfolioDrawerInitialStock {
   figi: string;
@@ -118,7 +126,7 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
     }
   };
 
-  const reloadOverview = useCallback(async () => {
+  const reloadOverview = useCallback(async (syncInitialStock = false) => {
     setLoading(true);
     setLoadFailed(false);
     try {
@@ -133,7 +141,7 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
       } else {
         setConfigLoaded(false);
       }
-      if (initialStock?.figi) {
+      if (syncInitialStock && initialStock?.figi) {
         const existing = data?.items?.find((it) => it.figi === initialStock.figi);
         if (existing) {
           fillEditForm(existing);
@@ -149,13 +157,41 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
   }, [initialStock?.figi, fillEditForm]);
 
   useEffect(() => {
-    reloadOverview();
+    reloadOverview(true);
   }, [reloadOverview]);
+
+  const resetEditFormForDeleted = (deletedFigi: string) => {
+    if (deletedFigi !== formOwnerFigi) {
+      return;
+    }
+    if (initialStock?.figi && deletedFigi === initialStock.figi) {
+      setFigiInput(initialStock.figi);
+      setFormOwnerFigi(initialStock.figi);
+      setLockedFigi(initialStock.figi);
+      setItemType("WATCHLIST");
+      setSharesInput("");
+      setAvgCostInput(initialStock.latestClosePrice != null ? String(initialStock.latestClosePrice) : "");
+      setBasisDateInput(
+        initialStock.latestClosePrice != null && initialStock.latestQuoteDate ? initialStock.latestQuoteDate : "",
+      );
+      setNotesInput("");
+      return;
+    }
+    setFigiInput("");
+    setFormOwnerFigi("");
+    setLockedFigi(null);
+    setItemType("WATCHLIST");
+    setSharesInput("");
+    setAvgCostInput("");
+    setBasisDateInput("");
+    setNotesInput("");
+  };
 
   const notifySaved = () => {
     queryClient?.invalidateQueries?.({ queryKey: ["portfolio-overview"] });
     queryClient?.invalidateQueries?.({ queryKey: ["portfolio-health"] });
     queryClient?.invalidateQueries?.({ queryKey: ["analysis-report"] });
+    dispatchPortfolioUpdated();
     onSaved?.();
   };
 
@@ -175,15 +211,13 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
         costBasisDate: itemType === "HOLDING" && basisDateInput.trim() ? basisDateInput.trim() : null,
         notes: notesInput.trim() || null,
       });
-      await reloadOverview();
+      await reloadOverview(false);
       notifySaved();
       setFeedback({ severity: "success", text: t("portfolio.form.saved") });
       setLockedFigi(initialStock?.figi ?? null);
       setTab(0);
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
-        ?? (err instanceof Error ? err.message : String(err));
-      setFeedback({ severity: "error", text: t("portfolio.form.saveFailed", { message: msg }) });
+      setFeedback({ severity: "error", text: t("portfolio.form.saveFailed", { message: extractApiErrorMessage(err) }) });
     } finally {
       setSubmitting(false);
     }
@@ -194,9 +228,12 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
     setFeedback(null);
     try {
       await deletePortfolioItem(figi);
-      await reloadOverview();
+      resetEditFormForDeleted(figi);
+      await reloadOverview(false);
       notifySaved();
       setFeedback({ severity: "success", text: t("portfolio.form.deleted") });
+    } catch (err: unknown) {
+      setFeedback({ severity: "error", text: t("portfolio.form.deleteFailed", { message: extractApiErrorMessage(err) }) });
     } finally {
       setSubmitting(false);
     }
@@ -216,13 +253,11 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
         maxSinglePositionPct: Number(maxSingleInput) / 100,
         maxSectorExposurePct: Number(maxSectorInput) / 100,
       });
-      await reloadOverview();
+      await reloadOverview(false);
       notifySaved();
       setFeedback({ severity: "success", text: t("portfolio.config.saved") });
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
-        ?? (err instanceof Error ? err.message : String(err));
-      setFeedback({ severity: "error", text: t("portfolio.config.saveFailed", { message: msg }) });
+      setFeedback({ severity: "error", text: t("portfolio.config.saveFailed", { message: extractApiErrorMessage(err) }) });
     } finally {
       setSubmitting(false);
     }
@@ -502,7 +537,7 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
             <TextField
               label={t("portfolio.config.riskPerTradePct")}
               type="number"
-              inputProps={{ step: "0.1", min: "0.1", max: "25" }}
+              inputProps={{ step: "0.01", min: "0.01", max: "25" }}
               value={riskPctInput}
               onChange={(e) => setRiskPctInput(e.target.value)}
               disabled={!configLoaded}
@@ -513,7 +548,7 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
             <TextField
               label={t("portfolio.config.maxSinglePositionPct")}
               type="number"
-              inputProps={{ step: "0.5", min: "1", max: "100" }}
+              inputProps={{ step: "0.01", min: "0.01", max: "100" }}
               value={maxSingleInput}
               onChange={(e) => setMaxSingleInput(e.target.value)}
               disabled={!configLoaded}
@@ -524,7 +559,7 @@ const PortfolioDrawerInner: React.FC<Omit<PortfolioDrawerProps, "open">> = ({
             <TextField
               label={t("portfolio.config.maxSectorExposurePct")}
               type="number"
-              inputProps={{ step: "1", min: "1", max: "100" }}
+              inputProps={{ step: "0.01", min: "0.01", max: "100" }}
               value={maxSectorInput}
               onChange={(e) => setMaxSectorInput(e.target.value)}
               disabled={!configLoaded}

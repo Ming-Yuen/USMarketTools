@@ -5,6 +5,7 @@ import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisContext;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisHorizon;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisReasonDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.AnalysisTimeframe;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosis;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.BreakoutDiagnosisDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FundamentalSnapshotDto;
@@ -27,6 +28,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanResultDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.TradePlanStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.HoldingHealthItemDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioAlertDto;
@@ -912,10 +914,12 @@ public class PortfolioHealthCheckService {
             }
         }
 
-        // 8. 記錄當日有效參考止損與 T1/T2（保留原始目標槽位，不將 T2 錯升為 T1），作為隔日收盤體檢之事前基準
-        TradePlanDto matchedPlan = findMatchingPlan(planList, eval.supportZone());
-        BigDecimal nextRefStop = resolveReferenceStop(matchedPlan, eval.supportZone());
-        String nextRefStopSource = resolveReferenceStopSource(matchedPlan, eval.supportZone());
+        // 8. 記錄當日有效參考止損與 T1/T2（優先近端有效計畫，再回退近端週線支撐並疊加第二軌試單緊貼止損），作為隔日收盤體檢之事前基準
+        SupportResistanceDto supportValue = support.status() == MetricStatus.AVAILABLE ? support.value() : null;
+        HoldingReferenceSelection nextRef = resolveHoldingReference(planList, supportValue, eval.trendPullbackStarter(), evalPrice);
+        TradePlanDto matchedPlan = nextRef.matchedPlan();
+        BigDecimal nextRefStop = nextRef.protectiveStop();
+        String nextRefStopSource = nextRef.stopSource();
         BigDecimal nextT1 = null;
         BigDecimal nextT2 = null;
         if (matchedPlan != null && matchedPlan.targets() != null) {
@@ -1345,29 +1349,139 @@ public class PortfolioHealthCheckService {
         return null;
     }
 
-    private BigDecimal resolveReferenceStop(TradePlanDto matchedPlan, LevelZoneDto supportZone) {
-        if (matchedPlan != null && matchedPlan.stop() != null && matchedPlan.stop().protectivePrice() != null
-                && matchedPlan.stop().protectivePrice().signum() > 0) {
-            return matchedPlan.stop().protectivePrice().setScale(4, RoundingMode.HALF_UP);
+    private record HoldingReferenceSelection(TradePlanDto matchedPlan, BigDecimal protectiveStop, String stopSource) {}
+
+    private HoldingReferenceSelection resolveHoldingReference(List<TradePlanDto> planList,
+                                                              SupportResistanceDto supportValue,
+                                                              TrendPullbackStarterDto starter,
+                                                              BigDecimal evalPrice) {
+        TradePlanDto matchedPlan = null;
+        BigDecimal refStop = null;
+        String stopSource = null;
+
+        if (planList != null && evalPrice != null) {
+            for (TradePlanDto plan : planList) {
+                if (isEligibleHoldingReferencePlan(plan, evalPrice)) {
+                    matchedPlan = plan;
+                    refStop = plan.stop().protectivePrice().setScale(4, RoundingMode.HALF_UP);
+                    stopSource = "PLAN_PROTECTIVE_STOP";
+                    break;
+                }
+            }
         }
-        if (supportZone != null && supportZone.lower() != null && supportZone.anchorAtr() != null
-                && supportZone.anchorAtr().signum() > 0) {
-            BigDecimal fallback = supportZone.lower().subtract(supportZone.anchorAtr().multiply(new BigDecimal("0.50"), MC), MC);
-            return fallback.signum() > 0 ? fallback.setScale(4, RoundingMode.HALF_UP) : null;
+
+        if (refStop == null && supportValue != null && evalPrice != null) {
+            List<LevelZoneDto> orderedZones = new ArrayList<>();
+            if (supportValue.containingZones() != null) {
+                for (LevelZoneDto z : supportValue.containingZones()) {
+                    if (z != null && z.role() == ZoneRole.SUPPORT) {
+                        orderedZones.add(z);
+                    }
+                }
+            }
+            if (supportValue.supports() != null) {
+                for (LevelZoneDto z : supportValue.supports()) {
+                    if (z != null && z.role() == ZoneRole.SUPPORT) {
+                        orderedZones.add(z);
+                    }
+                }
+            }
+            Set<String> seenZoneIds = new LinkedHashSet<>();
+            for (LevelZoneDto zone : orderedZones) {
+                if (zone.id() != null && !seenZoneIds.add(zone.id())) {
+                    continue;
+                }
+                if (zone.timeframe() != AnalysisTimeframe.WEEKLY || zone.state() != ZoneState.ACTIVE
+                        || zone.lower() == null || zone.anchorAtr() == null || zone.anchorAtr().signum() <= 0) {
+                    continue;
+                }
+                if (isZoneDisqualifiedForReferenceStop(zone, planList, supportValue)) {
+                    continue;
+                }
+                BigDecimal fallback = zone.lower().subtract(zone.anchorAtr().multiply(new BigDecimal("0.50"), MC), MC);
+                if (fallback.signum() > 0 && fallback.compareTo(evalPrice) < 0) {
+                    refStop = fallback.setScale(4, RoundingMode.HALF_UP);
+                    stopSource = "ZONE_ANCHOR_ATR_STOP";
+                    break;
+                }
+            }
         }
-        return null;
+
+        if (starter != null && starter.eligible() && starter.suggestedStop() != null
+                && starter.suggestedStop().signum() > 0 && evalPrice != null
+                && starter.suggestedStop().compareTo(evalPrice) < 0) {
+            BigDecimal starterStop = starter.suggestedStop().setScale(4, RoundingMode.HALF_UP);
+            if (refStop == null || starterStop.compareTo(refStop) > 0) {
+                refStop = starterStop;
+                stopSource = "STARTER_ANCHOR_STOP";
+            }
+        }
+
+        return new HoldingReferenceSelection(matchedPlan, refStop, refStop != null ? stopSource : null);
     }
 
-    private String resolveReferenceStopSource(TradePlanDto matchedPlan, LevelZoneDto supportZone) {
-        if (matchedPlan != null && matchedPlan.stop() != null && matchedPlan.stop().protectivePrice() != null
-                && matchedPlan.stop().protectivePrice().signum() > 0) {
-            return "PLAN_PROTECTIVE_STOP";
+    private boolean isEligibleHoldingReferencePlan(TradePlanDto plan, BigDecimal evalPrice) {
+        if (plan == null || evalPrice == null) {
+            return false;
         }
-        if (supportZone != null && supportZone.lower() != null && supportZone.anchorAtr() != null
-                && supportZone.anchorAtr().signum() > 0) {
-            return "ZONE_ANCHOR_ATR_STOP";
+        if (plan.status() == TradePlanStatus.UNAVAILABLE || plan.status() == TradePlanStatus.INVALIDATED) {
+            return false;
         }
-        return null;
+        if (hasAnyPlanReason(plan, "PROTECTIVE_STOP_BREACHED", "TECHNICAL_INVALIDATION_CONFIRMED",
+                "HIGH_RISK_BREAKDOWN_DETECTED", "RECLAIM_REQUIRED")) {
+            return false;
+        }
+        return plan.stop() != null && plan.stop().protectivePrice() != null
+                && plan.stop().protectivePrice().signum() > 0
+                && plan.stop().protectivePrice().compareTo(evalPrice) < 0;
+    }
+
+    private boolean isZoneDisqualifiedForReferenceStop(LevelZoneDto zone,
+                                                       List<TradePlanDto> planList,
+                                                       SupportResistanceDto supportValue) {
+        if (planList != null && zone.id() != null) {
+            for (TradePlanDto plan : planList) {
+                if (plan != null && zone.id().equals(plan.sourceZoneId())
+                        && (plan.sourceBoundsVersion() <= 0 || plan.sourceBoundsVersion() == zone.boundsVersion())) {
+                    if (plan.status() == TradePlanStatus.INVALIDATED || plan.status() == TradePlanStatus.UNAVAILABLE
+                            || hasAnyPlanReason(plan, "PROTECTIVE_STOP_BREACHED", "TECHNICAL_INVALIDATION_CONFIRMED",
+                                    "HIGH_RISK_BREAKDOWN_DETECTED", "RECLAIM_REQUIRED")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (supportValue != null) {
+            if (supportValue.zoneDiagnoses() != null) {
+                for (BreakoutDiagnosisDto diag : supportValue.zoneDiagnoses()) {
+                    if (diag != null && diag.matchesZone(zone) && diag.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN) {
+                        return true;
+                    }
+                }
+            }
+            BreakoutDiagnosisDto primary = supportValue.breakoutDiagnosis();
+            if (primary != null && primary.matchesZone(zone) && primary.diagnosis() == BreakoutDiagnosis.HIGH_RISK_BREAKDOWN) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasAnyPlanReason(TradePlanDto plan, String... reasonCodes) {
+        if (plan == null || plan.reasons() == null || reasonCodes == null) {
+            return false;
+        }
+        for (AnalysisReasonDto r : plan.reasons()) {
+            if (r == null || r.code() == null) {
+                continue;
+            }
+            for (String target : reasonCodes) {
+                if (target.equals(r.code())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private FutuObservationsDto buildReadOnlyForwardObservations(LocalDate evalDate,

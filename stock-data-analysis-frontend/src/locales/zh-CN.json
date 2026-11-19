@@ -1192,6 +1192,7 @@
       "saving": "保存中…",
       "saved": "已保存持仓／自选设置。",
       "deleted": "已从清单移除。",
+      "deleteFailed": "移除失败：{{message}}",
       "deleteConfirm": "确定要移除 {{symbol}} 吗？",
       "saveFailed": "保存失败：{{message}}",
       "loadFailed": "无法加载既有持仓状态，为避免误覆盖已禁用保存；请重新打开或稍后再试。"
@@ -1208,7 +1209,8 @@
       "loadFailed": "无法加载当前风控设置，为避免误覆盖已禁用保存；请重新打开或稍后再试。"
     },
     "sizing": {
-      "sectionTitle": "仓位风险建议（1% 风险预算）",
+      "sectionTitle": "仓位风险建议（{{pct}} 风险预算）",
+      "sectionTitleNoPct": "仓位风险建议",
       "starterSectionTitle": "强势回踩试单建议股数",
       "suggestedShares": "建议买入股数",
       "sharesUnit": "{{shares}} 股",

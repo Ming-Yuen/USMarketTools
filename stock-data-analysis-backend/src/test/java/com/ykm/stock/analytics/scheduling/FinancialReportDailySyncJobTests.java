@@ -257,6 +257,33 @@ class FinancialReportDailySyncJobTests {
     }
 
     @Test
+    void unsupportedOtcStockSkipsRemainingStatementsAndContinuesBatch() {
+        StockStatus otcStatus = new StockStatus();
+        otcStatus.setFigi("BBG000BZMKF4");
+        status.setFigi("F1");
+        when(stocks.findFinancialReportSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
+                new ActiveStockWithStatus(stock("BBG000BZMKF4", "SCKT", "Common Stock"), otcStatus),
+                new ActiveStockWithStatus(stock("F1", "AAPL", "Common Stock"), status)));
+        when(statuses.findAllByIdForUpdate(List.of("F1"))).thenReturn(List.of(status));
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsFinancialReportStocks()).thenReturn(Set.of("SCKT", "AAPL"));
+        when(session.financialStatements("SCKT", FinancialStatementsType_Income, null, 50)).thenReturn(null);
+        when(session.financialStatements(eq("AAPL"), any(), isNull(), eq(50))).thenReturn(page("-1"));
+        when(session.financialStatements("AAPL", FinancialStatementsType_Income, null, 50))
+                .thenReturn(page("-1", report("2025-09-30", F10Type_Annual)));
+
+        job.execute(context);
+
+        verify(session).financialStatements("SCKT", FinancialStatementsType_Income, null, 50);
+        verify(session, never()).financialStatements("SCKT", FinancialStatementsType_BalanceSheet, null, 50);
+        verify(session, never()).financialStatements("SCKT", FinancialStatementsType_CashFlow, null, 50);
+        verify(statuses, never()).findAllByIdForUpdate(List.of("BBG000BZMKF4"));
+        verify(entityManager, times(1)).persist(any());
+        assertThat(otcStatus.getFinancialReportDate()).isNull();
+        assertThat(status.getFinancialReportDate()).isEqualTo(LocalDate.of(2025, 9, 30));
+    }
+
+    @Test
     void persistenceFailureDoesNotAdvanceWatermark() {
         openAapl();
         when(session.financialStatements(eq("AAPL"), any(), isNull(), eq(50))).thenReturn(page("-1"));

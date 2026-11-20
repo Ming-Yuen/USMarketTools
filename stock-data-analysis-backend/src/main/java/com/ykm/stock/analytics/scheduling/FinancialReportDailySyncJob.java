@@ -142,8 +142,18 @@ public class FinancialReportDailySyncJob implements Job {
                 int pageSize = watermark == null ? BACKFILL_PAGE_SIZE : INCREMENTAL_PAGE_SIZE;
                 try {
                     List<DownloadedReport> downloadedReports = new ArrayList<>();
+                    boolean unsupported = false;
                     for (FinancialStatementsType statementType : STATEMENT_TYPES) {
-                        downloadedReports.addAll(downloadStatement(session, stock, statementType, firstPeriodEnd, pageSize));
+                        List<DownloadedReport> statementReports = downloadStatement(session, stock, statementType, firstPeriodEnd, pageSize);
+                        if (statementReports == null) {
+                            unsupported = true;
+                            break;
+                        }
+                        downloadedReports.addAll(statementReports);
+                    }
+                    if (unsupported) {
+                        unsupportedStocks++;
+                        continue;
                     }
                     if (downloadedReports.isEmpty()) {
                         stocksWithoutReports++;
@@ -233,6 +243,7 @@ public class FinancialReportDailySyncJob implements Job {
         String cursor = null;
         while (true) {
             QotGetFinancialsStatements.S2C page = session.financialStatements(stock.getSymbol(), statementType, cursor, pageSize);
+            if (page == null) return null;
             Instant observedAt = dateTimeService.now();
             Map<Long, String> fieldNames = new HashMap<>();
             for (QotGetFinancialsStatements.FinancialFieldInfo field : page.getStructureListList()) {

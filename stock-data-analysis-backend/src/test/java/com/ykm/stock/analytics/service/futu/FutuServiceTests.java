@@ -1,6 +1,7 @@
 package com.ykm.stock.analytics.service.futu;
 
 import com.futu.openapi.pb.QotCommon;
+import com.futu.openapi.pb.QotGetFinancialsStatements;
 import com.futu.openapi.pb.QotRequestRehab;
 import com.futu.openapi.pb.QotGetOwnerPlate;
 import com.futu.openapi.pb.QotGetStaticInfo;
@@ -35,6 +36,44 @@ class FutuServiceTests {
             assertThat(session.shareCounts(List.of("NXXT", "MSFT"))).containsExactlyEntriesOf(Map.of("MSFT", new FutuService.ShareSnapshot(100, null, null, null)));
         }
         verify(client).getSecuritySnapshots(List.of("MSFT"));
+    }
+
+    @Test
+    void supportedUsStocksExcludesUsPinkOtcSymbols() {
+        QotGetStaticInfo.Response stockInfo = QotGetStaticInfo.Response.newBuilder().setRetType(0)
+                .setS2C(QotGetStaticInfo.S2C.newBuilder()
+                        .addStaticInfoList(staticInfoItem(STOCK, "AAPL", QotCommon.ExchType.ExchType_US_Nasdaq_VALUE))
+                        .addStaticInfoList(staticInfoItem(STOCK, "SCKT", QotCommon.ExchType.ExchType_US_Pink_VALUE)))
+                .build();
+        when(client.getStockBasicInfo()).thenReturn(stockInfo);
+        when(client.getTrustBasicInfo()).thenReturn(staticInfo(TRUST, List.of("EQIX")));
+
+        try (FutuService.ObservationSession session = service.openObservationSession()) {
+            assertThat(session.supportedUsStocks()).containsExactly("AAPL");
+            assertThat(session.supportedUsFinancialReportStocks()).containsExactlyInAnyOrder("AAPL", "EQIX");
+        }
+    }
+
+    @Test
+    void financialStatementsReturnsNullForUnsupportedUsOtcButFailsOnOtherErrors() {
+        when(client.getFinancialStatements("SCKT", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                .thenReturn(QotGetFinancialsStatements.Response.newBuilder()
+                        .setRetType(-1).setErrCode(0).setRetMsg("US OTC market quote is not available for SCKT.").build());
+        when(client.getFinancialStatements("AAPL", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                .thenReturn(QotGetFinancialsStatements.Response.newBuilder()
+                        .setRetType(-1).setErrCode(0).setRetMsg("US OTC market quote is not available for SCKT.").build());
+        when(client.getFinancialStatements("MSFT", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                .thenReturn(QotGetFinancialsStatements.Response.newBuilder()
+                        .setRetType(-1).setErrCode(403).setRetMsg("Permission denied").build());
+
+        try (FutuService.ObservationSession session = service.openObservationSession()) {
+            assertThat(session.financialStatements("SCKT", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                    .isNull();
+            assertThatThrownBy(() -> session.financialStatements("AAPL", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                    .hasMessage("FUTU_GET_FINANCIALS_STATEMENTS_FAILED:-1:0:US OTC market quote is not available for SCKT.");
+            assertThatThrownBy(() -> session.financialStatements("MSFT", QotCommon.FinancialStatementsType.FinancialStatementsType_Income, null, 10))
+                    .hasMessage("FUTU_GET_FINANCIALS_STATEMENTS_FAILED:-1:403:Permission denied");
+        }
     }
 
     @Test
@@ -364,10 +403,15 @@ class FutuServiceTests {
 
     private static QotGetStaticInfo.Response staticInfo(int securityType, List<String> symbols) {
         QotGetStaticInfo.S2C.Builder result = QotGetStaticInfo.S2C.newBuilder();
-        for (String symbol : symbols) result.addStaticInfoList(QotCommon.SecurityStaticInfo.newBuilder().setBasic(
-                QotCommon.SecurityStaticBasic.newBuilder().setSecurity(security(US, symbol)).setId(1).setLotSize(1)
-                        .setSecType(securityType).setName(symbol).setListTime("2000-01-01").setDelisting(false)));
+        for (String symbol : symbols) result.addStaticInfoList(staticInfoItem(securityType, symbol, QotCommon.ExchType.ExchType_US_Nasdaq_VALUE));
         return QotGetStaticInfo.Response.newBuilder().setRetType(0).setS2C(result).build();
+    }
+
+    private static QotCommon.SecurityStaticInfo staticInfoItem(int securityType, String symbol, int exchType) {
+        return QotCommon.SecurityStaticInfo.newBuilder().setBasic(
+                QotCommon.SecurityStaticBasic.newBuilder().setSecurity(security(US, symbol)).setId(1).setLotSize(1)
+                        .setSecType(securityType).setName(symbol).setListTime("2000-01-01").setDelisting(false)
+                        .setExchType(exchType)).build();
     }
 
     private static QotGetOwnerPlate.Response ownerResponse(List<QotGetOwnerPlate.SecurityOwnerPlate> owners) {

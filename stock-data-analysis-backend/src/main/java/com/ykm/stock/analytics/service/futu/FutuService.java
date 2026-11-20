@@ -39,8 +39,10 @@ import java.util.function.Supplier;
 @Service
 public class FutuService {
     private static final int US = QotCommon.QotMarket.QotMarket_US_Security_VALUE;
+    private static final int US_PINK = QotCommon.ExchType.ExchType_US_Pink_VALUE;
     private static final int STOCK = QotCommon.SecurityType.SecurityType_Eqty_VALUE;
     private static final int TRUST = QotCommon.SecurityType.SecurityType_Trust_VALUE;
+    private static final String US_OTC_UNAVAILABLE_PREFIX = "US OTC market quote is not available for ";
     private static final int BATCH_SIZE = 200;
     private final Supplier<FutuQuoteClient> clients;
     private final Runnable ownerPlatePermit;
@@ -104,7 +106,8 @@ public class FutuService {
         Set<String> supported = new LinkedHashSet<>();
         for (QotCommon.SecurityStaticInfo item : info.getS2C().getStaticInfoListList()) {
             QotCommon.SecurityStaticBasic basic = item.getBasic();
-            if (basic.getSecurity().getMarket() == US && basic.getSecType() == securityType && !basic.getDelisting())
+            if (basic.getSecurity().getMarket() == US && basic.getSecType() == securityType
+                    && !basic.getDelisting() && basic.getExchType() != US_PINK)
                 supported.add(basic.getSecurity().getCode());
         }
         return Set.copyOf(supported);
@@ -244,15 +247,12 @@ public class FutuService {
                 snapshotLimiter.acquire();
                 response = client.getSecuritySnapshots(List.copyOf(remaining));
                 if (response.getRetType() == 0) break;
-                String prefix = "US OTC market quote is not available for ";
                 String error = response.getRetMsg();
-                if (error.startsWith(prefix) && error.endsWith(".")) {
-                    String unsupported = error.substring(prefix.length(), error.length() - 1);
-                    if (remaining.remove(unsupported)) {
-                        log.warn("Share snapshot unsupported | symbol={} reason={}", unsupported, error);
-                        if (remaining.isEmpty()) return Map.of();
-                        continue;
-                    }
+                String unsupported = unsupportedUsOtcSymbol(error);
+                if (unsupported != null && remaining.remove(unsupported)) {
+                    log.warn("Share snapshot unsupported | symbol={} reason={}", unsupported, error);
+                    if (remaining.isEmpty()) return Map.of();
+                    continue;
                 }
                 throw new IllegalStateException("FUTU_SHARE_SNAPSHOT_FAILED:" + response.getRetType() + ":" + error);
             }
@@ -332,12 +332,18 @@ public class FutuService {
             return supported;
         }
 
+        /** 未開通美股 OTC 行情時回傳 null 讓呼叫端跳過該股，其餘錯誤一律拋出。 */
         public QotGetFinancialsStatements.S2C financialStatements(String symbol, QotCommon.FinancialStatementsType statement,
                                                                   String cursor, int size) {
             valuationLimiter.acquire();
             QotGetFinancialsStatements.Response response = client.getFinancialStatements(symbol, statement, cursor, size);
-            if (response.getRetType() != 0)
+            if (response.getRetType() != 0) {
+                if (symbol.equals(unsupportedUsOtcSymbol(response.getRetMsg()))) {
+                    log.warn("Financial statements unsupported | symbol={} statement={} reason={}", symbol, statement, response.getRetMsg());
+                    return null;
+                }
                 throw new IllegalStateException("FUTU_GET_FINANCIALS_STATEMENTS_FAILED:" + response.getRetType() + ":" + response.getErrCode() + ":" + response.getRetMsg());
+            }
             if (!response.hasS2C()) throw new IllegalStateException("FUTU_FINANCIAL_STATEMENTS_MISSING");
             return response.getS2C();
         }
@@ -355,6 +361,13 @@ public class FutuService {
         public void close() {
             client.close();
         }
+    }
+
+    private static String unsupportedUsOtcSymbol(String error) {
+        if (error != null && error.startsWith(US_OTC_UNAVAILABLE_PREFIX) && error.endsWith(".")) {
+            return error.substring(US_OTC_UNAVAILABLE_PREFIX.length(), error.length() - 1);
+        }
+        return null;
     }
 
     private static Runnable ownerPlateLimiter() {

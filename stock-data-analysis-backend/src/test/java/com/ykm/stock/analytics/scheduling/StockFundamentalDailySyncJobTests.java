@@ -306,6 +306,42 @@ class StockFundamentalDailySyncJobTests {
         assertThat(st.getFundamentalSyncDate()).isEqualTo(FRIDAY_HK);
     }
 
+    /** Scenario：週六富途拆股遇個別未知代碼（Unknown stock. ATTR）時記錄該股 splitMessage、不推水位並繼續處理後續股票；遇連線中斷仍立即中止。 */
+    @Test
+    void recordsPerStockSplitFailureWithoutAbortingJobAndStillAbortsOnTransportFailure() {
+        when(dateTimeService.now()).thenReturn(SATURDAY_HK_MORNING);
+        Stock unknown = stock("F_ATTR", "ATTR", "ETP", null);
+        Stock ok = stock("F_SPY", "SPY", "ETF", null);
+        StockStatus unknownStatus = status("F_ATTR", null, null, null, null);
+        StockStatus okStatus = status("F_SPY", LocalDate.of(2026, 11, 18), null, null, null);
+
+        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(unknown, ok));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(unknownStatus, okStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_ATTR"))).thenReturn(List.of(unknownStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_SPY"))).thenReturn(List.of(okStatus));
+        when(session.rehab("ATTR")).thenThrow(new IllegalStateException("FUTU_REQUEST_REHAB_FAILED:-1:0:Unknown stock. ATTR"));
+        when(session.rehab("SPY")).thenReturn(List.of());
+        when(splitRepository.findByFigiAndExecutionDateBetween(eq("F_SPY"), any(), any())).thenReturn(List.of());
+
+        job.execute(null);
+
+        assertThat(unknownStatus.getSplitMessage()).contains("FUTU_REQUEST_REHAB_FAILED:-1:0:Unknown stock. ATTR");
+        assertThat(unknownStatus.getSplitDate()).isNull();
+        assertThat(unknownStatus.getFundamentalSyncDate()).isNull();
+        assertThat(okStatus.getSplitDate()).isEqualTo(LAST_CLOSED_TRADING_DAY);
+        assertThat(okStatus.getFundamentalSyncDate()).isEqualTo(SATURDAY_HK);
+
+        // 連線中斷屬於會話級故障，仍必須中止整輪排程
+        Stock disconnected = stock("F_DISC", "DISC", "ETF", null);
+        StockStatus disconnectedStatus = status("F_DISC", null, null, null, null);
+        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(disconnected));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(disconnectedStatus));
+        when(session.rehab("DISC")).thenThrow(new IllegalStateException("FUTU_DISCONNECTED:-1"));
+
+        assertThatThrownBy(() -> job.execute(null)).hasMessage("FUTU_DISCONNECTED:-1");
+        assertThat(disconnectedStatus.getFundamentalSyncDate()).isNull();
+    }
+
     private Stock stock(String figi, String symbol, String type, String cik) {
         Stock stock = new Stock();
         stock.setFigi(figi);

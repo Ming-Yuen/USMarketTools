@@ -104,7 +104,7 @@ public class StockFundamentalDailySyncJob implements Job {
     private record DownloadedReport(FinancialReport report, LocalDate sourceDate, boolean existingOnly) {}
 
     private record SplitDownload(Stock stock, List<StockSplit> splits, LocalDate from, boolean fullReconcile,
-                                 boolean preserveExistingDiscrepancy, boolean ambiguousSymbol) {}
+                                 boolean preserveExistingDiscrepancy, boolean ambiguousSymbol, String failureMessage) {}
 
     private record ReportDownload(Stock stock, List<DownloadedReport> reports, boolean attempted, boolean unsupported) {}
 
@@ -114,7 +114,8 @@ public class StockFundamentalDailySyncJob implements Job {
     private record CompanyGroup(String groupKey, String canonicalCik, List<Stock> members,
                                 boolean fullPatrol, boolean hasReportEligible, boolean hasSecEligible) {}
 
-    private record GroupCommitResult(boolean valuationInputChanged, boolean splitDiscrepancy, int reportsSaved, int secFactChanges) {}
+    private record GroupCommitResult(boolean valuationInputChanged, boolean splitDiscrepancy, boolean splitFailed,
+                                     int reportsSaved, int secFactChanges) {}
 
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
@@ -263,6 +264,7 @@ public class StockFundamentalDailySyncJob implements Job {
         int secFactChanges = 0;
         int unsupportedReportStocks = 0;
         int splitDiscrepancies = 0;
+        int splitFailures = 0;
         List<String> missingSecEntries = new ArrayList<>();
 
         if (!fullProcessingGroups.isEmpty()) {
@@ -321,6 +323,7 @@ public class StockFundamentalDailySyncJob implements Job {
                         reportsSaved += result.reportsSaved();
                         secFactChanges += result.secFactChanges();
                         if (result.splitDiscrepancy()) splitDiscrepancies++;
+                        if (result.splitFailed()) splitFailures++;
                         if (result.valuationInputChanged()) {
                             for (Stock member : group.members()) {
                                 if (SecurityTypePolicy.supportsValuation(member.getStockType())) {
@@ -345,9 +348,9 @@ public class StockFundamentalDailySyncJob implements Job {
             log.warn("SEC Company Facts ZIP missing entries | count={} ciks={}",
                     missingSecEntries.size(), missingSecEntries.stream().limit(30).toList());
         }
-        log.info("Fundamental daily sync completed | todayHk={} fastSplitStocks={} groups={} reports={} secChanges={} rebuiltValuationStocks={} unsupportedReports={} splitDiscrepancies={}",
+        log.info("Fundamental daily sync completed | todayHk={} fastSplitStocks={} groups={} reports={} secChanges={} rebuiltValuationStocks={} unsupportedReports={} splitDiscrepancies={} splitFailures={}",
                 todayHk, fastAdvanced, groupsProcessed, reportsSaved, secFactChanges,
-                modifiedValuationFigis.size(), unsupportedReportStocks, splitDiscrepancies);
+                modifiedValuationFigis.size(), unsupportedReportStocks, splitDiscrepancies, splitFailures);
     }
 
     private Set<String> parseRequestedFigis(JobExecutionContext context) {
@@ -597,23 +600,44 @@ public class StockFundamentalDailySyncJob implements Job {
         for (Stock stock : group.members()) {
             if (!splitEligibleFigis.contains(stock.getFigi())) continue;
             if (splitSymbolCounts.getOrDefault(stock.getSymbol(), 0L) != 1L) {
-                downloads.add(new SplitDownload(stock, List.of(), splitHistoryStartDate, false, false, true));
+                downloads.add(new SplitDownload(stock, List.of(), splitHistoryStartDate, false, false, true, null));
                 continue;
             }
             StockStatus snapshot = initialStatuses.get(stock.getFigi());
             boolean fullReconcile = group.fullPatrol() || snapshot == null || snapshot.getSplitDate() == null;
-            if (fullReconcile) {
-                List<QotCommon.Rehab> source = futuSession.rehab(stock.getSymbol());
-                List<StockSplit> splits = convertFutuSplits(stock, source, splitHistoryStartDate, through, observedAt);
-                downloads.add(new SplitDownload(stock, splits, splitHistoryStartDate, true, false, false));
-            } else {
-                LocalDate from = incrementalSplitFrom(snapshot.getSplitDate());
-                List<MassiveSplit> rawEvents = massiveSplitsByTicker.getOrDefault(stock.getSymbol(), List.of());
-                List<StockSplit> converted = convertMassiveSplits(stock, rawEvents, from, through, observedAt);
-                downloads.add(new SplitDownload(stock, converted, from, false, hasSplitDiscrepancyMessage(snapshot), false));
+            LocalDate from = fullReconcile ? splitHistoryStartDate : incrementalSplitFrom(snapshot.getSplitDate());
+            try {
+                if (fullReconcile) {
+                    List<QotCommon.Rehab> source = futuSession.rehab(stock.getSymbol());
+                    List<StockSplit> splits = convertFutuSplits(stock, source, splitHistoryStartDate, through, observedAt);
+                    downloads.add(new SplitDownload(stock, splits, splitHistoryStartDate, true, false, false, null));
+                } else {
+                    List<MassiveSplit> rawEvents = massiveSplitsByTicker.getOrDefault(stock.getSymbol(), List.of());
+                    List<StockSplit> converted = convertMassiveSplits(stock, rawEvents, from, through, observedAt);
+                    downloads.add(new SplitDownload(stock, converted, from, false, hasSplitDiscrepancyMessage(snapshot), false, null));
+                }
+            } catch (RuntimeException failure) {
+                if (isFatalFutuTransportError(failure)) {
+                    throw failure;
+                }
+                String message = formatSplitFailureMessage(failure);
+                log.warn("Split stock failed | symbol={} figi={} reason={}", stock.getSymbol(), stock.getFigi(), message);
+                downloads.add(new SplitDownload(stock, List.of(), from, fullReconcile, false, false, message));
             }
         }
         return downloads;
+    }
+
+    private boolean isFatalFutuTransportError(RuntimeException failure) {
+        String reason = String.valueOf(failure.getMessage());
+        return reason.startsWith("FUTU_DISCONNECTED") || reason.startsWith("FUTU_CONNECT_")
+                || reason.endsWith("_TIMEOUT") || reason.endsWith("_SEND_FAILED")
+                || reason.endsWith("_REPLY_MISMATCH") || reason.endsWith("_INTERRUPTED");
+    }
+
+    private String formatSplitFailureMessage(RuntimeException failure) {
+        String message = "ERROR:" + failure.getClass().getSimpleName() + ":" + failure.getMessage();
+        return message.substring(0, Math.min(1000, message.length()));
     }
 
     private List<ReportDownload> prepareGroupReports(CompanyGroup group,
@@ -736,6 +760,7 @@ public class StockFundamentalDailySyncJob implements Job {
 
             boolean valuationInputChanged = false;
             boolean splitDiscrepancy = false;
+            boolean splitFailed = false;
             int reportsSaved = 0;
             int secFactChanges = 0;
 
@@ -744,6 +769,12 @@ public class StockFundamentalDailySyncJob implements Job {
                 StockStatus status = lockedStatuses.get(sd.stock().getFigi());
                 if (sd.ambiguousSymbol()) {
                     status.setSplitMessage("ERROR:IllegalStateException:SPLIT_CURRENT_SYMBOL_AMBIGUOUS");
+                    splitFailed = true;
+                    continue;
+                }
+                if (sd.failureMessage() != null) {
+                    status.setSplitMessage(sd.failureMessage());
+                    splitFailed = true;
                     continue;
                 }
                 boolean hadErrorBefore = status.getSplitMessage() != null && !status.getSplitMessage().isBlank();
@@ -827,8 +858,8 @@ public class StockFundamentalDailySyncJob implements Job {
                 }
             }
 
-            // 5. 無拆股對帳差異且非手動局部補抓時，推進整組的單一斷點水位
-            if (!manualFigisMode && !splitDiscrepancy) {
+            // 5. 無拆股對帳差異或個股拆股失敗且非手動局部補抓時，推進整組的單一斷點水位
+            if (!manualFigisMode && !splitDiscrepancy && !splitFailed) {
                 for (StockStatus status : lockedStatuses.values()) {
                     status.setFundamentalSyncDate(todayHk);
                 }
@@ -836,7 +867,7 @@ public class StockFundamentalDailySyncJob implements Job {
             statuses.saveAll(lockedStatuses.values());
             entityManager.flush();
 
-            return new GroupCommitResult(valuationInputChanged, splitDiscrepancy, reportsSaved, secFactChanges);
+            return new GroupCommitResult(valuationInputChanged, splitDiscrepancy, splitFailed, reportsSaved, secFactChanges);
         });
     }
 

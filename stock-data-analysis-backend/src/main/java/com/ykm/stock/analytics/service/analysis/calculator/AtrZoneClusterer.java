@@ -34,8 +34,8 @@ public class AtrZoneClusterer {
                 if(z.role!=role || z.state!=ZoneState.ACTIVE) continue;
                 BigDecimal distance=seed.price().subtract(z.center,MC).abs();
                 if(distance.compareTo(z.anchorAtr.multiply(new BigDecimal("0.50"),MC))>0) continue;
-                List<BigDecimal> candidate=new ArrayList<>(z.seedPrices); candidate.add(seed.price());
-                BigDecimal min=candidate.stream().min(BigDecimal::compareTo).orElseThrow(), max=candidate.stream().max(BigDecimal::compareTo).orElseThrow();
+                BigDecimal min=z.minSeedPrice==null?seed.price():z.minSeedPrice.min(seed.price());
+                BigDecimal max=z.maxSeedPrice==null?seed.price():z.maxSeedPrice.max(seed.price());
                 if(max.subtract(min,MC).compareTo(z.anchorAtr)>0) continue;
                 BigDecimal normalized=distance.divide(z.anchorAtr,MC);
                 if(best==null || normalized.compareTo(bestDistance)<0 || normalized.compareTo(bestDistance)==0 && z.id.compareTo(best.id)<0){ best=z; bestDistance=normalized; }
@@ -43,7 +43,7 @@ public class AtrZoneClusterer {
             if(best==null){
                 BigDecimal half=BigDecimal.valueOf(0.01).max(seed.atrAtConfirmation().multiply(new BigDecimal("0.25"),MC));
                 ZoneCandidate z=new ZoneCandidate();
-                z.id=hash(figi+"|"+timeframe+"|"+seed.id()); z.timeframe=timeframe; z.role=role; z.center=seed.price(); z.anchorAtr=seed.atrAtConfirmation(); z.halfWidth=half; z.lower=z.center.subtract(half,MC); z.upper=z.center.add(half,MC); z.confirmedAt=seed.confirmationTime(); z.roleConfirmedAt=seed.confirmationTime(); z.seedPrices.add(seed.price()); z.seedIds.add(seed.id()); if(seed.dependenceKey()!=null)z.dependenceKeys.add(seed.dependenceKey()); z.major=seed.scale()==PivotScale.MAJOR;
+                z.id=hash(figi+"|"+timeframe+"|"+seed.id()); z.timeframe=timeframe; z.role=role; z.center=seed.price(); z.anchorAtr=seed.atrAtConfirmation(); z.halfWidth=half; z.lower=z.center.subtract(half,MC); z.upper=z.center.add(half,MC); z.confirmedAt=seed.confirmationTime(); z.roleConfirmedAt=seed.confirmationTime(); z.addSeedPrice(seed.price()); z.seedIds.add(seed.id()); if(seed.dependenceKey()!=null)z.dependenceKeys.add(seed.dependenceKey()); z.major=seed.scale()==PivotScale.MAJOR;
                 z.recordEvent("ZONE_CONFIRMED",seed.confirmationTime(),seed.confirmationTime(),null,Map.of("pivotId",seed.id()),List.of(seed.id()));
                 zones.add(z); best=z;
             } else if(!best.seedIds.contains(seed.id())){
@@ -51,7 +51,7 @@ public class AtrZoneClusterer {
                 // rewrite the geometry that earlier bars were evaluated against. Keeping the
                 // original confirmed bounds removes look-ahead contamination from replay.
                 best.seedIds.add(seed.id());
-                best.seedPrices.add(seed.price());
+                best.addSeedPrice(seed.price());
                 if(seed.dependenceKey()!=null&&!best.dependenceKeys.contains(seed.dependenceKey()))best.dependenceKeys.add(seed.dependenceKey());
                 best.major|=seed.scale()==PivotScale.MAJOR;
                 best.recordEvent("SEED_ADDED",seed.confirmationTime(),seed.confirmationTime(),null,
@@ -64,17 +64,29 @@ public class AtrZoneClusterer {
     }
     // 用途：處理median，作為「ATR區域聚類」流程中的處理步驟。
     private BigDecimal median(List<BigDecimal> xs){ List<BigDecimal> s=new ArrayList<>(new LinkedHashSet<>(xs)); s.sort(BigDecimal::compareTo); int n=s.size(); return n%2==1?s.get(n/2):s.get(n/2-1).add(s.get(n/2),MC).divide(BigDecimal.valueOf(2),MC); }
+    private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    });
     // 用途：判斷h，作為「ATR區域聚類」流程中的處理步驟。
-    private String hash(String s){try{MessageDigest d=MessageDigest.getInstance("SHA-256");return HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
+    private static String hash(String s){ MessageDigest d=SHA256.get(); d.reset(); return HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8))); }
     // 用途：負責「區域Candidate」相關的業務協調與處理，集中管理此領域的服務邏輯。
     public static final class ZoneCandidate {
-        public String id; public AnalysisTimeframe timeframe; public ZoneRole role; public BigDecimal center,anchorAtr,halfWidth,lower,upper,roleConfirmationPrice; public Instant confirmedAt,roleConfirmedAt,lastTestAt,breakConfirmedAt; public ZoneState state=ZoneState.ACTIVE; public RetestState retestState=RetestState.NONE; public int boundsVersion=1,roleVersion=1,testCount,rejectionCount,penetrationCount,ageBars; public boolean major; public final List<BigDecimal> seedPrices=new ArrayList<>(); public final List<String> seedIds=new ArrayList<>(); public final List<String> dependenceKeys=new ArrayList<>(); public final List<ZoneEventDto> events=new ArrayList<>();
+        public String id; public AnalysisTimeframe timeframe; public ZoneRole role; public BigDecimal center,anchorAtr,halfWidth,lower,upper,roleConfirmationPrice; public BigDecimal minSeedPrice,maxSeedPrice; public Instant confirmedAt,roleConfirmedAt,lastTestAt,breakConfirmedAt; public ZoneState state=ZoneState.ACTIVE; public RetestState retestState=RetestState.NONE; public int boundsVersion=1,roleVersion=1,testCount,rejectionCount,penetrationCount,ageBars; public boolean major; public final List<BigDecimal> seedPrices=new ArrayList<>(); public final List<String> seedIds=new ArrayList<>(); public final List<String> dependenceKeys=new ArrayList<>(); public final List<ZoneEventDto> events=new ArrayList<>();
+        public void addSeedPrice(BigDecimal price) {
+            seedPrices.add(price);
+            minSeedPrice = minSeedPrice == null ? price : minSeedPrice.min(price);
+            maxSeedPrice = maxSeedPrice == null ? price : maxSeedPrice.max(price);
+        }
         // 用途：處理記錄事件，作為「區域Candidate」流程中的處理步驟。
         public void recordEvent(String type, Instant startAt, Instant confirmedAt, String episodeId, Map<String,Object> metrics, List<String> evidenceRefs) {
             String raw=id+"|"+type+"|"+startAt+"|"+confirmedAt+"|"+boundsVersion+"|"+episodeId;
             events.add(new ZoneEventDto(eventHash(raw),id,type,startAt,confirmedAt,boundsVersion,episodeId,metrics,evidenceRefs));
         }
         // 用途：處理事件Hash，作為「區域Candidate」流程中的處理步驟。
-        private static String eventHash(String value){try{MessageDigest d=MessageDigest.getInstance("SHA-256");return HexFormat.of().formatHex(d.digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
+        private static String eventHash(String value){ return hash(value); }
     }
 }

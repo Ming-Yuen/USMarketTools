@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.*;
 
@@ -115,13 +116,20 @@ public class QuoteNormalizationService {
         List<NormalizedBarDto> bars = new ArrayList<>(raw.size());
         for (StockQuoteRepository.QuoteBarRow quote : raw) {
             BigDecimal factor = StockSplitCalculator.priceFactor(splitList, quote.quoteDate(), target);
+            boolean unityFactor = BigDecimal.ONE.compareTo(factor) == 0;
             MetricResult<BigDecimal> volume = quote.volume() == null
                     ? MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("VOLUME_MISSING", "PRICE", "成交量缺失。"))
-                    : MetricResult.available(quote.volume().divide(factor, MathContext.DECIMAL128));
-            bars.add(new NormalizedBarDto(quote.quoteDate(), quote.openPrice().multiply(factor), quote.highPrice().multiply(factor),
-                    quote.lowPrice().multiply(factor), quote.closePrice().multiply(factor), volume,
-                    calendar.getSessionOpenAt(quote.quoteDate()), calendar.getSessionCloseAt(quote.quoteDate()),
-                    calendar.getSessionCloseAt(quote.quoteDate()), quote.observedAt(), null, basisId));
+                    : MetricResult.available(unityFactor ? quote.volume() : quote.volume().divide(factor, MathContext.DECIMAL128));
+            Instant openAt = calendar.getSessionOpenAt(quote.quoteDate());
+            Instant closeAt = calendar.getSessionCloseAt(quote.quoteDate());
+            bars.add(new NormalizedBarDto(
+                    quote.quoteDate(),
+                    unityFactor ? quote.openPrice() : quote.openPrice().multiply(factor),
+                    unityFactor ? quote.highPrice() : quote.highPrice().multiply(factor),
+                    unityFactor ? quote.lowPrice() : quote.lowPrice().multiply(factor),
+                    unityFactor ? quote.closePrice() : quote.closePrice().multiply(factor),
+                    volume,
+                    openAt, closeAt, closeAt, quote.observedAt(), null, basisId));
         }
         List<LocalDate> sessions = calendar.getTradingDays(first, to);
         Set<LocalDate> observed = new HashSet<>(raw.size());

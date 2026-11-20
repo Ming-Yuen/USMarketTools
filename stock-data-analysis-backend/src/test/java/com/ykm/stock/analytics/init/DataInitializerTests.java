@@ -138,7 +138,7 @@ class DataInitializerTests {
         DataInitializer initializer = new DataInitializer(menus, mock(JobConfigRepository.class));
         initializer.run();
         ArgumentCaptor<Menu> saved = ArgumentCaptor.forClass(Menu.class);
-        verify(menus, times(7)).saveAndFlush(saved.capture());
+        verify(menus, times(8)).saveAndFlush(saved.capture());
         Menu screen = saved.getAllValues().stream().filter(menu -> menu.getMenuId() == 5).findFirst().orElseThrow();
         assertThat(screen.getName()).isEqualTo("股票篩選");
         assertThat(screen.getPath()).isEqualTo("/stockAnalysis");
@@ -150,6 +150,13 @@ class DataInitializerTests {
         assertThat(industryValuation.getIcon()).isEqualTo("tune");
         assertThat(industryValuation.getIcon().length()).isLessThanOrEqualTo(16);
         assertThat(industryValuation.getPath()).isEqualTo("/maintenance/industry-valuation");
+        Menu buyRanking = saved.getAllValues().stream().filter(menu -> menu.getMenuId() == 8).findFirst().orElseThrow();
+        assertThat(buyRanking.getParentId()).isEqualTo(2);
+        assertThat(buyRanking.getName()).isEqualTo("Buy Ranking");
+        assertThat(buyRanking.getName().length()).isLessThanOrEqualTo(32);
+        assertThat(buyRanking.getIcon()).isEqualTo("leaderboard");
+        assertThat(buyRanking.getIcon().length()).isLessThanOrEqualTo(16);
+        assertThat(buyRanking.getPath()).isEqualTo("/reports/buy-ranking");
         assertThat(saved.getAllValues()).extracting(Menu::getPath).doesNotContain("/watchlist");
 
         clearInvocations(menus);

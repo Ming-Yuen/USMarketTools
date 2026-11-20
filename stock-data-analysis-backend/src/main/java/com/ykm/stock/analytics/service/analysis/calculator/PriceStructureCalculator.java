@@ -26,19 +26,54 @@ public class PriceStructureCalculator {
         if (bars == null || bars.isEmpty() || atr == null || atr.isEmpty() || pivots == null || pivots.isEmpty()) return List.of();
         Map<java.time.LocalDate, BigDecimal> atrByDate = new HashMap<>();
         for (AtrPointDto point : atr) atrByDate.put(point.sessionDate(), point.atr());
+
+        Comparator<ConfirmedPivotDto> pivotOrder = Comparator.comparing(ConfirmedPivotDto::confirmationTime)
+                .thenComparing(ConfirmedPivotDto::occurrenceSession);
+        List<ConfirmedPivotDto> highPivots = new ArrayList<>();
+        List<ConfirmedPivotDto> lowPivots = new ArrayList<>();
+        for (ConfirmedPivotDto p : pivots) {
+            if (p == null || p.confirmationTime() == null) continue;
+            if (p.kind() == PivotKind.HIGH) highPivots.add(p);
+            else if (p.kind() == PivotKind.LOW) lowPivots.add(p);
+        }
+        highPivots.sort(pivotOrder);
+        lowPivots.sort(pivotOrder);
+
+        boolean barsChronological = isChronological(bars);
+        int highIdx = 0;
+        int lowIdx = 0;
+        ConfirmedPivotDto activeHigh = null;
+        ConfirmedPivotDto activeLow = null;
+        BigDecimal quarterAtr = new BigDecimal("0.25");
+
         List<StructureEventDto> events = new ArrayList<>();
         for (NormalizedBarDto bar : bars) {
             BigDecimal currentAtr = atrByDate.get(bar.sessionDate());
             if (currentAtr == null || currentAtr.signum() <= 0 || bar.sessionOpenAt() == null) continue;
-            ConfirmedPivotDto high = latestConfirmedBefore(pivots, PivotKind.HIGH, bar.sessionOpenAt());
-            ConfirmedPivotDto low = latestConfirmedBefore(pivots, PivotKind.LOW, bar.sessionOpenAt());
+            Instant barStart = bar.sessionOpenAt();
+            ConfirmedPivotDto high;
+            ConfirmedPivotDto low;
+            if (barsChronological) {
+                while (highIdx < highPivots.size() && !highPivots.get(highIdx).confirmationTime().isAfter(barStart)) {
+                    activeHigh = highPivots.get(highIdx++);
+                }
+                while (lowIdx < lowPivots.size() && !lowPivots.get(lowIdx).confirmationTime().isAfter(barStart)) {
+                    activeLow = lowPivots.get(lowIdx++);
+                }
+                high = activeHigh;
+                low = activeLow;
+            } else {
+                high = latestConfirmedBefore(highPivots, barStart);
+                low = latestConfirmedBefore(lowPivots, barStart);
+            }
+            BigDecimal buffer = currentAtr.multiply(quarterAtr, MC);
             if (high != null) {
-                BigDecimal threshold = high.price().add(currentAtr.multiply(new BigDecimal("0.25"), MC), MC);
+                BigDecimal threshold = high.price().add(buffer, MC);
                 if (bar.close().compareTo(threshold) > 0) events.add(event("STRUCTURE_HIGH_BREACH", PivotKind.HIGH, bar, high, threshold));
                 else if (bar.high().compareTo(threshold) > 0) events.add(event("WICK_PROBE", PivotKind.HIGH, bar, high, threshold));
             }
             if (low != null) {
-                BigDecimal threshold = low.price().subtract(currentAtr.multiply(new BigDecimal("0.25"), MC), MC);
+                BigDecimal threshold = low.price().subtract(buffer, MC);
                 if (bar.close().compareTo(threshold) < 0) events.add(event("STRUCTURE_LOW_BREACH", PivotKind.LOW, bar, low, threshold));
                 else if (bar.low().compareTo(threshold) < 0) events.add(event("WICK_PROBE", PivotKind.LOW, bar, low, threshold));
             }
@@ -46,10 +81,24 @@ public class PriceStructureCalculator {
         return List.copyOf(events);
     }
 
+    private boolean isChronological(List<NormalizedBarDto> bars) {
+        Instant prev = null;
+        for (NormalizedBarDto bar : bars) {
+            if (bar == null || bar.sessionOpenAt() == null) continue;
+            if (prev != null && bar.sessionOpenAt().isBefore(prev)) return false;
+            prev = bar.sessionOpenAt();
+        }
+        return true;
+    }
+
     // 用途：處理latest已確認Before，作為「價格結構計算」流程中的處理步驟。
-    private ConfirmedPivotDto latestConfirmedBefore(List<ConfirmedPivotDto> pivots, PivotKind kind, Instant barStart) {
-        return pivots.stream().filter(p -> p.kind() == kind && p.confirmationTime() != null && !p.confirmationTime().isAfter(barStart))
-                .max(Comparator.comparing(ConfirmedPivotDto::confirmationTime).thenComparing(ConfirmedPivotDto::occurrenceSession)).orElse(null);
+    private ConfirmedPivotDto latestConfirmedBefore(List<ConfirmedPivotDto> sortedPivots, Instant barStart) {
+        ConfirmedPivotDto best = null;
+        for (ConfirmedPivotDto p : sortedPivots) {
+            if (!p.confirmationTime().isAfter(barStart)) best = p;
+            else break;
+        }
+        return best;
     }
 
     // 用途：處理事件，作為「價格結構計算」流程中的處理步驟。

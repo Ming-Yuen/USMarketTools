@@ -11,6 +11,7 @@ import { DataUploadPage } from "./pages/DataUpload";
 import HomeDashboard from "./pages/HomeDashboard";
 import { StockAnalysisPage } from "./pages/StockAnalysis";
 import { IndustryValuationMaintenancePage } from "./pages/IndustryValuationMaintenancePage";
+import { BuyRankingReportPage } from "./pages/BuyRankingReportPage";
 
 // 页面配置接口
 interface PageConfig {
@@ -27,6 +28,7 @@ const PAGE_CONFIG_MAP: Record<string, PageConfig> = {
   "/jobConfig": { component: JobManagementPage },
   "/Home": { component: JobManagementPage },
   "/maintenance/industry-valuation": { component: IndustryValuationMaintenancePage },
+  "/reports/buy-ranking": { component: BuyRankingReportPage },
 
   // 在这里添加更多页面映射
   // 'stockAnalysis': { component: StockAnalysisPage },
@@ -100,6 +102,7 @@ const App: React.FC = () => {
   // Default to empty array if no menu data
   const menuTrees = menuData?.menuTrees || [];
   const hasIndustryMaintenanceMenuRoute = hasMenuRoutePath(menuTrees, "/maintenance/industry-valuation");
+  const hasBuyRankingMenuRoute = hasMenuRoutePath(menuTrees, "/reports/buy-ranking");
 
   return (
     <Routes>
@@ -109,8 +112,12 @@ const App: React.FC = () => {
 
         <Route path="stockAnalysis" element={<StockScreenerPage />} />
         <Route path="stockAnalysis/:figi" element={<StockAnalysisPage />} />
+        <Route path="stock-analysis/:figi" element={<StockAnalysisPage />} />
         {!hasIndustryMaintenanceMenuRoute && (
           <Route path="maintenance/industry-valuation" element={<IndustryValuationMaintenancePage />} />
+        )}
+        {!hasBuyRankingMenuRoute && (
+          <Route path="reports/buy-ranking" element={<BuyRankingReportPage />} />
         )}
 
         {/* 404 */}

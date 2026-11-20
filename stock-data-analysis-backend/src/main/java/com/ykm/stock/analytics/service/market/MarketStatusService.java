@@ -21,11 +21,20 @@ public class MarketStatusService {
     private static final LocalTime MARKET_OPEN = LocalTime.of(9, 30);
     private static final LocalTime MARKET_CLOSE = LocalTime.of(16, 0);
     private static final LocalTime EARLY_CLOSE = LocalTime.of(13, 0);
+    private static final java.util.Set<LocalDate> EXCEPTIONAL_CLOSURES = java.util.Set.of(
+            LocalDate.of(2012, 10, 29),
+            LocalDate.of(2012, 10, 30),
+            LocalDate.of(2018, 12, 5),
+            LocalDate.of(2025, 1, 9)
+    );
 
     private final DateTimeService dateTimeService;
 
     private final Map<Integer, List<LocalDate>> holidayCache = new ConcurrentHashMap<>();
+    private final Map<Integer, java.util.Set<LocalDate>> holidaySetCache = new ConcurrentHashMap<>();
     private final Map<Integer, List<LocalDate>> earlyCloseCache = new ConcurrentHashMap<>();
+    private final Map<LocalDate, Instant> sessionOpenCache = new ConcurrentHashMap<>();
+    private final Map<LocalDate, Instant> sessionCloseCache = new ConcurrentHashMap<>();
 
     // 用途：判斷市場Open，作為「市場狀態服務」流程中的處理步驟。
     public boolean isMarketOpen() {
@@ -56,11 +65,11 @@ public class MarketStatusService {
     }
 
     public Instant getSessionOpenAt(LocalDate date) {
-        return ZonedDateTime.of(date, getSessionOpenTime(date), NY_ZONE).toInstant();
+        return sessionOpenCache.computeIfAbsent(date, d -> ZonedDateTime.of(d, getSessionOpenTime(d), NY_ZONE).toInstant());
     }
 
     public Instant getSessionCloseAt(LocalDate date) {
-        return ZonedDateTime.of(date, getSessionCloseTime(date), NY_ZONE).toInstant();
+        return sessionCloseCache.computeIfAbsent(date, d -> ZonedDateTime.of(d, getSessionCloseTime(d), NY_ZONE).toInstant());
     }
 
     public List<LocalDate> getTradingDays(LocalDate from, LocalDate to) {
@@ -136,12 +145,11 @@ public class MarketStatusService {
         }
 
         // Exchange-wide exceptional closures that are not derivable from recurring holiday rules.
-        if (date.equals(LocalDate.of(2012, 10, 29)) || date.equals(LocalDate.of(2012, 10, 30))
-                || date.equals(LocalDate.of(2018, 12, 5)) || date.equals(LocalDate.of(2025, 1, 9))) {
+        if (EXCEPTIONAL_CLOSURES.contains(date)) {
             return true;
         }
 
-        return getUSStockMarketHolidays(date.getYear()).contains(date);
+        return holidaySetCache.computeIfAbsent(date.getYear(), y -> java.util.Set.copyOf(getUSStockMarketHolidays(y))).contains(date);
     }
 
     // 用途：取得市場CloseTime，作為「市場狀態服務」流程中的處理步驟。

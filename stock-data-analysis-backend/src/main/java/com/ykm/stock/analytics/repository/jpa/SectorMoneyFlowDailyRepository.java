@@ -15,6 +15,9 @@ public interface SectorMoneyFlowDailyRepository extends JpaRepository<SectorMone
     @Query("select max(s.tradeDate) from SectorMoneyFlowDaily s")
     Optional<LocalDate> findLatestTradeDate();
 
+    @Query("select max(s.tradeDate) from SectorMoneyFlowDaily s where s.tradeDate <= :asOfDate")
+    Optional<LocalDate> findLatestTradeDateAtOrBefore(@Param("asOfDate") LocalDate asOfDate);
+
     List<SectorMoneyFlowDaily> findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(LocalDate tradeDate);
 
     Optional<SectorMoneyFlowDaily> findByTradeDateAndIndustryCode(LocalDate tradeDate, String industryCode);

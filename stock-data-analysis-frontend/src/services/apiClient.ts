@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 
-const isSensitiveUrl = (url?: string) => !!url && /(^|\/)(analysis|portfolio|notifications)(\/|$|\?)/.test(url);
+const isSensitiveUrl = (url?: string) => !!url && /(^|\/)(analysis|portfolio|notifications|reports)(\/|$|\?)/.test(url);
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: process.env.REACT_APP_API_BASE_URL as string,

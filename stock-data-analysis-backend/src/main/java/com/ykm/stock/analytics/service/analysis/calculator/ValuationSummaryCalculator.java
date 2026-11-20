@@ -127,7 +127,7 @@ public class ValuationSummaryCalculator {
             BigDecimal high
     ) {}
 
-    /** 每日機會雷達精算結果：與單股 InvestmentSummaryDto 共用同一套 stance、支撐選取、真假破位與強勢回踩試單判定。 */
+    /** 每日機會雷達與買入排行榜精算結果：與單股 InvestmentSummaryDto 共用同一套 stance、支撐選取、同區破位診斷、右側確認依據與強勢回踩試單判定。 */
     public record RadarEvaluationResult(
             String verdict,
             String fundamentalBacking,
@@ -139,8 +139,46 @@ public class ValuationSummaryCalculator {
             boolean confirmationPending,
             MarketRegime marketRegime,
             MacroCautionDto macroCaution,
-            TrendPullbackStarterDto trendPullbackStarter
-    ) {}
+            TrendPullbackStarterDto trendPullbackStarter,
+            BreakoutDiagnosisDto matchedZoneDiagnosis,
+            String rightSideConfirmationBasis,
+            boolean hardStopBreachedOrInvalidated
+    ) {
+        public RadarEvaluationResult(
+                String verdict,
+                String fundamentalBacking,
+                String stance,
+                boolean forwardValueTrap,
+                LevelZoneDto supportZone,
+                boolean stopBreachedOrReclaim,
+                boolean highRiskBreakdown,
+                boolean confirmationPending,
+                MarketRegime marketRegime,
+                MacroCautionDto macroCaution,
+                TrendPullbackStarterDto trendPullbackStarter) {
+            this(verdict, fundamentalBacking, stance, forwardValueTrap, supportZone, stopBreachedOrReclaim,
+                    highRiskBreakdown, confirmationPending, marketRegime, macroCaution, trendPullbackStarter, null, null, false);
+        }
+
+        public RadarEvaluationResult(
+                String verdict,
+                String fundamentalBacking,
+                String stance,
+                boolean forwardValueTrap,
+                LevelZoneDto supportZone,
+                boolean stopBreachedOrReclaim,
+                boolean highRiskBreakdown,
+                boolean confirmationPending,
+                MarketRegime marketRegime,
+                MacroCautionDto macroCaution,
+                TrendPullbackStarterDto trendPullbackStarter,
+                BreakoutDiagnosisDto matchedZoneDiagnosis,
+                String rightSideConfirmationBasis) {
+            this(verdict, fundamentalBacking, stance, forwardValueTrap, supportZone, stopBreachedOrReclaim,
+                    highRiskBreakdown, confirmationPending, marketRegime, macroCaution, trendPullbackStarter,
+                    matchedZoneDiagnosis, rightSideConfirmationBasis, false);
+        }
+    }
 
     /** 供最新估值快照批次刷新、自訂對標更新與個股報告共用之純記憶體客觀市場參考帶與結論判定。 */
     public static ObjectiveBandVerdict computeObjectiveBandAndVerdict(BigDecimal price, ValuationReferenceDto hist, ValuationReferenceDto peer) {
@@ -581,6 +619,11 @@ public class ValuationSummaryCalculator {
                 marketRegime, permission, eventGateBlocked, stopBreachedOrReclaim || anyHighRiskBreakdown,
                 confirmationPending, supportZone != null, rightSideConfirmedForCorrection, trendPullbackStarter);
 
+        BreakoutDiagnosisDto effectiveZoneDiagnosis = matchedZoneDiagnosis != null
+                ? matchedZoneDiagnosis
+                : (supportZone == null ? primaryDiagnosis : null);
+        boolean hardStopBreachedOrInvalidated = supportSelection.excludedByBreachOrInvalidation()
+                || (supportZone != null && isZoneStopBreached(supportZone, planList, dailyLatestClose, dailyBars));
         return new RadarEvaluationResult(
                 effectiveVerdict,
                 effectiveBacking,
@@ -592,8 +635,32 @@ public class ValuationSummaryCalculator {
                 confirmationPending,
                 marketRegime,
                 macroCaution,
-                trendPullbackStarter
+                trendPullbackStarter,
+                effectiveZoneDiagnosis,
+                rightSideConfirmedForCorrection ? rightSideConfirmationBasis : null,
+                hardStopBreachedOrInvalidated
         );
+    }
+
+    /** 供 ETF／排行報表直接查詢同週期候選支撐是否因保護止損或兩收盤技術失效而被排除，避免交易計畫不可用時遺失硬止損證據。 */
+    public boolean hasHardStopBreachOrInvalidation(
+            AnalysisHorizon horizon,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<SupportResistanceDto> supportResistance,
+            List<TradePlanDto> planList,
+            BigDecimal currentPrice) {
+        AnalysisHorizon effectiveHorizon = horizon == null ? AnalysisHorizon.POSITION : horizon;
+        List<NormalizedBarDto> dailyBars = extractDailyBars(priceStructure);
+        BigDecimal dailyLatestClose = extractLatestDailyClose(priceStructure);
+        if (dailyLatestClose == null) {
+            dailyLatestClose = dailyBars.isEmpty() ? currentPrice : dailyBars.getLast().close();
+        }
+        SupportSelection selection = selectTechnicalSupportZone(
+                effectiveHorizon, supportResistance, planList == null ? List.of() : planList,
+                dailyLatestClose, dailyBars, currentPrice, null);
+        return selection.excludedByBreachOrInvalidation()
+                || (selection.zone() != null && isZoneStopBreached(
+                        selection.zone(), planList == null ? List.of() : planList, dailyLatestClose, dailyBars));
     }
 
     private BandSynthesis synthesizeObjectiveBand(ValuationResultDto valuation) {
@@ -1240,7 +1307,7 @@ public class ValuationSummaryCalculator {
         return marketContext.value().creditSpread();
     }
 
-    private MacroCautionDto buildMacroCaution(MarketRegime regime, BigDecimal vixClose, BigDecimal tenYearChange20,
+    public MacroCautionDto buildMacroCaution(MarketRegime regime, BigDecimal vixClose, BigDecimal tenYearChange20,
                                               CreditSpreadSummaryDto creditSpread) {
         boolean hasCreditSpread = creditSpread != null && creditSpread.oasPct() != null;
         boolean evaluated = regime != null || vixClose != null || tenYearChange20 != null || hasCreditSpread;

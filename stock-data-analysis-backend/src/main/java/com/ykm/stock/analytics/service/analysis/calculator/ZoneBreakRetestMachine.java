@@ -55,6 +55,15 @@ public class ZoneBreakRetestMachine {
         boolean penetrationRecorded = false;
         String testEpisodeId = null;
 
+        BigDecimal breakBuffer = zone.anchorAtr.multiply(BREAK_BUFFER_ATR, MC);
+        BigDecimal upperBreakThreshold = zone.upper.add(breakBuffer, MC);
+        BigDecimal lowerBreakThreshold = zone.lower.subtract(breakBuffer, MC);
+        BigDecimal confirmDistance = zone.anchorAtr.multiply(RETEST_CONFIRM_ATR, MC);
+        BigDecimal upperConfirmThreshold = zone.upper.add(confirmDistance, MC);
+        BigDecimal lowerConfirmThreshold = zone.lower.subtract(confirmDistance, MC);
+        BigDecimal upperDepartureThreshold = zone.upper.add(zone.anchorAtr, MC);
+        BigDecimal lowerDepartureThreshold = zone.lower.subtract(zone.anchorAtr, MC);
+
         for (int i = 0; i < bars.size(); i++) {
             NormalizedBarDto bar = bars.get(i);
             if (bar.availableAt() == null || !bar.availableAt().isAfter(zone.confirmedAt)) continue;
@@ -80,10 +89,9 @@ public class ZoneBreakRetestMachine {
                     zone.recordEvent("RETEST_STARTED", bar.availableAt(), bar.availableAt(), retestEpisodeId, Map.of(), zone.seedIds);
                 }
 
-                BigDecimal failBuffer = zone.anchorAtr.multiply(BREAK_BUFFER_ATR, MC);
                 boolean failed = breakDirection > 0
-                        ? bar.close().compareTo(zone.lower.subtract(failBuffer, MC)) < 0
-                        : bar.close().compareTo(zone.upper.add(failBuffer, MC)) > 0;
+                        ? bar.close().compareTo(lowerBreakThreshold) < 0
+                        : bar.close().compareTo(upperBreakThreshold) > 0;
                 if (failed) {
                     zone.retestState = RetestState.FAILED;
                     zone.recordEvent("RETEST_FAILED", bars.get(retestStartIndex).availableAt(), bar.availableAt(),
@@ -91,10 +99,9 @@ public class ZoneBreakRetestMachine {
                     return;
                 }
 
-                BigDecimal confirm = zone.anchorAtr.multiply(RETEST_CONFIRM_ATR, MC);
                 boolean succeeded = breakDirection > 0
-                        ? bar.close().compareTo(zone.upper.add(confirm, MC)) > 0
-                        : bar.close().compareTo(zone.lower.subtract(confirm, MC)) < 0;
+                        ? bar.close().compareTo(upperConfirmThreshold) > 0
+                        : bar.close().compareTo(lowerConfirmThreshold) < 0;
                 if (succeeded) {
                     zone.retestState = RetestState.SUCCEEDED;
                     zone.state = ZoneState.ACTIVE;
@@ -133,15 +140,14 @@ public class ZoneBreakRetestMachine {
                 continue;
             }
 
-            BigDecimal breakBuffer = zone.anchorAtr.multiply(BREAK_BUFFER_ATR, MC);
             int direction = 0;
             BigDecimal candidateThreshold = null;
-            if (zone.role == ZoneRole.RESISTANCE && bar.close().compareTo(zone.upper.add(breakBuffer, MC)) > 0) {
+            if (zone.role == ZoneRole.RESISTANCE && bar.close().compareTo(upperBreakThreshold) > 0) {
                 direction = 1;
-                candidateThreshold = zone.upper.add(breakBuffer, MC);
-            } else if (zone.role == ZoneRole.SUPPORT && bar.close().compareTo(zone.lower.subtract(breakBuffer, MC)) < 0) {
+                candidateThreshold = upperBreakThreshold;
+            } else if (zone.role == ZoneRole.SUPPORT && bar.close().compareTo(lowerBreakThreshold) < 0) {
                 direction = -1;
-                candidateThreshold = zone.lower.subtract(breakBuffer, MC);
+                candidateThreshold = lowerBreakThreshold;
             }
 
             if (direction != 0 && pendingDirection == direction && pendingIndex == i - 1
@@ -201,10 +207,9 @@ public class ZoneBreakRetestMachine {
             }
 
             if (testEpisodeOpen && i <= rejectionDeadline) {
-                BigDecimal rejectDistance = zone.anchorAtr.multiply(RETEST_CONFIRM_ATR, MC);
                 boolean rejection = zone.role == ZoneRole.SUPPORT
-                        ? bar.close().compareTo(zone.upper.add(rejectDistance, MC)) > 0
-                        : bar.close().compareTo(zone.lower.subtract(rejectDistance, MC)) < 0;
+                        ? bar.close().compareTo(upperConfirmThreshold) > 0
+                        : bar.close().compareTo(lowerConfirmThreshold) < 0;
                 if (rejection) {
                     zone.rejectionCount++;
                     zone.recordEvent("REJECTION", zone.lastTestAt, bar.availableAt(), testEpisodeId,
@@ -221,10 +226,9 @@ public class ZoneBreakRetestMachine {
             }
 
             if (!testEpisodeOpen && zone.testCount > 0 && !endedThisBar) {
-                BigDecimal departure = zone.anchorAtr;
                 boolean farAway = zone.role == ZoneRole.SUPPORT
-                        ? bar.close().compareTo(zone.upper.add(departure, MC)) > 0
-                        : bar.close().compareTo(zone.lower.subtract(departure, MC)) < 0;
+                        ? bar.close().compareTo(upperDepartureThreshold) > 0
+                        : bar.close().compareTo(lowerDepartureThreshold) < 0;
                 if (farAway) departed = true;
             }
         }

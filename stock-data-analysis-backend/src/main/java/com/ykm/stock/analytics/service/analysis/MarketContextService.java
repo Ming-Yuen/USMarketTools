@@ -142,7 +142,9 @@ public class MarketContextService {
             List<MarketEvent> marketWideEvents,
             MetricResult<MarketSnapshotDto> marketSnapshot,
             MetricResult<BigDecimal> vixClose,
-            CreditSpreadSummaryDto creditSpread
+            CreditSpreadSummaryDto creditSpread,
+            TreasuryContextDto treasury,
+            LocalDate tenYearObservationDate
     ) {
         public PreloadedMarketData(
                 LocalDate through,
@@ -153,7 +155,20 @@ public class MarketContextService {
                 List<MarketEvent> marketWideEvents,
                 MetricResult<MarketSnapshotDto> marketSnapshot,
                 MetricResult<BigDecimal> vixClose) {
-            this(through, observationCutoff, spy, qqq, inputs, marketWideEvents, marketSnapshot, vixClose, null);
+            this(through, observationCutoff, spy, qqq, inputs, marketWideEvents, marketSnapshot, vixClose, null, null, null);
+        }
+
+        public PreloadedMarketData(
+                LocalDate through,
+                Instant observationCutoff,
+                MetricResult<NormalizedPriceSeriesDto> spy,
+                MetricResult<NormalizedPriceSeriesDto> qqq,
+                Map<String, List<Observation>> inputs,
+                List<MarketEvent> marketWideEvents,
+                MetricResult<MarketSnapshotDto> marketSnapshot,
+                MetricResult<BigDecimal> vixClose,
+                CreditSpreadSummaryDto creditSpread) {
+            this(through, observationCutoff, spy, qqq, inputs, marketWideEvents, marketSnapshot, vixClose, creditSpread, null, null);
         }
 
         /** 取得預載視窗內截至 through 之最新一筆 10Y 美債殖利率（百分比數值，如 4.35）；缺值時回傳 NULL。 */
@@ -166,6 +181,29 @@ public class MarketContextService {
                 return null;
             }
             return list.getLast().value();
+        }
+
+        /** 取得通過 3 交易日時效驗證之 10Y 美債殖利率（百分比數值）；過期或缺失時回傳 NULL。 */
+        public BigDecimal validatedTenYearYieldPct() {
+            if (treasury != null && treasury.tenYear() != null
+                    && treasury.tenYear().status() == MetricStatus.AVAILABLE) {
+                return treasury.tenYear().value();
+            }
+            return null;
+        }
+
+        /** 取得通過時效驗證之 10Y 美債殖利率 20 期變動值（百分比點）；不足 21 筆或過期時回傳 NULL。 */
+        public BigDecimal validatedTenYearChange20() {
+            if (treasury != null && treasury.tenYearChange20() != null
+                    && treasury.tenYearChange20().status() == MetricStatus.AVAILABLE) {
+                return treasury.tenYearChange20().value();
+            }
+            return null;
+        }
+
+        /** 取得通過時效驗證之 10Y 美債殖利率實際觀測日；過期或缺失時回傳 NULL。 */
+        public LocalDate validatedTenYearObservationDate() {
+            return validatedTenYearYieldPct() != null ? tenYearObservationDate : null;
         }
     }
 
@@ -184,9 +222,16 @@ public class MarketContextService {
         Map<String, List<Observation>> inputs = loadInputs(through);
         MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", baseContext, inputs, 1);
         MetricResult<MarketSnapshotDto> snapshot = market(baseContext, spy, qqq, inputs, vixClose);
+        TreasuryContextDto preloadedTreasury = treasury(baseContext, inputs);
+        List<Observation> tenHistory = inputs.get("TREASURY_10Y");
+        LocalDate tenObsDate = (preloadedTreasury.tenYear() != null
+                && preloadedTreasury.tenYear().status() == MetricStatus.AVAILABLE
+                && tenHistory != null && !tenHistory.isEmpty())
+                ? tenHistory.getLast().date() : null;
         List<MarketEvent> macroEvents = events.findVisibleMarketWide(through.minusDays(10), through.plusDays(20), obsCutoff);
         CreditSpreadSummaryDto creditSpread = creditSpreadService == null ? null : creditSpreadService.evaluateAt(through, obsCutoff);
-        return new PreloadedMarketData(through, obsCutoff, spy, qqq, inputs, macroEvents, snapshot, vixClose, creditSpread);
+        return new PreloadedMarketData(through, obsCutoff, spy, qqq, inputs, macroEvents, snapshot, vixClose,
+                creditSpread, preloadedTreasury, tenObsDate);
     }
 
     /** 供兩階段雷達批次精算呼叫：完全複用預載大盤資料並嚴守與單股 evaluate(...) 一致之 272 日基準對齊視窗，零額外 DB 查詢。 */
@@ -216,7 +261,20 @@ public class MarketContextService {
         }
         knownEvents.sort(Comparator.comparing(MarketEvent::getEventDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(MarketEvent::getOccurrenceAt, Comparator.nullsLast(Comparator.naturalOrder())));
-        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents, preloaded.creditSpread());
+        boolean sameMarketWindow = preloaded.marketSnapshot() != null
+                && preloaded.through() != null && preloaded.through().equals(through)
+                && spy != null && spy.status() == MetricStatus.AVAILABLE && spy.value() != null
+                && preloaded.spy() != null && preloaded.spy().status() == MetricStatus.AVAILABLE && preloaded.spy().value() != null
+                && spy.value().bars().size() == preloaded.spy().value().bars().size()
+                && qqq != null && qqq.status() == MetricStatus.AVAILABLE && qqq.value() != null
+                && preloaded.qqq() != null && preloaded.qqq().status() == MetricStatus.AVAILABLE && preloaded.qqq().value() != null
+                && qqq.value().bars().size() == preloaded.qqq().value().bars().size();
+        MetricResult<MarketSnapshotDto> reusableMarket = sameMarketWindow ? preloaded.marketSnapshot() : null;
+        TreasuryContextDto reusableTreasury = (preloaded.through() != null && preloaded.through().equals(through)
+                && context.analysisAsOf() != null && preloaded.through().equals(context.analysisAsOf().atZone(NY).toLocalDate()))
+                ? preloaded.treasury() : null;
+        return evaluateCore(context, stockPrice, structures, pastEarnings, spy, qqq, inputs, knownEvents,
+                preloaded.creditSpread(), reusableMarket, reusableTreasury, false);
     }
 
     /** 直接讀已入庫的行情、情緒、利率及已知日程；不存在原始檔案或證據再驗證步驟。 */
@@ -253,7 +311,7 @@ public class MarketContextService {
                 : events.findVisible(context.figi(), anchorDay.minusDays(10), anchorDay.plusDays(20), context.observationCutoff());
         List<MarketEvent> effectivePastEarnings = skipCompanyEarningsLock ? List.of() : pastEarnings;
         CreditSpreadSummaryDto creditSpread = creditSpreadService == null ? null : creditSpreadService.evaluateAt(through, context.observationCutoff());
-        return evaluateCore(context, stockPrice, structures, effectivePastEarnings, spy, qqq, inputs, knownEvents, creditSpread);
+        return evaluateCore(context, stockPrice, structures, effectivePastEarnings, spy, qqq, inputs, knownEvents, creditSpread, null, null, true);
     }
 
     private MetricResult<MarketContextDto> evaluateCore(
@@ -265,18 +323,23 @@ public class MarketContextService {
             MetricResult<NormalizedPriceSeriesDto> qqq,
             Map<String, List<Observation>> inputs,
             List<MarketEvent> knownEvents,
-            CreditSpreadSummaryDto creditSpread) {
+            CreditSpreadSummaryDto creditSpread,
+            MetricResult<MarketSnapshotDto> precomputedMarket,
+            TreasuryContextDto precomputedTreasury,
+            boolean includeIndicatorSeries) {
         List<NormalizedBarDto> bars = stockPrice.bars();
         LocalDate through = bars.getLast().sessionDate();
         MetricResult<BigDecimal> vixClose = value("VIX_CLOSE", context, inputs, 1);
-        MomentumAnalysisDto momentum = momentumCalculator.calculate(bars);
+        MomentumAnalysisDto momentum = includeIndicatorSeries
+                ? momentumCalculator.calculate(bars)
+                : momentumCalculator.calculate(bars, false);
         EarningsAnchorSelection earningsAnchor = resolveEarningsAnchor(pastEarnings, through);
         VolumeAnalysisDto volume = volumeCalculator.calculate(bars, structures, earningsAnchor.eventDate(), earningsAnchor.anchorSession());
         DrawdownAnalysisDto drawdown = drawdownCalculator.calculate(bars, structures);
         RelativeStrengthDto relative = spy.status() == MetricStatus.AVAILABLE
                 ? relativeStrengthCalculator.calculate(bars, spy.value().bars(), "SPY") : missingRelative(spy);
-        MetricResult<MarketSnapshotDto> market = market(context, spy, qqq, inputs, vixClose);
-        TreasuryContextDto treasury = treasury(context, inputs);
+        MetricResult<MarketSnapshotDto> market = precomputedMarket != null ? precomputedMarket : market(context, spy, qqq, inputs, vixClose);
+        TreasuryContextDto treasury = precomputedTreasury != null ? precomputedTreasury : treasury(context, inputs);
         List<EventRiskDto> risks = knownEvents.stream().map(event -> new EventRiskDto(event.getEventKey(), event.getEventType(),
                 event.getEventSubtype(), event.getTitle(), event.getEventDate(), event.getOccurrenceAt(), event.getTimePrecision(),
                 event.getObservedAt(), event.getSource(), "EARNINGS".equals(event.getEventType()) && earningsBlock(context, event.getEventDate()))).toList();

@@ -68,8 +68,17 @@ public class SupportResistanceService {
                 // role/boundary cannot be replayed backwards over older bars.
                 breakRetestMachine.evaluate(candidate, frame.bars());
                 Instant freshnessAnchor = latest(candidate.confirmedAt, candidate.lastTestAt, candidate.roleConfirmedAt);
-                candidate.ageBars = (int) frame.bars().stream()
-                        .filter(b -> b.availableAt() != null && freshnessAnchor != null && b.availableAt().isAfter(freshnessAnchor)).count();
+                int ageBars = 0;
+                if (freshnessAnchor != null) {
+                    List<NormalizedBarDto> frameBars = frame.bars();
+                    for (int bi = frameBars.size() - 1; bi >= 0; bi--) {
+                        Instant avail = frameBars.get(bi).availableAt();
+                        if (avail != null && avail.isAfter(freshnessAnchor)) {
+                            ageBars++;
+                        }
+                    }
+                }
+                candidate.ageBars = ageBars;
                 ZoneStrengthCalculator.VolumeProfileMatch vpMatch = strengthCalculator.evaluateVolumeProfile(
                         candidate.lower, candidate.upper, volumeProfile);
                 BigDecimal raw = strengthCalculator.raw(candidate.major, frame.timeframe(), candidate.rejectionCount,

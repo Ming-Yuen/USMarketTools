@@ -19,6 +19,11 @@ public class MomentumCalculator {
 
     // 用途：根據輸入資料計算相關資料，產生可供分析或交易決策使用的標準結果。
     public MomentumAnalysisDto calculate(List<NormalizedBarDto> bars) {
+        return calculate(bars, true);
+    }
+
+    /** 批次雷達與排行報表無需產出全量圖表序列點，可透過 includeIndicatorSeries=false 略過逐日布林與指標序列建構。 */
+    public MomentumAnalysisDto calculate(List<NormalizedBarDto> bars, boolean includeIndicatorSeries) {
         Map<String, MetricResult<BigDecimal>> out = new LinkedHashMap<>();
         if (!validBars(bars)) {
             MetricResult<BigDecimal> bad = unavailable(MetricStatus.UNVERIFIED, "MOMENTUM_BAR_SEQUENCE_INVALID", "K線必須按 session 升序且 OHLC 完整。 ");
@@ -67,7 +72,9 @@ public class MomentumCalculator {
         } else {
             out.put("MA_EXTENSION_ATR", insufficient("ATR_MA_INPUT_REQUIRED")); out.put("ATR14", insufficient("ATR14_REQUIRED"));
         }
-        List<IndicatorSeriesPointDto> series = buildIndicatorSeries(bars, closes, rsiSeries);
+        List<IndicatorSeriesPointDto> series = includeIndicatorSeries
+                ? buildIndicatorSeries(bars, closes, rsiSeries)
+                : List.of();
         return new MomentumAnalysisDto(out, signal, List.of(), interpretations(out, bars), series);
     }
 

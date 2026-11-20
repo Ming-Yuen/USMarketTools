@@ -35,7 +35,8 @@ public class RequestResponseLoggingFilter extends OncePerRequestFilter {
                 || path.startsWith("/v3/api-docs")
                 || path.equals("/swagger-ui.html")
                 || path.startsWith("/swagger-ui/favicon")
-                || path.startsWith("/favicon");
+                || path.startsWith("/favicon")
+                || path.startsWith("/reports/");
     }
 
     @Override

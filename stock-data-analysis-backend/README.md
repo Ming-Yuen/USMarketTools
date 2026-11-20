@@ -122,6 +122,7 @@
 | `POST /industry-valuation/{code}/proposals` | 同步產生待確認 AI 產業倍數草稿（不自動持久化） |
 | `PUT /industry-valuation/{code}/config` | 人工確認並保存正式產業估值設定 |
 | `POST /overview/dashboard` | 市場總覽儀表板（整合指數與 ETF 觀察、大盤 `marketRegime` 橫幅與高收益債信用利差 HY OAS 警戒、11 大板塊代表 ETF 對照、板塊量價資金流與均線廣度、最新發布日雙軌機會雷達快照（含高管逢低買進確認徽章）及歷史訊號勝率統計） |
+| `GET /reports/buy-ranking/options`、`POST /reports/buy-ranking`、`POST /reports/buy-ranking/export` | 產業、個人清單與自訂代碼「建議買入排行榜」決策報表（0 AI 消耗、0 外部 HTTP、上限 300 檔批量預載、四梯隊防價值陷阱排序、ETF 雙軌評分與 1% 風控倉位試算）；`export?format=XLSX\|CSV&reportId=...` 共用同一次不可變快照輸出雙分頁 `.xlsx` 與 UTF-8 BOM 防公式注入 `.csv` |
 | `GET /enhancements/macro/credit-spread`、`POST /enhancements/macro/credit-spread/refresh` | 查詢或按需同步 FRED 高收益債信用利差（`BAMLH0A0HYM2`）與 20 期變動狀態 |
 | `GET /enhancements/stocks/{figi}` | 查詢單一標的完整籌碼與事件擴充總覽（AI 通道狀態、期權、Form 4、13F、做空、快取新聞／摘要與已確認 SEC 自訂標籤映射） |
 | `POST /enhancements/stocks/{figi}/options/refresh`、`insiders/refresh`、`short-interest/refresh`、`news/refresh` | 單一標的按需即時同步期權、Form 4、做空比例或新聞／8-K 快取 |

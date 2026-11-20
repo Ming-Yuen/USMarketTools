@@ -27,4 +27,27 @@ public interface StockIndustryHistoryRepository extends JpaRepository<StockIndus
     List<StockIndustryHistory> findOverlappingByFigis(@Param("figis") Collection<String> figis,
                                                       @Param("windowStart") Instant windowStart,
                                                       @Param("windowEnd") Instant windowEnd);
+
+    /** 輕量候選股元資料投影：先完成資產類型／REIT 資格篩選與 300 檔截斷，再僅針對最終候選載入完整 Stock 實體。 */
+    record SectorCandidateMeta(String figi, String stockType, String modelCode) {}
+
+    /** 依指定產業代碼集合於截止時間點篩選活躍追蹤候選股（輕量投影，保留 ETF 與缺估值標的並按確定性規則排序）。 */
+    @Query("""
+            select new com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository$SectorCandidateMeta(
+                s.figi, s.stockType, v.modelCode)
+            from StockIndustryHistory h
+            join Stock s on s.figi = h.figi
+            left join StockValuationLatest v on v.figi = s.figi
+            where h.industry.code in :industryCodes
+              and h.observedFrom <= :asOf
+              and (h.observedTo is null or h.observedTo > :asOf)
+              and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
+              and s.tracked = true
+            order by case when v.valuationDate = :valuationDate and upper(coalesce(v.currency, '')) = 'USD' and v.marketCap is not null then v.marketCap else -1 end desc,
+                     s.symbol asc,
+                     s.figi asc
+            """)
+    List<SectorCandidateMeta> findActiveTrackedCandidateMetaByIndustryCodesAt(@Param("industryCodes") Collection<String> industryCodes,
+                                                                            @Param("asOf") Instant asOf,
+                                                                            @Param("valuationDate") java.time.LocalDate valuationDate);
 }

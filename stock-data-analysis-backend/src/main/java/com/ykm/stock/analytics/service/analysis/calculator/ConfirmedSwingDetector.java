@@ -32,6 +32,13 @@ public class ConfirmedSwingDetector {
         String raw=figi+"|"+tf+"|"+kind+"|"+scale+"|"+b.sessionDate()+"|"+b.versionRef();
         return new ConfirmedPivotDto(hash(raw),kind,scale,tf,price,b.sessionDate(),b.sessionCloseAt(),confirmed,observed,atr.get(b.sessionDate()),atr.get(bars.get(i+n).sessionDate()),window.stream().map(NormalizedBarDto::versionRef).filter(Objects::nonNull).toList(),dep);
     }
+    private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    });
     // 用途：判斷h，作為「已確認波段偵測」流程中的處理步驟。
-    private String hash(String s){ try{MessageDigest d=MessageDigest.getInstance("SHA-256");return HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);} }
+    private String hash(String s){ MessageDigest d=SHA256.get(); d.reset(); return HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8))); }
 }

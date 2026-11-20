@@ -42,6 +42,7 @@
       "PE": "P/E",
       "PB": "P/B",
       "PS": "P/S",
+      "PFCF": "P/FCF",
       "EV_EBITDA": "EV/EBITDA"
     }
   },
@@ -1793,6 +1794,110 @@
       "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "Guidance revenue range is invalid (low exceeds high); rejected safely.",
       "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "Guidance EPS range is invalid (low exceeds high); rejected safely.",
       "CUSTOM_TAG_MONETARY_UNIT_INVALID": "Custom tag mapping only accepts 3-letter ISO monetary currency units (e.g. USD/EUR), not shares or ratio units."
+    }
+  },
+  "maintenance": {
+    "industryValuation": {
+      "title": "Industry Valuation Maintenance",
+      "subtitle": "Audit valuation models, primary metrics, and multiple-range coverage across all industries. Listing and filtering consume zero AI tokens, and saving never auto-recalculates stocks.",
+      "kpi": {
+        "totalIndustries": "Total industries",
+        "totalHint": "Platform industry dictionary",
+        "configured": "Multiples configured",
+        "configuredShare": "Coverage {{pct}}",
+        "unconfigured": "Pending configuration",
+        "unconfiguredHint": "Click to filter pending industries",
+        "unconfiguredActive": "Filtered to pending industries; click again to show all"
+      },
+      "filters": {
+        "searchLabel": "Search industry name or code",
+        "searchPlaceholder": "Enter industry name or code keyword",
+        "statusLabel": "Configuration status",
+        "statusAll": "All statuses",
+        "statusUnconfigured": "Pending only",
+        "statusConfigured": "Configured only",
+        "modelLabel": "Valuation model",
+        "modelAll": "All models",
+        "modelUnassigned": "Model not assigned",
+        "reset": "Reset filters",
+        "refresh": "Refresh"
+      },
+      "table": {
+        "industry": "Industry / Code",
+        "model": "Valuation model",
+        "primaryMetric": "Primary metric",
+        "multipleRange": "Multiple range [Low, High]",
+        "activeStockCount": "Active stocks",
+        "activeStockCountValue": "{{count}}",
+        "status": "Status",
+        "actions": "Actions",
+        "unset": "Not set",
+        "empty": "No industries match the current filters.",
+        "emptyDictionary": "No industries exist in the classification dictionary yet.",
+        "rowsPerPage": "Rows per page",
+        "displayedRows": "{{from}}–{{to}} of {{count}}",
+        "nextPage": "Next page",
+        "previousPage": "Previous page"
+      },
+      "status": {
+        "configured": "Configured",
+        "unconfigured": "Pending"
+      },
+      "actions": {
+        "editParams": "Edit parameters",
+        "quickConfigure": "Quick setup",
+        "triggerAi": "AI proposal",
+        "closeDrawer": "Close panel",
+        "reloadLatest": "Discard draft & load latest",
+        "retry": "Retry"
+      },
+      "drawer": {
+        "title": "Edit industry valuation settings",
+        "subtitle": "Saved changes apply to the entire industry; AI drafts require manual confirmation."
+      },
+      "notice": {
+        "savedAndRefreshed": "Official industry settings saved and overview refreshed.",
+        "savedRefreshFailed": "Official industry settings were saved, but refreshing the overview list failed. Refresh the list without resubmitting."
+      },
+      "error": {
+        "loadFailed": "Failed to load industry valuation overview.",
+        "conflict409": "This industry configuration was updated by another session. Reload the latest data and try again.",
+        "cannotPropose": "Save a supported valuation model and primary metric and ensure AI is configured before generating a draft.",
+        "reloadFailed": "Failed to reload the latest configuration. Your current draft has been kept for reference.",
+        "operationFailed": "Operation failed."
+      },
+      "panel": {
+        "title": "Industry valuation assumptions",
+        "description": "AI generates an unconfirmed draft only and never auto-saves. Model and metric options come from the backend.",
+        "industryMissing": "No industry code was provided in the report, so industry assumptions cannot be edited here.",
+        "recalculateStock": "Recalculate this stock",
+        "generatingDraft": "Generating draft, this may take a few minutes…",
+        "processing": "Processing…",
+        "currentConfig": "Official setting: {{model}} · {{metric}} · {{low}}–{{high}}x",
+        "effectiveAtHk": "Effective at (Hong Kong): {{time}}",
+        "officialSource": "Official setting source",
+        "noOfficialConfig": "No official configuration yet.",
+        "generateAiDraft": "Generate AI draft",
+        "manualEdit": "Manual setup",
+        "reloadConfig": "Reload settings",
+        "draftWarning": "Confirming save updates the official settings for the entire industry. Drafts stay on this page only and are not saved if you leave.",
+        "partialSaveHint": "You may save model and primary metric first with both multiples empty; when providing multiples, rationale and source URL are required.",
+        "draftAsOf": "Draft reference date: {{date}}",
+        "modelLabel": "Model",
+        "primaryMetricLabel": "Primary metric",
+        "lowLabel": "Assumed multiple low",
+        "highLabel": "Assumed multiple high",
+        "rationaleLabel": "Rationale",
+        "sourceUrlLabel": "Official source URL",
+        "confirmSave": "Confirm & save official settings",
+        "discardDraft": "Discard draft",
+        "savedNotice": "Official industry settings saved. Existing stock valuations have not been recalculated yet. This applies to the whole industry.",
+        "recalculatedNotice": "This stock has been recalculated for the selected date and reloaded.",
+        "validationUnsupported": "Select a model and primary metric supported by the backend.",
+        "validationRange": "Multiple bounds must either both be empty or form a valid positive range.",
+        "validationRationaleSource": "Rationale and primary source URL are required when providing multiple assumptions.",
+        "validationSourceUrl": "Source URL must be a valid HTTP or HTTPS URL."
+      }
     }
   }
 }

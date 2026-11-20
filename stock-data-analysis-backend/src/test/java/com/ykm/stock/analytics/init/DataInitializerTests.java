@@ -138,11 +138,18 @@ class DataInitializerTests {
         DataInitializer initializer = new DataInitializer(menus, mock(JobConfigRepository.class));
         initializer.run();
         ArgumentCaptor<Menu> saved = ArgumentCaptor.forClass(Menu.class);
-        verify(menus, times(6)).saveAndFlush(saved.capture());
+        verify(menus, times(7)).saveAndFlush(saved.capture());
         Menu screen = saved.getAllValues().stream().filter(menu -> menu.getMenuId() == 5).findFirst().orElseThrow();
         assertThat(screen.getName()).isEqualTo("股票篩選");
         assertThat(screen.getPath()).isEqualTo("/stockAnalysis");
         assertThat(screen.getIcon()).isEqualTo("filter_list");
+        Menu industryValuation = saved.getAllValues().stream().filter(menu -> menu.getMenuId() == 7).findFirst().orElseThrow();
+        assertThat(industryValuation.getParentId()).isEqualTo(3);
+        assertThat(industryValuation.getName()).isEqualTo("Industry Valuation");
+        assertThat(industryValuation.getName().length()).isLessThanOrEqualTo(32);
+        assertThat(industryValuation.getIcon()).isEqualTo("tune");
+        assertThat(industryValuation.getIcon().length()).isLessThanOrEqualTo(16);
+        assertThat(industryValuation.getPath()).isEqualTo("/maintenance/industry-valuation");
         assertThat(saved.getAllValues()).extracting(Menu::getPath).doesNotContain("/watchlist");
 
         clearInvocations(menus);

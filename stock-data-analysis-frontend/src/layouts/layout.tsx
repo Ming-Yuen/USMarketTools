@@ -41,6 +41,7 @@ const MENU_I18N_KEYS: Record<string, string> = {
   "/jobConfig": "menu.jobConfiguration",
 
   "/upload": "upload.title",
+  "/maintenance/industry-valuation": "maintenance.industryValuation.title",
 };
 
 const Layout: React.FC<LayoutProps> = ({ menuData }) => {

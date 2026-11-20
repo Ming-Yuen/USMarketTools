@@ -1,10 +1,18 @@
 import { apiClient } from "./apiClient";
-import { IndustryValuationDraft, IndustryValuationReview, IndustryValuationUpdate } from "./types/dto/industryValuation";
+import {
+  IndustryValuationDraft,
+  IndustryValuationOverview,
+  IndustryValuationReview,
+  IndustryValuationUpdate,
+} from "./types/dto/industryValuation";
 import { ValuationResult } from "./types/dto/valuation";
 
 const base = (code: string) => "industry-valuation/" + encodeURIComponent(code);
 
 export const industryValuationApi = {
+  async list(): Promise<IndustryValuationOverview> {
+    return (await apiClient.get<IndustryValuationOverview>("industry-valuation")).data;
+  },
   async review(code: string): Promise<IndustryValuationReview> {
     return (await apiClient.get<IndustryValuationReview>(base(code))).data;
   },

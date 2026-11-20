@@ -116,6 +116,7 @@ public class DataInitializer implements CommandLineRunner {
         createMenu(4, "Job Configuration", "jobConfig", "/jobConfig", 3);
         createMenu(5, "股票篩選", "filter_list", "/stockAnalysis", 2);
         createMenu(6, "Data Upload", "upload_file", "/upload", 3);
+        createMenu(7, "Industry Valuation", "tune", "/maintenance/industry-valuation", 3);
     }
 
     private void createMenu(Integer menuId, String name, String icon, String path, Integer parentId) {

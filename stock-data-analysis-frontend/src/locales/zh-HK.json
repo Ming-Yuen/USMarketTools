@@ -42,6 +42,7 @@
       "PE": "P/E",
       "PB": "P/B",
       "PS": "P/S",
+      "PFCF": "P/FCF",
       "EV_EBITDA": "EV/EBITDA"
     }
   },
@@ -2244,6 +2245,110 @@
       "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "財測營收區間無效（下限大於上限），已安全拒絕入庫。",
       "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "財測 EPS 區間無效（下限大於上限），已安全拒絕入庫。",
       "CUSTOM_TAG_MONETARY_UNIT_INVALID": "自訂標籤映射僅接受標準 3 碼貨幣單位（如 USD／EUR），不可映射股數（shares）或比例單位。"
+    }
+  },
+  "maintenance": {
+    "industryValuation": {
+      "title": "產業估值設定維護中心",
+      "subtitle": "全平台盤點各產業估值模型、主指標與合理倍數完整度；清單查詢與篩選零 AI 消耗，儲存設定不會自動重算個股。",
+      "kpi": {
+        "totalIndustries": "總產業數",
+        "totalHint": "全平台產業分類字典",
+        "configured": "已完成倍數設定",
+        "configuredShare": "完整度 {{pct}}",
+        "unconfigured": "待補齊設定",
+        "unconfiguredHint": "點擊快速過濾待補齊產業",
+        "unconfiguredActive": "已套用「僅看待設定」過濾，再次點擊顯示全部"
+      },
+      "filters": {
+        "searchLabel": "搜尋產業名稱或代碼",
+        "searchPlaceholder": "輸入產業名稱或代碼關鍵字",
+        "statusLabel": "設定狀態",
+        "statusAll": "全部狀態",
+        "statusUnconfigured": "僅看待設定",
+        "statusConfigured": "僅看已設定",
+        "modelLabel": "估值模型",
+        "modelAll": "全部模型",
+        "modelUnassigned": "尚未指定模型",
+        "reset": "重設篩選",
+        "refresh": "重新整理"
+      },
+      "table": {
+        "industry": "產業名稱 / 代碼",
+        "model": "估值模型",
+        "primaryMetric": "主指標",
+        "multipleRange": "合理倍數區間 [Low, High]",
+        "activeStockCount": "活躍個股數",
+        "activeStockCountValue": "{{count}} 支",
+        "status": "狀態",
+        "actions": "操作",
+        "unset": "未設定",
+        "empty": "目前沒有符合條件的產業。",
+        "emptyDictionary": "系統尚未建立產業分類字典。",
+        "rowsPerPage": "每頁筆數",
+        "displayedRows": "第 {{from}}–{{to}} 筆，共 {{count}} 筆",
+        "nextPage": "下一頁",
+        "previousPage": "上一頁"
+      },
+      "status": {
+        "configured": "已設定",
+        "unconfigured": "待設定"
+      },
+      "actions": {
+        "editParams": "編輯參數",
+        "quickConfigure": "快速設定",
+        "triggerAi": "AI 提議",
+        "closeDrawer": "關閉面板",
+        "reloadLatest": "捨棄草稿並載入最新設定",
+        "retry": "重試"
+      },
+      "drawer": {
+        "title": "產業估值設定編輯",
+        "subtitle": "修改後適用於整個產業；AI 草稿需人工確認後才會生效。"
+      },
+      "notice": {
+        "savedAndRefreshed": "正式產業設定已保存，總覽清單已更新。",
+        "savedRefreshFailed": "正式產業設定已保存，但總覽清單刷新失敗，請重新整理清單（無需重複提交儲存）。"
+      },
+      "error": {
+        "loadFailed": "載入產業估值總覽失敗。",
+        "conflict409": "該產業設定已被其他使用者更新，請重新載入最新資料後再試。",
+        "cannotPropose": "請先保存此產業可用的估值模型與主指標，且確認 AI 已配置後再產生草稿。",
+        "reloadFailed": "重新載入最新設定失敗，已保留目前草稿供您對照。",
+        "operationFailed": "操作失敗。"
+      },
+      "panel": {
+        "title": "產業假設設定",
+        "description": "AI 只產生待確認草稿，不自動保存。模型與指標選項由後端提供。",
+        "industryMissing": "報告尚未提供產業代碼，暫不能設定產業假設。",
+        "recalculateStock": "重算此股估值",
+        "generatingDraft": "正在產生草稿，可能需要幾分鐘…",
+        "processing": "處理中…",
+        "currentConfig": "正式設定：{{model}} · {{metric}} · {{low}}–{{high}} 倍",
+        "effectiveAtHk": "生效時間（香港）：{{time}}",
+        "officialSource": "正式設定來源",
+        "noOfficialConfig": "尚無正式設定。",
+        "generateAiDraft": "產生 AI 草稿",
+        "manualEdit": "手動設定",
+        "reloadConfig": "重新讀取設定",
+        "draftWarning": "確認保存後才會修改正式設定，影響整個產業。草稿只保留在本頁，離開頁面不會保存。",
+        "partialSaveHint": "可以先只保存模型及主要指標，倍數上下限同時留空；提供倍數假設時，理由及來源網址必須填寫。",
+        "draftAsOf": "草稿參考日：{{date}}",
+        "modelLabel": "模型",
+        "primaryMetricLabel": "主要指標",
+        "lowLabel": "假設倍數下限",
+        "highLabel": "假設倍數上限",
+        "rationaleLabel": "假設理由",
+        "sourceUrlLabel": "正式設定來源網址",
+        "confirmSave": "確認保存正式設定",
+        "discardDraft": "捨棄草稿",
+        "savedNotice": "正式產業設定已保存；既有估值結果尚未重算。此設定適用整個產業，不只目前股票。",
+        "recalculatedNotice": "此股指定估值日已完成重算並重新載入；以畫面回傳的可用指標及狀態為準。",
+        "validationUnsupported": "請選擇後端支援的模型及指標。",
+        "validationRange": "倍數上下限須同時留空，或同時填寫有效正數區間。",
+        "validationRationaleSource": "提供倍數假設時，必須填寫假設理由及主要來源網址。",
+        "validationSourceUrl": "來源必須是有效的 HTTP 或 HTTPS 網址。"
+      }
     }
   }
 }

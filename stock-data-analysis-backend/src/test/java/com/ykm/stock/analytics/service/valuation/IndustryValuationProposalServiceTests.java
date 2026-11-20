@@ -1,25 +1,32 @@
 package com.ykm.stock.analytics.service.valuation;
 
+import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.model.dto.stockInsight.IndustryValuationReview;
+import com.ykm.stock.analytics.model.dto.stockInsight.IndustryValuationReview.Overview;
+import com.ykm.stock.analytics.model.dto.stockInsight.IndustryValuationReview.OverviewItem;
 import com.ykm.stock.analytics.model.dto.stockInsight.IndustryValuationReview.Source;
 import com.ykm.stock.analytics.model.dto.stockInsight.IndustryValuationReview.Update;
 import com.ykm.stock.analytics.model.entity.IndustryValuationConfig;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryRepository;
+import com.ykm.stock.analytics.repository.jpa.StockIndustryRepository.IndustryActiveStockCount;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
@@ -222,6 +229,169 @@ class IndustryValuationProposalServiceTests {
         assertStatus(() -> service.propose("I43"), HttpStatus.SERVICE_UNAVAILABLE);
         verify(ai, never()).propose(any());
         assertNoWrites();
+    }
+
+    @Test
+    void listOverviewReturnsEmptyWhenIndustryDictionaryIsEmptyWithoutBatchQueriesOrAi() {
+        Instant fixedNow = Instant.parse("2026-11-20T03:00:00Z");
+        IndustryValuationProposalService clockedService = new IndustryValuationProposalService(
+                industries, configurations, ai, fixedClock(fixedNow));
+        when(industries.findAll()).thenReturn(List.of());
+
+        Overview result = clockedService.listOverview();
+
+        assertThat(result.items()).isEmpty();
+        assertThat(result.supportedMetrics()).containsKeys("NON_FINANCIAL_OPERATING", "BANK", "INSURANCE");
+        verify(industries).findAll();
+        verify(industries, never()).countActiveStocksByIndustry();
+        verify(configurations, never()).findByIndustryCodesAt(any(), any());
+        verifyNoInteractions(ai);
+    }
+
+    @Test
+    void listOverviewAggregatesConfiguredStatusActiveCountsCanProposeAndDefaultOrderWithoutCallingAi() {
+        Instant fixedNow = Instant.parse("2026-11-20T03:00:00Z");
+        IndustryValuationProposalService clockedService = new IndustryValuationProposalService(
+                industries, configurations, ai, fixedClock(fixedNow));
+
+        StockIndustry semi = industryEntity("I43", "Semiconductors");
+        StockIndustry bank = industryEntity("BANK01", "Regional Banks");
+        StockIndustry bio = industryEntity("BIO01", "Biotech");
+        StockIndustry empty = industryEntity("EMPTY01", "Empty Industry");
+        when(industries.findAll()).thenReturn(List.of(semi, empty, bio, bank));
+        when(industries.countActiveStocksByIndustry()).thenReturn(List.of(
+                stockCount("I43", 42L),
+                stockCount("BANK01", 12L),
+                stockCount("BIO01", 25L)
+        ));
+
+        IndustryValuationConfig semiConfig = new IndustryValuationConfig();
+        semiConfig.setIndustryCode("I43");
+        semiConfig.setEffectiveAt(Instant.parse("2026-11-01T00:00:00Z"));
+        semiConfig.setModelCode("NON_FINANCIAL_OPERATING");
+        semiConfig.setPrimaryMetric("PE");
+        semiConfig.setAssumedMultipleLow(new BigDecimal("15"));
+        semiConfig.setAssumedMultipleHigh(new BigDecimal("25"));
+        semiConfig.setSourceUrl("https://example.com/semi");
+
+        IndustryValuationConfig bankPartialConfig = new IndustryValuationConfig();
+        bankPartialConfig.setIndustryCode("BANK01");
+        bankPartialConfig.setEffectiveAt(Instant.parse("2026-11-10T00:00:00Z"));
+        bankPartialConfig.setModelCode("BANK");
+        bankPartialConfig.setPrimaryMetric("PB");
+        bankPartialConfig.setAssumedMultipleLow(null);
+        bankPartialConfig.setAssumedMultipleHigh(null);
+
+        when(configurations.findByIndustryCodesAt(eq(List.of("I43", "EMPTY01", "BIO01", "BANK01")), eq(fixedNow)))
+                .thenReturn(List.of(semiConfig, bankPartialConfig));
+        when(ai.configured()).thenReturn(true);
+
+        Overview overview = clockedService.listOverview();
+
+        // 預設排序：未設定優先（activeStockCount 降冪 -> industryCode 升冪），其次已設定
+        assertThat(overview.items()).extracting(OverviewItem::industryCode)
+                .containsExactly("BIO01", "BANK01", "EMPTY01", "I43");
+        OverviewItem bioItem = overview.items().get(0);
+        assertThat(bioItem.configured()).isFalse();
+        assertThat(bioItem.canPropose()).isFalse();
+        assertThat(bioItem.activeStockCount()).isEqualTo(25L);
+        assertThat(bioItem.modelCode()).isNull();
+
+        OverviewItem bankItem = overview.items().get(1);
+        assertThat(bankItem.configured()).isFalse();
+        assertThat(bankItem.modelCode()).isEqualTo("BANK");
+        assertThat(bankItem.primaryMetric()).isEqualTo("PB");
+        assertThat(bankItem.canPropose()).isTrue();
+        assertThat(bankItem.activeStockCount()).isEqualTo(12L);
+
+        OverviewItem emptyItem = overview.items().get(2);
+        assertThat(emptyItem.configured()).isFalse();
+        assertThat(emptyItem.activeStockCount()).isZero();
+        assertThat(emptyItem.canPropose()).isFalse();
+
+        OverviewItem semiItem = overview.items().get(3);
+        assertThat(semiItem.configured()).isTrue();
+        assertThat(semiItem.canPropose()).isTrue();
+        assertThat(semiItem.assumedMultipleLow()).isEqualByComparingTo("15");
+        assertThat(semiItem.assumedMultipleHigh()).isEqualByComparingTo("25");
+        assertThat(semiItem.sourceUrl()).isEqualTo("https://example.com/semi");
+        assertThat(semiItem.activeStockCount()).isEqualTo(42L);
+
+        // 驗證僅各執行 1 次批量查詢，零 N+1 且零 AI propose 呼叫
+        verify(industries, times(1)).findAll();
+        verify(industries, times(1)).countActiveStocksByIndustry();
+        verify(configurations, times(1)).findByIndustryCodesAt(eq(List.of("I43", "EMPTY01", "BIO01", "BANK01")), eq(fixedNow));
+        verify(configurations, never()).findFirstByIndustryCodeAndEffectiveAtLessThanEqualOrderByEffectiveAtDesc(any(), any());
+        verify(ai, times(1)).configured();
+        verify(ai, never()).propose(any());
+
+        // 當 AI 未配置時，即使已填寫 BANK/PB 也不應允許單筆 AI 提議
+        when(ai.configured()).thenReturn(false);
+        Overview noAiOverview = clockedService.listOverview();
+        assertThat(noAiOverview.items()).allSatisfy(item -> assertThat(item.canPropose()).isFalse());
+        verify(ai, never()).propose(any());
+    }
+
+    @Test
+    void dateTimeServiceControlsCutoffHongKongDateAndMicrosecondPrecision() {
+        // UTC 2026-11-19T16:30:00.123456789Z 對應香港時間 2026-11-20 00:30:00
+        Instant fixedNow = Instant.parse("2026-11-19T16:30:00.123456789Z");
+        IndustryValuationProposalService clockedService = new IndustryValuationProposalService(
+                industries, configurations, ai, fixedClock(fixedNow));
+        when(ai.configured()).thenReturn(true);
+        when(ai.propose(any())).thenReturn(new IndustryValuationAiClient.Candidate(true,
+                new BigDecimal("18"), new BigDecimal("22"), List.of(), "依據", "res", "model", "{}"));
+        when(configurations.saveAndFlush(any(IndustryValuationConfig.class))).thenAnswer(invocation -> {
+            current = invocation.getArgument(0);
+            return current;
+        });
+
+        IndustryValuationReview.Draft draft = clockedService.propose("I43");
+        assertThat(draft.asOf()).isEqualTo(LocalDate.of(2026, 11, 20));
+
+        Instant base = current.getEffectiveAt();
+        IndustryValuationReview saved = clockedService.save("I43", update(
+                base, "NON_FINANCIAL_OPERATING", "PE", "18", "22", "依據", "https://example.com/research"));
+
+        assertThat(saved.current().effectiveAt()).isEqualTo(Instant.parse("2026-11-19T16:30:00.123456Z"));
+        InOrder order = inOrder(industries, configurations);
+        order.verify(industries).lockForIndustryImport();
+        order.verify(configurations).findFirstByIndustryCodeAndEffectiveAtLessThanEqualOrderByEffectiveAtDesc("I43", fixedNow);
+        order.verify(configurations).saveAndFlush(any(IndustryValuationConfig.class));
+    }
+
+    private static StockIndustry industryEntity(String code, String name) {
+        StockIndustry entity = new StockIndustry();
+        entity.setCode(code);
+        entity.setIndustry(name);
+        return entity;
+    }
+
+    private static IndustryActiveStockCount stockCount(String code, long count) {
+        return new IndustryActiveStockCount() {
+            @Override
+            public String getIndustryCode() { return code; }
+
+            @Override
+            public long getActiveStockCount() { return count; }
+        };
+    }
+
+    private static DateTimeService fixedClock(Instant fixedNow) {
+        ZoneId hk = ZoneId.of("Asia/Hong_Kong");
+        return new DateTimeService() {
+            @Override
+            public Instant now() { return fixedNow; }
+
+            @Override
+            public LocalDateTime nowLocalDateTime() { return fixedNow.atZone(hk).toLocalDateTime(); }
+
+            @Override
+            public ZonedDateTime nowZonedDateTime(ZoneId zoneId) { return fixedNow.atZone(zoneId); }
+
+            @Override
+            public LocalDate nowLocalDate() { return fixedNow.atZone(hk).toLocalDate(); }
+        };
     }
 
     private void assertNoWrites() {

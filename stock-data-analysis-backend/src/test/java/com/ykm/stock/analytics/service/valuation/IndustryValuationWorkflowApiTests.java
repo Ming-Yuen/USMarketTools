@@ -28,6 +28,43 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class IndustryValuationWorkflowApiTests {
+    @Test
+    void overviewEndpointReturnsDirectOverviewDtoWithoutCallingProposeOrSave() throws Exception {
+        IndustryValuationProposalService service = mock(IndustryValuationProposalService.class);
+        IndustryValuationReview.Overview overview = new IndustryValuationReview.Overview(
+                List.of(
+                        new IndustryValuationReview.OverviewItem(
+                                "BIOTECH", "Biotechnology", "NON_FINANCIAL_OPERATING", "PE",
+                                null, null, Instant.parse("2026-01-01T00:00:00Z"), null, false, true, 18L),
+                        new IndustryValuationReview.OverviewItem(
+                                "I43", "Semiconductors", "NON_FINANCIAL_OPERATING", "PE",
+                                new BigDecimal("18"), new BigDecimal("22"), Instant.parse("2026-01-02T12:00:00Z"),
+                                "https://example.com/research", true, true, 42L)
+                ),
+                Map.of("NON_FINANCIAL_OPERATING", List.of("PE", "PB", "PS", "PFCF", "EV_EBITDA"), "BANK", List.of("PE", "PB"))
+        );
+        when(service.listOverview()).thenReturn(overview);
+
+        mvc(service).perform(get("/industry-valuation"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.data").doesNotExist())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].industryCode").value("BIOTECH"))
+                .andExpect(jsonPath("$.items[0].configured").value(false))
+                .andExpect(jsonPath("$.items[0].canPropose").value(true))
+                .andExpect(jsonPath("$.items[0].activeStockCount").value(18))
+                .andExpect(jsonPath("$.items[1].industryCode").value("I43"))
+                .andExpect(jsonPath("$.items[1].configured").value(true))
+                .andExpect(jsonPath("$.items[1].assumedMultipleLow").value(18))
+                .andExpect(jsonPath("$.supportedMetrics.BANK[1]").value("PB"));
+
+        verify(service).listOverview();
+        verify(service, never()).propose(any());
+        verify(service, never()).save(any(), any());
+        verifyNoMoreInteractions(service);
+    }
+
     // 修改前：POST 建立 durable job；修改後：POST 直接回傳未保存草稿，PUT 才確認正式設定。
     @Test
     void reviewAndProposalReturnDirectDtosWithoutImplicitSave() throws Exception {

@@ -9,6 +9,15 @@ beforeEach(() => {
   (apiClient.put as jest.Mock).mockResolvedValue({ data: {} });
 });
 
+test("lists platform industry valuation overview via read-only GET", async () => {
+  const payload = { items: [], supportedMetrics: { NON_FINANCIAL_OPERATING: ["PE"] } };
+  (apiClient.get as jest.Mock).mockResolvedValueOnce({ data: payload });
+  const result = await industryValuationApi.list();
+  expect(apiClient.get).toHaveBeenCalledWith("industry-valuation");
+  expect(result).toEqual(payload);
+  expect(apiClient.post).not.toHaveBeenCalled();
+});
+
 test("uses synchronous proposal response without proposal IDs or polling", async () => {
   await industryValuationApi.propose("I43");
   expect(apiClient.post).toHaveBeenCalledWith("industry-valuation/I43/proposals", undefined, { timeout: 0 });

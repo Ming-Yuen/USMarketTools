@@ -23,6 +23,9 @@ import java.util.Map;
 public class IndustryValuationController {
     private final IndustryValuationProposalService service;
 
+    @GetMapping
+    public IndustryValuationReview.Overview list() { return service.listOverview(); }
+
     @GetMapping("/{code}")
     public IndustryValuationReview review(@PathVariable String code) { return service.get(code); }
 

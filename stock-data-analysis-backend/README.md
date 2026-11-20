@@ -117,6 +117,7 @@
 | `GET /valuation/{figi}/custom-peers`、`PUT`、`DELETE` | 查詢、儲存或清除指定 `figi` 的自訂對標同業清單與偏好比較指標，並即時同步最新 `verdict` 快照 |
 | `GET /valuation/{figi}/history` | 個股歷史估值曲線；參數 `from`、`through`、`frequency`（`MONTH_END`\|`DAILY`）、`source`（預設 `LOCAL` 本地五倍數，可選 `FUTU` 原生三倍數） |
 | `POST /valuation/recalculate` | 手動整股重建指定 `figi` 的 `stock_financial_period` 並刷新 `stock_valuation_latest`，回傳區間估值 |
+| `GET /industry-valuation` | 唯讀查詢全平台產業估值設定總覽（含活躍個股數、模型／指標／合理倍數完整度與支援模型字典，零 AI 消耗） |
 | `GET /industry-valuation/{code}` | 查詢正式產業估值設定、支援模型及是否可產生 AI 草稿 |
 | `POST /industry-valuation/{code}/proposals` | 同步產生待確認 AI 產業倍數草稿（不自動持久化） |
 | `PUT /industry-valuation/{code}/config` | 人工確認並保存正式產業估值設定 |

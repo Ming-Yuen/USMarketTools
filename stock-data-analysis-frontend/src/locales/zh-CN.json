@@ -42,6 +42,7 @@
       "PE": "P/E",
       "PB": "P/B",
       "PS": "P/S",
+      "PFCF": "P/FCF",
       "EV_EBITDA": "EV/EBITDA"
     }
   },
@@ -2244,6 +2245,110 @@
       "SUMMARY_GUIDANCE_REVENUE_RANGE_INVALID": "财测营收区间无效（下限大于上限），已安全拒绝入库。",
       "SUMMARY_GUIDANCE_EPS_RANGE_INVALID": "财测 EPS 区间无效（下限大于上限），已安全拒绝入库。",
       "CUSTOM_TAG_MONETARY_UNIT_INVALID": "自定义标签映射仅接受标准 3 码货币单位（如 USD／EUR），不可映射股数（shares）或比例单位。"
+    }
+  },
+  "maintenance": {
+    "industryValuation": {
+      "title": "产业估值设置维护中心",
+      "subtitle": "全平台盘点各产业估值模型、主指标与合理倍数完整度；清单查询与筛选零 AI 消耗，保存设置不会自动重算个股。",
+      "kpi": {
+        "totalIndustries": "总产业数",
+        "totalHint": "全平台产业分类字典",
+        "configured": "已完成倍数设置",
+        "configuredShare": "完整度 {{pct}}",
+        "unconfigured": "待补齐设置",
+        "unconfiguredHint": "点击快速过滤待补齐产业",
+        "unconfiguredActive": "已应用“仅看待设置”过滤，再次点击显示全部"
+      },
+      "filters": {
+        "searchLabel": "搜索产业名称或代码",
+        "searchPlaceholder": "输入产业名称或代码关键字",
+        "statusLabel": "设置状态",
+        "statusAll": "全部状态",
+        "statusUnconfigured": "仅看待设置",
+        "statusConfigured": "仅看已设置",
+        "modelLabel": "估值模型",
+        "modelAll": "全部模型",
+        "modelUnassigned": "尚未指定模型",
+        "reset": "重置筛选",
+        "refresh": "刷新"
+      },
+      "table": {
+        "industry": "产业名称 / 代码",
+        "model": "估值模型",
+        "primaryMetric": "主指标",
+        "multipleRange": "合理倍数区间 [Low, High]",
+        "activeStockCount": "活跃个股数",
+        "activeStockCountValue": "{{count}} 支",
+        "status": "状态",
+        "actions": "操作",
+        "unset": "未设置",
+        "empty": "目前没有符合条件的产业。",
+        "emptyDictionary": "系统尚未建立产业分类字典。",
+        "rowsPerPage": "每页条数",
+        "displayedRows": "第 {{from}}–{{to}} 条，共 {{count}} 条",
+        "nextPage": "下一页",
+        "previousPage": "上一页"
+      },
+      "status": {
+        "configured": "已设置",
+        "unconfigured": "待设置"
+      },
+      "actions": {
+        "editParams": "编辑参数",
+        "quickConfigure": "快速设置",
+        "triggerAi": "AI 提议",
+        "closeDrawer": "关闭面板",
+        "reloadLatest": "舍弃草稿并加载最新设置",
+        "retry": "重试"
+      },
+      "drawer": {
+        "title": "产业估值设置编辑",
+        "subtitle": "修改后适用于整个产业；AI 草稿需人工确认后才会生效。"
+      },
+      "notice": {
+        "savedAndRefreshed": "正式产业设置已保存，总览清单已更新。",
+        "savedRefreshFailed": "正式产业设置已保存，但总览清单刷新失败，请重新刷新清单（无需重复提交保存）。"
+      },
+      "error": {
+        "loadFailed": "加载产业估值总览失败。",
+        "conflict409": "该产业设置已被其他用户更新，请重新加载最新数据后再试。",
+        "cannotPropose": "请先保存此产业可用的估值模型与主指标，并确认 AI 已配置后再生成草稿。",
+        "reloadFailed": "重新加载最新设置失败，已保留当前草稿供您对照。",
+        "operationFailed": "操作失败。"
+      },
+      "panel": {
+        "title": "产业假设设置",
+        "description": "AI 只生成待确认草稿，不自动保存。模型与指标选项由后端提供。",
+        "industryMissing": "报告尚未提供产业代码，暂不能设置产业假设。",
+        "recalculateStock": "重算此股估值",
+        "generatingDraft": "正在生成草稿，可能需要几分钟…",
+        "processing": "处理中…",
+        "currentConfig": "正式设置：{{model}} · {{metric}} · {{low}}–{{high}} 倍",
+        "effectiveAtHk": "生效时间（香港）：{{time}}",
+        "officialSource": "正式设置来源",
+        "noOfficialConfig": "尚无正式设置。",
+        "generateAiDraft": "生成 AI 草稿",
+        "manualEdit": "手动设置",
+        "reloadConfig": "重新读取设置",
+        "draftWarning": "确认保存后才会修改正式设置，影响整个产业。草稿只保留在本页，离开页面不会保存。",
+        "partialSaveHint": "可以先只保存模型及主要指标，倍数上下限同时留空；提供倍数假设时，理由及来源网址必须填写。",
+        "draftAsOf": "草稿参考日：{{date}}",
+        "modelLabel": "模型",
+        "primaryMetricLabel": "主要指标",
+        "lowLabel": "假设倍数下限",
+        "highLabel": "假设倍数上限",
+        "rationaleLabel": "假设理由",
+        "sourceUrlLabel": "正式设置来源网址",
+        "confirmSave": "确认保存正式设置",
+        "discardDraft": "舍弃草稿",
+        "savedNotice": "正式产业设置已保存；既有估值结果尚未重算。此设置适用整个产业，不只当前股票。",
+        "recalculatedNotice": "此股指定估值日已完成重算并重新加载；以画面返回的可用指标及状态为准。",
+        "validationUnsupported": "请选择后端支持的模型及指标。",
+        "validationRange": "倍数上下限须同时留空，或同时填写有效正数区间。",
+        "validationRationaleSource": "提供倍数假设时，必须填写假设理由及主要来源网址。",
+        "validationSourceUrl": "来源必须是有效的 HTTP 或 HTTPS 网址。"
+      }
     }
   }
 }

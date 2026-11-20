@@ -14,4 +14,16 @@ public interface StockIndustryRepository extends JpaRepository<StockIndustry, St
 
     @Query("select distinct c from StockIndustryHistory h join h.industry c join Stock s on s.figi = h.figi where h.observedTo is null and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE order by c.code")
     List<StockIndustry> findAssignedToActiveStocks();
+
+    interface IndustryActiveStockCount {
+        String getIndustryCode();
+        long getActiveStockCount();
+    }
+
+    /** 一次聚合各產業目前歸屬且狀態為 ACTIVE 之去重 FIGI 數，供產業估值維護中心總覽避免 N+1 查詢。 */
+    @Query("select h.industry.code as industryCode, count(distinct h.figi) as activeStockCount "
+            + "from StockIndustryHistory h join Stock s on s.figi = h.figi "
+            + "where h.observedTo is null and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE "
+            + "group by h.industry.code")
+    List<IndustryActiveStockCount> countActiveStocksByIndustry();
 }

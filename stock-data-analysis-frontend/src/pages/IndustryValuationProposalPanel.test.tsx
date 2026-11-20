@@ -1,12 +1,14 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import "../i18n";
 import { IndustryValuationProposalPanel } from "./IndustryValuationProposalPanel";
 import { industryValuationApi } from "../services/industryValuationApi";
 import { IndustryValuationReview } from "../services/types/dto/industryValuation";
 
+jest.mock("../services/apiClient", () => ({ apiClient: { get: jest.fn(), post: jest.fn(), put: jest.fn(), delete: jest.fn() } }));
 jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn(), useQueryClient: jest.fn() }));
-jest.mock("../services/industryValuationApi", () => ({ industryValuationApi: { propose: jest.fn(), save: jest.fn(), recalculate: jest.fn() } }));
+jest.mock("../services/industryValuationApi", () => ({ industryValuationApi: { list: jest.fn(), review: jest.fn(), propose: jest.fn(), save: jest.fn(), recalculate: jest.fn() } }));
 let review: IndustryValuationReview;
 const reload = jest.fn();
 const invalidate = jest.fn();
@@ -19,7 +21,7 @@ beforeEach(() => {
   }, supportedMetrics: { PE: ["PE"], CASH_FLOW: ["PFCF"] }, canPropose: true };
   (useQuery as jest.Mock).mockImplementation(() => ({ data: review, isLoading: false, isError: false, refetch: jest.fn() }));
   invalidate.mockResolvedValue(undefined);
-  (useQueryClient as jest.Mock).mockReturnValue({ setQueryData: jest.fn(), invalidateQueries: invalidate });
+  (useQueryClient as jest.Mock).mockReturnValue({ setQueryData: jest.fn(), invalidateQueries: invalidate, cancelQueries: jest.fn().mockResolvedValue(undefined) });
   (industryValuationApi.propose as jest.Mock).mockResolvedValue({
     modelCode: "PE", primaryMetric: "PE", assumedMultipleLow: 15, assumedMultipleHigh: 25, asOf: "2026-11-06",
     rationale: "待人工確認的假設", sources: [{ url: "https://example.test/research", title: "來源", publishedDate: "2026-11-05", evidence: "資料摘要" }],
@@ -110,4 +112,50 @@ test("only recalculates the explicitly selected stock and valuation date", async
   await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["valuation-history", "TEST"] });
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["stock-screen"] });
+});
+
+test("invalidates industry-valuation-overview cache when saved from StockAnalysis and hides recalculate when figi is omitted", async () => {
+  review = { ...review, current: null, canPropose: false };
+  render(<IndustryValuationProposalPanel industryCode="I43" />);
+  expect(screen.queryByRole("button", { name: "重算此股估值" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "手動設定" }));
+  fireEvent.mouseDown(screen.getByRole("combobox", { name: "模型" }));
+  fireEvent.click(screen.getByRole("option", { name: "PE" }));
+  fireEvent.mouseDown(screen.getByRole("combobox", { name: "主要指標" }));
+  fireEvent.click(screen.getByRole("option", { name: "P/E" }));
+  fireEvent.click(screen.getByRole("button", { name: "確認保存正式設定" }));
+  await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["industry-valuation-overview"] }));
+});
+
+test("handles PUT 409 conflict without losing draft and distinguishes POST 409 proposal error", async () => {
+  const refetch = jest.fn().mockResolvedValue({
+    isError: false,
+    data: {
+      ...review,
+      current: { ...review.current!, effectiveAt: "2026-11-09T08:00:00.123456Z", rationale: "最新版本理由", sourceUrl: "https://example.test/latest" },
+    },
+  });
+  (useQuery as jest.Mock).mockImplementation(() => ({ data: review, isLoading: false, isError: false, refetch }));
+  (industryValuationApi.propose as jest.Mock).mockRejectedValueOnce({ response: { status: 409, data: { message: "請先設定這個產業可用的估值模型及主要指標。" } } });
+  (industryValuationApi.save as jest.Mock).mockRejectedValueOnce({ response: { status: 409, data: { message: "正式設定已改變，請重新載入後確認。" } } });
+
+  render(<IndustryValuationProposalPanel industryCode="I43" figi="TEST" reloadReport={reload} />);
+  // POST 409 保留提議自身訊息，不進入併發鎖定
+  fireEvent.click(screen.getByRole("button", { name: "產生 AI 草稿" }));
+  await screen.findByText("請先設定這個產業可用的估值模型及主要指標。");
+  expect(screen.queryByRole("button", { name: "捨棄草稿並載入最新設定" })).toBeNull();
+
+  // PUT 409 顯示衝突警告並鎖住舊稿提交與 AI 提議，重讀失敗時保留鎖定，重讀成功後才以最新版本重建表單
+  fireEvent.click(screen.getByRole("button", { name: "手動設定" }));
+  fireEvent.change(screen.getByLabelText("正式設定來源網址"), { target: { value: "https://example.test/a" } });
+  fireEvent.click(screen.getByRole("button", { name: "確認保存正式設定" }));
+  await screen.findByText("該產業設定已被其他使用者更新，請重新載入最新資料後再試。");
+  expect((screen.getByRole("button", { name: "確認保存正式設定" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "產生 AI 草稿" }) as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.click(screen.getByRole("button", { name: "捨棄草稿並載入最新設定" }));
+  await screen.findByDisplayValue("最新版本理由");
+  expect(refetch).toHaveBeenCalledTimes(1);
+  expect((screen.getByRole("button", { name: "確認保存正式設定" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "產生 AI 草稿" }) as HTMLButtonElement).disabled).toBe(false);
 });

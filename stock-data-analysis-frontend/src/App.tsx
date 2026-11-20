@@ -10,6 +10,7 @@ import { MenuTree, MenuEnquiryResponse } from "./services/types/dto/menu";
 import { DataUploadPage } from "./pages/DataUpload";
 import HomeDashboard from "./pages/HomeDashboard";
 import { StockAnalysisPage } from "./pages/StockAnalysis";
+import { IndustryValuationMaintenancePage } from "./pages/IndustryValuationMaintenancePage";
 
 // 页面配置接口
 interface PageConfig {
@@ -25,6 +26,7 @@ const PAGE_CONFIG_MAP: Record<string, PageConfig> = {
   "/upload": { component: DataUploadPage },
   "/jobConfig": { component: JobManagementPage },
   "/Home": { component: JobManagementPage },
+  "/maintenance/industry-valuation": { component: IndustryValuationMaintenancePage },
 
   // 在这里添加更多页面映射
   // 'stockAnalysis': { component: StockAnalysisPage },
@@ -75,6 +77,15 @@ const generateRoutes = (menuTrees: MenuTree[]) => {
   return routes;
 };
 
+const hasMenuRoutePath = (menuTrees: MenuTree[], targetPath: string): boolean => {
+  const normalizedTarget = targetPath.replace(/^\//, "");
+  return menuTrees.some((item) => {
+    const normalizedItem = (item.path || "").replace(/^\//, "");
+    if (normalizedItem === normalizedTarget) return true;
+    return item.children ? hasMenuRoutePath(item.children, targetPath) : false;
+  });
+};
+
 const App: React.FC = () => {
   const { data: menuData, isPending, error } = useFetch<MenuEnquiryResponse>(apiConfig.getMenu);
 
@@ -88,6 +99,7 @@ const App: React.FC = () => {
 
   // Default to empty array if no menu data
   const menuTrees = menuData?.menuTrees || [];
+  const hasIndustryMaintenanceMenuRoute = hasMenuRoutePath(menuTrees, "/maintenance/industry-valuation");
 
   return (
     <Routes>
@@ -97,6 +109,9 @@ const App: React.FC = () => {
 
         <Route path="stockAnalysis" element={<StockScreenerPage />} />
         <Route path="stockAnalysis/:figi" element={<StockAnalysisPage />} />
+        {!hasIndustryMaintenanceMenuRoute && (
+          <Route path="maintenance/industry-valuation" element={<IndustryValuationMaintenancePage />} />
+        )}
 
         {/* 404 */}
         <Route path="*" element={<div>頁面不存在</div>} />

@@ -591,10 +591,32 @@ public class StockValuationService {
         refreshLatestValuations(uniqueFigis, null);
     }
 
-    /** 整股重建指定股票自 2014 年起的所有標準化財季分母列（每股約 40 列）。 */
+    /** 整股重建指定股票自 2014 年起的所有標準化財季分母列（每股約 40 列）；每批先按 FIGI 字典序鎖定 stock_status 再重讀原料重建。 */
     public void rebuildFinancialPeriods(Collection<String> figis) {
         if (figis == null || figis.isEmpty()) return;
-        List<String> orderedFigis = figis.stream().filter(Objects::nonNull).distinct().toList();
+        List<String> orderedFigis = figis.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(s -> !s.isBlank()).distinct().sorted().toList();
+        if (orderedFigis.isEmpty()) return;
+
+        for (List<String> batchFigis : Lists.partition(orderedFigis, REBUILD_BATCH_SIZE)) {
+            transactions.executeWithoutResult(tx -> {
+                statuses.findAllByIdForUpdate(batchFigis);
+                rebuildFinancialPeriodsInCurrentTx(batchFigis);
+            });
+        }
+    }
+
+    /**
+     * 於呼叫端既有的寫入交易中直接重建指定股票的標準化財季分母（呼叫端須已按 FIGI 字典序鎖定 stock_status）。
+     * 先 flush 上游寫入確保讀取到最新財報／SEC／拆股／主檔／股數，並在同一交易內原子替換分母列。
+     */
+    public void rebuildFinancialPeriodsInCurrentTx(Collection<String> figis) {
+        if (figis == null || figis.isEmpty()) return;
+        List<String> orderedFigis = figis.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(s -> !s.isBlank()).distinct().sorted().toList();
+        if (orderedFigis.isEmpty()) return;
+
+        entityManager.flush();
         Instant calculatedAt = dateTimeService.now();
         LocalDate lastClosed = calendar.getLastClosedTradingDay(calculatedAt);
 
@@ -664,16 +686,14 @@ public class StockValuationService {
                 builtByFigi.put(figi, built);
             }
 
-            transactions.executeWithoutResult(tx -> {
-                financialPeriods.deleteByFigiIn(builtByFigi.keySet());
-                financialPeriods.flush();
-                for (List<StockFinancialPeriod> rows : builtByFigi.values()) {
-                    for (StockFinancialPeriod row : rows) {
-                        entityManager.persist(row);
-                    }
+            financialPeriods.deleteByFigiIn(builtByFigi.keySet());
+            financialPeriods.flush();
+            for (List<StockFinancialPeriod> rows : builtByFigi.values()) {
+                for (StockFinancialPeriod row : rows) {
+                    entityManager.persist(row);
                 }
-                entityManager.flush();
-            });
+            }
+            entityManager.flush();
             log.info("Stock financial periods rebuilt | stocks={} rows={}",
                     builtByFigi.size(), builtByFigi.values().stream().mapToInt(List::size).sum());
         }
@@ -693,7 +713,9 @@ public class StockValuationService {
             ValuationReferenceDto historicalRef,
             BigDecimal marketCap,
             BigDecimal revenueGrowthYoy,
-            boolean directRefresh
+            boolean directRefresh,
+            long periodCount,
+            Instant maxPeriodUpdatedAt
     ) {}
 
     private record IssuerSnapshotRow(String rawIssuerKey, StockValuationLatest snapshot) {}
@@ -1280,10 +1302,12 @@ public class StockValuationService {
                     ? modelCtx.industryCode() : normalizedEvaluated.industryCode();
             StockValuationLatest priorRow = priorLatestMap.get(figi);
             Instant priorCalcAt = priorRow != null ? priorRow.getCalculatedAt() : null;
+            Instant maxPeriodUpdatedAt = stockPeriods.stream().map(StockFinancialPeriod::getUpdatedAt)
+                    .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
             results.add(new PendingTargetEvaluation(
                     stock, stockValDate, priorCalcAt, normalizedEvaluated, snapshot, selectedMetric,
                     resolvedIndustryCode, financialInstitution, matched, denoms, historicalRef,
-                    marketCap, revGrowthYoy, directRefresh
+                    marketCap, revGrowthYoy, directRefresh, stockPeriods.size(), maxPeriodUpdatedAt
             ));
         }
         return results;
@@ -1531,8 +1555,47 @@ public class StockValuationService {
                 return;
             }
 
-            // 批次補評鎖內新增、版本變更或由較新直接目標降級為僅更新 verdict 之反向目標
+            // 鎖內重查直接目標之財季分母簽章（筆數與最新計算時間），防止鎖外讀取舊分母後被併發重建覆蓋發布舊倍數
             Instant evalCutoff = laterInstant(calculatedAt, dateTimeService.now());
+            if (!committableDirectFigis.isEmpty()) {
+                Map<String, StockFinancialPeriodRepository.FigiPeriodSignature> currentSigs = new HashMap<>();
+                for (List<String> sigPart : Lists.partition(new ArrayList<>(committableDirectFigis), 500)) {
+                    List<StockFinancialPeriodRepository.FigiPeriodSignature> rows = financialPeriods.findPeriodSignaturesByFigiIn(sigPart);
+                    if (rows != null) {
+                        for (StockFinancialPeriodRepository.FigiPeriodSignature sig : rows) {
+                            currentSigs.put(sig.figi(), sig);
+                        }
+                    }
+                }
+                List<Stock> staleDirectStocks = new ArrayList<>();
+                Map<String, StockValuationLatest> staleDirectStored = new HashMap<>();
+                Map<String, LocalDate> staleDirectDates = new HashMap<>();
+                for (String dirFigi : committableDirectFigis) {
+                    PendingTargetEvaluation pre = workingPending.get(dirFigi);
+                    Stock s = lockedStocks.get(dirFigi);
+                    if (pre == null || s == null) continue;
+                    StockFinancialPeriodRepository.FigiPeriodSignature cur = currentSigs.get(dirFigi);
+                    long curCount = cur == null ? 0L : cur.periodCount();
+                    Instant curMaxUpdated = cur == null ? null : cur.maxUpdatedAt();
+                    if (curCount != pre.periodCount() || !Objects.equals(curMaxUpdated, pre.maxPeriodUpdatedAt())) {
+                        staleDirectStocks.add(s);
+                        StockValuationLatest ex = existingLatest.get(dirFigi);
+                        if (ex != null) staleDirectStored.put(dirFigi, ex);
+                        staleDirectDates.put(dirFigi, pre.valuationDate());
+                    }
+                }
+                if (!staleDirectStocks.isEmpty()) {
+                    for (List<Stock> stalePart : Lists.partition(staleDirectStocks, LATEST_BATCH_SIZE)) {
+                        List<PendingTargetEvaluation> reEvaluated = evaluateTargetBatchInMemory(
+                                stalePart, staleDirectStored, null, staleDirectDates, lastClosed, evalCutoff, true);
+                        for (PendingTargetEvaluation item : reEvaluated) {
+                            workingPending.put(item.stock().getFigi(), item);
+                        }
+                    }
+                }
+            }
+
+            // 批次補評鎖內新增、版本變更或由較新直接目標降級為僅更新 verdict 之反向目標
             List<Stock> toEvalStocks = new ArrayList<>();
             Map<String, StockValuationLatest> toEvalStored = new HashMap<>();
             Map<String, LocalDate> toEvalDates = new HashMap<>();

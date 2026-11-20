@@ -127,6 +127,16 @@ public class EnhancementAiGateway {
         return provider;
     }
 
+    public Duration activeTimeout() {
+        if (PROVIDER_OPENAI_API.equals(provider)) {
+            return openAiTimeout;
+        }
+        if (PROVIDER_CODEX_CLI.equals(provider)) {
+            return codexTimeout;
+        }
+        return Duration.ofSeconds(60);
+    }
+
     /** 透過已啟用之輕量自動通道產生結構化 JSON；通道未啟用或正忙時明確拋出狀態異常，絕不自動重試或切往付費高價模型。 */
     public AiJsonResult generateStructuredJson(String schemaName, String jsonSchemaText, String instructions, String userPayload) {
         if (!isAutomatedAvailable()) {

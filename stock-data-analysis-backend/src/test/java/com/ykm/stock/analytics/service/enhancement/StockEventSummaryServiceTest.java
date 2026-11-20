@@ -208,6 +208,59 @@ class StockEventSummaryServiceTest {
     }
 
     @Test
+    void staleInProgressFromAbruptShutdownRecoversToTimedOutWithoutRebilling() {
+        Stock stock = new Stock();
+        stock.setFigi("BBG000B9XRY4");
+        stock.setSymbol("AAPL");
+        stock.setLongName("Apple Inc.");
+
+        StockNewsEventCache filing = new StockNewsEventCache();
+        filing.setFigi("BBG000B9XRY4");
+        filing.setSymbol("AAPL");
+        filing.setSourceType(StockNewsEventCache.SOURCE_ALPACA_NEWS);
+        filing.setExternalId("news-stale");
+        filing.setHeadline("Apple stale in-progress event");
+        filing.setPublishedAt(Instant.parse("2026-11-04T20:00:00Z"));
+
+        Instant staleUpdatedAt = Instant.parse("2026-11-05T11:50:00Z");
+        com.ykm.stock.analytics.model.entity.StockEventAiSummary staleRow = new com.ykm.stock.analytics.model.entity.StockEventAiSummary();
+        staleRow.setId(88L);
+        staleRow.setFigi("BBG000B9XRY4");
+        staleRow.setSymbol("AAPL");
+        staleRow.setTriggerDate(LocalDate.of(2026, 11, 4));
+        staleRow.setStatus(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_IN_PROGRESS);
+        staleRow.setUpdatedAt(staleUpdatedAt);
+
+        com.ykm.stock.analytics.model.entity.StockEventAiSummary recoveredRow = new com.ykm.stock.analytics.model.entity.StockEventAiSummary();
+        recoveredRow.setId(88L);
+        recoveredRow.setFigi("BBG000B9XRY4");
+        recoveredRow.setSymbol("AAPL");
+        recoveredRow.setTriggerDate(LocalDate.of(2026, 11, 4));
+        recoveredRow.setStatus(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_TIMED_OUT);
+        recoveredRow.setErrorMessage("AI_IN_PROGRESS_STALE_RECOVERED");
+
+        when(aiGateway.isAutomatedAvailable()).thenReturn(true);
+        when(aiGateway.activeTimeout()).thenReturn(java.time.Duration.ofSeconds(45));
+        when(cacheRepository.findTop30ByFigiOrderByPublishedAtDescIdDesc("BBG000B9XRY4")).thenReturn(List.of(filing));
+        when(transactions.getTransactionManager()).thenReturn(mock(PlatformTransactionManager.class));
+        when(summaryRepository.findByFigiAndInputFingerprint(any(), any())).thenReturn(Optional.of(staleRow));
+        when(summaryRepository.markStaleInProgressTimedOut(
+                org.mockito.ArgumentMatchers.eq(88L),
+                org.mockito.ArgumentMatchers.eq(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_IN_PROGRESS),
+                org.mockito.ArgumentMatchers.eq(staleUpdatedAt),
+                org.mockito.ArgumentMatchers.eq(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_TIMED_OUT),
+                any(),
+                any())).thenReturn(1);
+        when(summaryRepository.findById(88L)).thenReturn(Optional.of(recoveredRow));
+
+        com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.EventAiSummaryDto result =
+                service.summarizeAutomated(stock, "MANUAL");
+
+        assertThat(result.status()).isEqualTo(com.ykm.stock.analytics.model.entity.StockEventAiSummary.STATUS_TIMED_OUT);
+        verify(aiGateway, never()).generateStructuredJson(any(), any(), any(), any());
+    }
+
+    @Test
     void refreshNewsAndFilingsReportsAccurateSavedCountsAndShortCircuitsExtractedExhibit991() throws Exception {
         Stock stock = new Stock();
         stock.setFigi("BBG000B9XRY4");

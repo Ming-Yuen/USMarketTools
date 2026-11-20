@@ -9,16 +9,19 @@ import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Symbol;
 import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerDetails;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.market.FinnhubService;
 import com.ykm.stock.analytics.service.stock.MassiveService;
 import com.ykm.stock.analytics.service.stock.StockService;
+import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -27,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -45,6 +49,10 @@ public class StockDailyTask implements Job {
     private final StockService stockService;
     private final SecurityTypePolicy securityTypePolicy;
     private final TransactionTemplate transactionTemplate;
+    @Autowired(required = false)
+    private StockStatusRepository stockStatusRepository;
+    @Autowired(required = false)
+    private StockValuationService stockValuationService;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -84,15 +92,23 @@ public class StockDailyTask implements Job {
         Map<String, String> secSics = resolveSecSics(resolvedCiks);
 
         // 外部主檔來源均已取得後才開始交易；既有股票的 tracked 開關絕不覆寫。
+        Set<String> valuationAffectedFigis = new LinkedHashSet<>();
         transactionTemplate.executeWithoutResult(status -> {
             Map<String, Stock> existing = stockService.findAllStocks().stream()
                     .collect(Collectors.toMap(Stock::getFigi, stock -> stock));
+            Set<String> directlyChangedFigis = new LinkedHashSet<>();
+            Set<String> touchedCiks = new LinkedHashSet<>();
             for (List<MassiveTickerDetails> batch : Lists.partition(List.copyOf(current.values()), STOCK_BATCH_SIZE)) {
                 Set<String> newFigis = new LinkedHashSet<>();
                 List<Stock> stocks = batch.stream().map(ticker -> {
                     String figi = ticker.getCompositeFigi().trim();
                     Stock stock = existing.get(figi);
-                    if (stock == null) {
+                    boolean isNew = stock == null;
+                    String oldCik = isNew ? null : stock.getCik();
+                    String oldSic = isNew ? null : stock.getSic();
+                    String oldType = isNew ? null : stock.getStockType();
+                    ActiveStatus oldStatus = isNew ? null : stock.getActiveStatus();
+                    if (isNew) {
                         stock = new Stock();
                         stock.setFigi(figi);
                         stock.setTracked(true);
@@ -100,10 +116,21 @@ public class StockDailyTask implements Job {
                         newFigis.add(figi);
                     }
                     String resolvedCik = resolveTickerCik(ticker.getTicker(), supersededTickers.get(figi), secCiks);
+                    String resolvedType = finnhubTypes.get(figi);
+                    String resolvedSic = resolvedCik == null ? null : secSics.get(resolvedCik);
                     stockConverter.updateFromMassive(ticker, stock);
-                    stock.setStockType(finnhubTypes.get(figi));
+                    stock.setStockType(resolvedType);
                     stock.setCik(resolvedCik);
-                    stock.setSic(resolvedCik == null ? null : secSics.get(resolvedCik));
+                    stock.setSic(resolvedSic);
+                    boolean cikChanged = !Objects.equals(oldCik, resolvedCik);
+                    boolean sicChanged = !Objects.equals(oldSic, resolvedSic);
+                    boolean typeChanged = !Objects.equals(oldType, resolvedType);
+                    boolean statusChanged = isNew || oldStatus != stock.getActiveStatus();
+                    if (cikChanged || sicChanged || typeChanged || statusChanged) {
+                        directlyChangedFigis.add(figi);
+                        if (oldCik != null && !oldCik.isBlank()) touchedCiks.add(oldCik);
+                        if (resolvedCik != null && !resolvedCik.isBlank()) touchedCiks.add(resolvedCik);
+                    }
                     return stock;
                 }).toList();
                 stockService.updateStocks(stocks);
@@ -112,9 +139,36 @@ public class StockDailyTask implements Job {
             List<Stock> inactive = existing.values().stream()
                     .filter(stock -> stock.getActiveStatus() == ActiveStatus.ACTIVE && !current.containsKey(stock.getFigi()))
                     .toList();
-            for (Stock stock : inactive) stock.setActiveStatus(ActiveStatus.INACTIVE);
+            for (Stock stock : inactive) {
+                stock.setActiveStatus(ActiveStatus.INACTIVE);
+                if (stock.getCik() != null && !stock.getCik().isBlank()) touchedCiks.add(stock.getCik());
+            }
             for (List<Stock> batch : Lists.partition(inactive, STOCK_BATCH_SIZE)) stockService.updateStocks(batch);
+
+            // 若有 CIK／SIC／股類或兄弟股上下市異動，同交易鎖定受影響活躍估值股狀態列並原地重建財季分母
+            if (stockValuationService != null && (!directlyChangedFigis.isEmpty() || !touchedCiks.isEmpty())) {
+                for (Stock stock : existing.values()) {
+                    if (stock.getActiveStatus() != ActiveStatus.ACTIVE
+                            || !SecurityTypePolicy.supportsValuation(stock.getStockType())) {
+                        continue;
+                    }
+                    if (directlyChangedFigis.contains(stock.getFigi())
+                            || (stock.getCik() != null && touchedCiks.contains(stock.getCik()))) {
+                        valuationAffectedFigis.add(stock.getFigi());
+                    }
+                }
+                if (!valuationAffectedFigis.isEmpty()) {
+                    List<String> sortedAffected = valuationAffectedFigis.stream().sorted().toList();
+                    if (stockStatusRepository != null) {
+                        stockStatusRepository.findAllByIdForUpdate(sortedAffected);
+                    }
+                    stockValuationService.rebuildFinancialPeriodsInCurrentTx(sortedAffected);
+                }
+            }
         });
+        if (!valuationAffectedFigis.isEmpty() && stockValuationService != null) {
+            stockValuationService.refreshLatestValuations(valuationAffectedFigis, null);
+        }
     }
 
     private String resolveTickerCik(String primaryTicker, String supersededTicker, Map<String, String> secCiks) {

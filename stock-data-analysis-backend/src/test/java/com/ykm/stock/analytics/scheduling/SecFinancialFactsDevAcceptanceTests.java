@@ -35,7 +35,7 @@ class SecFinancialFactsDevAcceptanceTests {
     @MockitoBean private StockRepository stocks;
     @MockitoBean private DataInitializer initializer;
     @MockitoBean private QuartzConfig quartz;
-    @Autowired private SecFinancialFactsDailySyncJob job;
+    @Autowired private StockFundamentalDailySyncJob job;
     @Autowired private SecFinancialFactRepository facts;
     @Autowired private StockStatusRepository statuses;
     @Autowired private JdbcTemplate jdbc;

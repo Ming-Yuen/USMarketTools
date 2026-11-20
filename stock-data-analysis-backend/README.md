@@ -68,13 +68,13 @@
 
 - `stock.tracked` 預設為 `true`（全市場自動納入），主檔同步任務不會覆寫既有股票的人工設定。
 - 當使用者透過 API 將個別標的設為 `tracked = false` 時，該股會跳過富途財報同步、SEC 財務同步、估值計算、分類同步、盈餘預測與全市場選股。
-- **關聯不斷鏈保護**：若某停追股與任一 `tracked = true` 股票共用非空 `cik`（如雙股類兄弟股），或屬於大盤基準 ETF，行情（`StockQuoteDailyTask`）與拆股（`StockSplitDailyTask`）仍繼續同步；同發行人多股類判定排除 `ADR` 干擾。
+- **關聯不斷鏈保護**：若某停追股與任一 `tracked = true` 股票共用非空 `cik`（如雙股類兄弟股），或屬於大盤基準 ETF，行情（`StockQuoteDailyTask`）與拆股（`StockFundamentalDailySyncJob`）仍繼續同步；同發行人多股類判定排除 `ADR` 干擾。
 
 ## 3. 財報提取、全市場會計規則與財季分母架構
 
 ### 3.1 富途多模板靜態映射與排程減負
 
-- `FINANCIAL_REPORT_DAILY_SYNC` 僅同步損益表（`1`）、資產負債表（`2`）與現金流量表（`3`），不再抓取 `MainIndex`（`4`）。平日僅針對尚無財報水位的新股、或近 14 天在財報日曆／SEC `submissions.zip` 有新申報的股票增量同步；每週六執行全市場巡檢。
+- `STOCK_FUNDAMENTAL_DAILY_SYNC` 合併原拆股、富途三大財報（損益表 `1`、資產負債表 `2`、現金流量表 `3`，不再抓取 `MainIndex` `4`）與 SEC `companyfacts.zip`/`submissions.zip` 同步，以公司組（同 `canonicalCik` 一組）逐組原子落庫並在同交易原地重建 `stock_financial_period`，寫入 `stock_status.fundamental_sync_date` 斷點；平日僅針對新股或近 14 天財報日曆／SEC 新申報增量查富途，每週六全市場巡檢（週六中斷跨日後自動補跑未越過週六水位之股票）。
 - `FinancialReportValuationCalculator` 內建多模板靜態映射規則（涵蓋一般工商 `8xxx`、銀行 `9xxx`、保險 `10xxx`），優先以 `(statement_type, fieldId)` 複合鍵匹配（避免跨表重號衝突），缺 `fieldId` 時退回標準英文項目名稱，未知細項直接忽略不報警，無須維護資料庫審核映射表。
 
 ### 3.2 全市場估值會計與工程準則
@@ -141,12 +141,10 @@
 | `TREASURY_DAILY_SYNC` | 每日 05:00 | 美國財政部國債殖利率同步 |
 | `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率增量同步（寫入 `fx_rate_daily`） |
 | `CREDIT_SPREAD_DAILY_SYNC` | 每日 05:08 | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）增量同步（遇假日沿用最近有效觀測日不中斷估值排程） |
-| `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步 |
-| `STOCK_SPLIT_DAILY` | 每日 05:45 | 平日 Massive `/stocks/v1/splits` 增量同步；新股與週六富途 `requestRehab` 全量對帳 |
+| `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步（CIK／SIC／股類異動同交易重建財季分母） |
 | `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（回看最近 5 個交易日補漏） |
-| `FINANCIAL_REPORT_DAILY_SYNC` | 週二至六 06:30 | 富途三大財報同步（平日近 14 天新申報增量，週六全市場巡檢），變更時重建財季分母 |
+| `STOCK_FUNDAMENTAL_DAILY_SYNC` | 每日 06:30 | 三合一逐公司原子同步拆股（平日 Massive／週六與新股富途復權）、富途三大財報（三表獨立水位、OTC 粉單跳過）與 SEC 財務事實（含已確認自訂標籤，0 AI 消耗），變更時同交易原地重建 `stock_financial_period` 並推進 `fundamental_sync_date` 斷點（取代原 `STOCK_SPLIT_DAILY`、`FINANCIAL_REPORT_DAILY_SYNC`、`SEC_FINANCIAL_FACTS_DAILY_SYNC`） |
 | `STOCK_CLASSIFICATION_DAILY_SYNC` | 週二至六 07:00 | 富途產業與概念分類同步 |
-| `SEC_FINANCIAL_FACTS_DAILY_SYNC` | 每日 08:00 | SEC `companyfacts.zip` 與 `submissions.zip` 整份 CIK 比對同步（並確定性同步已確認自訂標籤映射公司之 `sec_custom_financial_fact`，0 AI 消耗），變更時重建財季分母 |
 | `SHORT_INTEREST_SYNC` | 週二、五 08:20 | FINRA 雙週做空比例增量同步（透過 Massive `/stocks/v1/short-interest` 批量更新） |
 | `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |

@@ -119,4 +119,36 @@ class ShortInterestServiceTest {
         assertThat(etfDto.signalCode()).isEqualTo(ShortInterestService.SIGNAL_ETF_INFO_ONLY);
         assertThat(etfDto.shortPctReason()).isEqualTo("NOT_APPLICABLE_FOR_ETF");
     }
+
+    @Test
+    void marketBatchUsesDedicatedGlobalWatermarkInsteadOfSingleStockMaxSettlementDate() {
+        com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository sysConfigRepo =
+                org.mockito.Mockito.mock(com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "sysConfigRepository", sysConfigRepo);
+
+        com.ykm.orm.entity.SysConfig storedWatermark = new com.ykm.orm.entity.SysConfig();
+        storedWatermark.setConfigKey(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE);
+        storedWatermark.setConfigValue("2026-09-15");
+        when(sysConfigRepo.findByConfigKeyInOrderByIdAsc(List.of(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE)))
+                .thenReturn(List.of(storedWatermark));
+        when(massiveService.isConfigured()).thenReturn(true);
+        // 即使單股刷新曾把表內 MAX(settlement_date) 推到 2026-11-15，全市場批次仍從 2026-09-15 往前 21 天抓
+        when(massiveService.getShortInterestFrom(LocalDate.of(2026, 8, 25))).thenReturn(List.of(
+                new MassiveService.MassiveShortInterestRow("AAPL", LocalDate.of(2026, 10, 30), 1000L, 500L, BigDecimal.TWO)));
+        Stock aapl = new Stock();
+        aapl.setFigi("F_AAPL");
+        aapl.setSymbol("AAPL");
+        aapl.setActiveStatus(ActiveStatus.ACTIVE);
+        when(stockRepository.findAll()).thenReturn(List.of(aapl));
+        when(transactionTemplate.execute(any())).thenAnswer(inv -> {
+            org.springframework.transaction.support.TransactionCallback<?> cb = inv.getArgument(0);
+            return cb.doInTransaction(new org.springframework.transaction.support.SimpleTransactionStatus());
+        });
+
+        ShortInterestService.ShortSyncResult result = service.syncMarketBatch();
+
+        assertThat(result.savedRows()).isEqualTo(1);
+        assertThat(storedWatermark.getConfigValue()).isEqualTo("2026-10-30");
+        org.mockito.Mockito.verify(massiveService).getShortInterestFrom(LocalDate.of(2026, 8, 25));
+    }
 }

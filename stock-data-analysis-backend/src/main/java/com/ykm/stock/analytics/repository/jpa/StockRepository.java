@@ -165,4 +165,13 @@ public interface StockRepository extends JpaRepository<Stock, String>, JpaSpecif
     default List<ActiveStockWithStatus> findSecFinancialFactsSyncStocks(ActiveStatus status) {
         return findSecFinancialFactsSyncStocks(status, SecurityTypePolicy.SEC_FILING_STOCK_TYPES);
     }
+
+    @Query("""
+            select s.figi from Stock s
+            join s.classification c
+            where s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
+              and c.industryCode = :industryCode
+            order by s.figi asc
+            """)
+    List<String> findActiveFigisByIndustryCode(@Param("industryCode") String industryCode);
 }

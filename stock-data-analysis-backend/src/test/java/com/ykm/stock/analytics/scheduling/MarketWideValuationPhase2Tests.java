@@ -155,6 +155,20 @@ class MarketWideValuationPhase2Tests {
                     Collection<String> figis = inv.getArgument(0);
                     return figis.stream().filter(storedPeriods::containsKey).collect(java.util.stream.Collectors.toSet());
                 });
+        when(periodRepo.findPeriodSignaturesByFigiIn(anyCollection()))
+                .thenAnswer(inv -> {
+                    Collection<String> figis = inv.getArgument(0);
+                    List<StockFinancialPeriodRepository.FigiPeriodSignature> sigs = new ArrayList<>();
+                    for (String f : figis) {
+                        List<StockFinancialPeriod> rows = storedPeriods.get(f);
+                        if (rows != null && !rows.isEmpty()) {
+                            Instant maxUpdated = rows.stream().map(StockFinancialPeriod::getUpdatedAt)
+                                    .filter(java.util.Objects::nonNull).max(java.util.Comparator.naturalOrder()).orElse(null);
+                            sigs.add(new StockFinancialPeriodRepository.FigiPeriodSignature(f, rows.size(), maxUpdated));
+                        }
+                    }
+                    return sigs;
+                });
         when(latestRepo.findById(anyString())).thenAnswer(inv -> Optional.ofNullable(storedLatest.get((String) inv.getArgument(0))));
         when(latestRepo.findByFigiIn(anyCollection())).thenAnswer(inv -> {
             Collection<String> figis = inv.getArgument(0);

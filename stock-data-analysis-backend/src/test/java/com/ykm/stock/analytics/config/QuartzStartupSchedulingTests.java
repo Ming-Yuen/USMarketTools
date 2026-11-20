@@ -23,7 +23,7 @@ import static org.mockito.Mockito.*;
 
 class QuartzStartupSchedulingTests {
     @ParameterizedTest
-    @ValueSource(strings = {TaskCode.FINANCIAL_REPORT_DAILY_SYNC, TaskCode.STOCK_CLASSIFICATION_DAILY_SYNC, TaskCode.EARNINGS_FORECAST_DAILY_SYNC})
+    @ValueSource(strings = {TaskCode.STOCK_CLASSIFICATION_DAILY_SYNC, TaskCode.EARNINGS_FORECAST_DAILY_SYNC})
     void renamedJobUsesOnlyItsNextCron(String newCode) throws Exception {
         Scheduler scheduler = scheduler();
         try {
@@ -42,6 +42,27 @@ class QuartzStartupSchedulingTests {
             assertThat(scheduler.getTriggersOfJob(JobKey.jobKey(newCode, "SCHEDULE"))).hasSize(1).allMatch(CronTrigger.class::isInstance);
             assertThat(scheduler.getTrigger(key(newCode)).getNextFireTime()).isAfter(new Date());
         } finally { scheduler.shutdown(true); }
+    }
+
+    @Test
+    void startupRetiresLegacySplitFinancialReportAndSecSchedulesBeforeReconcile() throws Exception {
+        Scheduler scheduler = scheduler();
+        try {
+            JobService jobs = mock(JobService.class);
+            when(jobs.findByActiveSchedule()).thenReturn(new JobConfig[0]);
+            ScheduleJobListener listener = mock(ScheduleJobListener.class);
+            when(listener.getName()).thenReturn("test-listener");
+            QuartzConfig config = new QuartzConfig(scheduler, jobs, listener, new JobScheduleReconciler(scheduler));
+            ReflectionTestUtils.setField(config, "schedulesEnabled", true);
+
+            config.run();
+
+            for (String retired : TaskCode.RETIRED_SCHEDULE_CODES) {
+                verify(jobs).retireSchedule(retired);
+            }
+        } finally {
+            scheduler.shutdown(true);
+        }
     }
 
     @Test

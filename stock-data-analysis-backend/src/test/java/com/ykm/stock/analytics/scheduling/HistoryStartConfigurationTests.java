@@ -55,10 +55,11 @@ class HistoryStartConfigurationTests {
             conversion.addConverter(String.class, LocalDate.class, LocalDate::parse);
             context.getBeanFactory().setConversionService(conversion);
             context.registerBean(StockQuoteDailyTask.class, () -> new StockQuoteDailyTask(null, null, null, null, null, null));
-            context.registerBean(StockSplitDailyTask.class, () -> new StockSplitDailyTask(null, null, null, null, null, null, null, null, null));
+            context.registerBean(StockFundamentalDailySyncJob.class, () -> new StockFundamentalDailySyncJob(
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
             context.refresh();
             assertThat(ReflectionTestUtils.getField(context.getBean(StockQuoteDailyTask.class), "historyStartDate")).isEqualTo(LocalDate.parse(marketStart));
-            assertThat(ReflectionTestUtils.getField(context.getBean(StockSplitDailyTask.class), "historyStartDate")).isEqualTo(LocalDate.parse(sourceStart));
+            assertThat(ReflectionTestUtils.getField(context.getBean(StockFundamentalDailySyncJob.class), "splitHistoryStartDate")).isEqualTo(LocalDate.parse(sourceStart));
         }
     }
 }

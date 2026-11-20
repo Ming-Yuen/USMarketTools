@@ -13,6 +13,8 @@ public interface StockValuationLatestRepository extends JpaRepository<StockValua
     @Query("select max(v.valuationDate) from StockValuationLatest v where v.valuationDate <= :maxDate")
     java.util.Optional<LocalDate> findMaxValuationDateAtOrBefore(@Param("maxDate") LocalDate maxDate);
 
+    long countByValuationDateAndFigiIn(LocalDate valuationDate, Collection<String> figis);
+
     List<StockValuationLatest> findByFigiIn(Collection<String> figis);
 
     /** 讀取同產業、同估值交易日且有效持續追蹤股票的最新估值快照（即時排除未核實 ADR），附帶原始發行人鍵 coalesce(cik, figi) 供同業去重。 */

@@ -20,8 +20,8 @@ class StockClassificationScheduleRegistrationTests {
                 && "0 0 7 ? * TUE-SAT".equals(config.getCronExpression())));
         verify(repository).save(argThat(config -> TaskCode.EARNINGS_FORECAST_DAILY_SYNC.equals(config.getTaskCode())
                 && "0 50 8 * * ?".equals(config.getCronExpression())));
-        verify(repository).save(argThat(config -> TaskCode.FINANCIAL_REPORT_DAILY_SYNC.equals(config.getTaskCode())
-                && "0 30 6 ? * TUE-SAT".equals(config.getCronExpression())));
+        verify(repository).save(argThat(config -> TaskCode.STOCK_FUNDAMENTAL_DAILY_SYNC.equals(config.getTaskCode())
+                && "0 30 6 * * ?".equals(config.getCronExpression())));
         verify(repository).save(argThat(config -> TaskCode.STOCK_VALUATION_DAILY.equals(config.getTaskCode())
                 && "0 0 10 * * ?".equals(config.getCronExpression())));
         verify(repository, never()).findByTaskCode("FUTU_VALUATION_DAILY_SYNC");

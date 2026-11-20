@@ -5,6 +5,8 @@ import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
+import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
+import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
@@ -23,6 +25,7 @@ import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -62,6 +65,10 @@ public class StockValuationDailyTask implements Job {
     private final DailyOpportunityRadarService dailyOpportunityRadarService;
     private final SignalTrackingService signalTrackingService;
     private final PortfolioClosingService portfolioClosingService;
+    @Autowired(required = false)
+    private StockQuoteRepository quoteRepository;
+    @Autowired(required = false)
+    private DailyOpportunityRadarRunRepository radarRunRepository;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -95,8 +102,9 @@ public class StockValuationDailyTask implements Job {
         log.info("Daily valuation refresh completed | valuationDate={} targets={} rebuiltPeriods={}",
                 targetDate, targetFigis.size(), toRebuild.size());
 
-        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標普通營運股當日行情批次已達覆蓋門檻（>= 95%）且估值就緒時，
-        //    串接板塊量價資金流、每日機會雷達（同交易原子寫入當日新訊號）與歷史訊號到期結算（不讓未核實 ADR 拖累收盤流程）
+        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標普通營運股當日行情批次已達覆蓋門檻（>= 95%）時：
+        //    - 訊號結算獨立執行（不因當日雷達延後而漏結算）
+        //    - 估值覆蓋達標時串接板塊資金流、每日機會雷達（已凍結同日雷達則跳過避免覆寫）與收盤簡報
         if (requestedDate == null && marketWideRun
                 && sectorMoneyFlowService != null && dailyOpportunityRadarService != null && signalTrackingService != null) {
             List<ActiveStockWithStatus> coverageBase = targets.stream()
@@ -105,16 +113,30 @@ public class StockValuationDailyTask implements Job {
             if (coverageBase.isEmpty()) {
                 coverageBase = targets;
             }
-            long readyQuotes = coverageBase.stream()
-                    .filter(row -> row.status() != null && targetDate.equals(row.status().getQuoteDate()))
-                    .count();
+            List<String> coverageFigis = coverageBase.stream().map(row -> row.stock().getFigi()).toList();
+            long readyQuotes = quoteRepository != null
+                    ? quoteRepository.countByQuoteDateAndFigiIn(targetDate, coverageFigis)
+                    : coverageBase.stream()
+                            .filter(row -> row.status() != null && targetDate.equals(row.status().getQuoteDate()))
+                            .count();
             boolean quotesBatchReady = readyQuotes * 100L >= (long) coverageBase.size() * MIN_MARKET_QUOTE_COVERAGE_PCT;
+            if (quotesBatchReady) {
+                int settled = signalTrackingService.settlePendingSignals(targetDate);
+                log.info("Signal tracking settlement completed | tradeDate={} updatedSettlements={}", targetDate, settled);
+            }
             LocalDate snapshotDate = resolveEffectiveSnapshotDate(targetDate);
-            if (quotesBatchReady && targetDate.equals(snapshotDate)) {
-                sectorMoneyFlowService.refreshDaily(snapshotDate, startedAt);
-                dailyOpportunityRadarService.refreshDaily(snapshotDate, startedAt);
-                int settled = signalTrackingService.settlePendingSignals(snapshotDate);
-                log.info("Signal tracking settlement completed | tradeDate={} updatedSettlements={}", snapshotDate, settled);
+            boolean valuationsReady = targetDate.equals(snapshotDate)
+                    && (quoteRepository == null || latestValuations == null
+                    || latestValuations.countByValuationDateAndFigiIn(targetDate, coverageFigis) * 100L
+                            >= (long) coverageBase.size() * MIN_MARKET_QUOTE_COVERAGE_PCT);
+            if (quotesBatchReady && valuationsReady) {
+                boolean radarAlreadyFrozen = radarRunRepository != null && radarRunRepository.existsById(snapshotDate);
+                if (!radarAlreadyFrozen) {
+                    sectorMoneyFlowService.refreshDaily(snapshotDate, startedAt);
+                    dailyOpportunityRadarService.refreshDaily(snapshotDate, startedAt);
+                } else {
+                    log.info("Daily radar already frozen; skipping sector flow & radar refresh | tradeDate={}", snapshotDate);
+                }
                 // 4b. 獨立容錯隔離執行持倉自動體檢與站內收盤簡報／提醒寫入：異常僅記警告日誌，絕不回滾上游估值、板塊資金流、雷達與訊號結算
                 if (portfolioClosingService != null) {
                     try {
@@ -125,8 +147,8 @@ public class StockValuationDailyTask implements Job {
                     }
                 }
             } else {
-                log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={}",
-                        targetDate, readyQuotes, coverageBase.size(), snapshotDate);
+                log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={} valuationsReady={}",
+                        targetDate, readyQuotes, coverageBase.size(), snapshotDate, valuationsReady);
             }
         }
 
@@ -191,6 +213,7 @@ public class StockValuationDailyTask implements Job {
                         .stream().collect(Collectors.toMap(StockShareObservation::getFigi, row -> row));
 
                 List<StockShareObservation> rows = new ArrayList<>();
+                List<String> sharesChangedFigis = new ArrayList<>();
                 for (ActiveStockWithStatus target : batch) {
                     String figi = target.stock().getFigi();
                     FutuService.ShareSnapshot snapshot = downloaded.get(target.stock().getSymbol());
@@ -221,17 +244,23 @@ public class StockValuationDailyTask implements Job {
                     observation.setSnapshotQuoteTime(snapshot.quoteTime());
                     observation.setSource("FUTU");
                     rows.add(observation);
+                    if (sharesChanged && previous != null) {
+                        sharesChangedFigis.add(figi);
+                    }
                 }
                 if (!rows.isEmpty()) {
                     transactions.executeWithoutResult(transaction -> {
-                        List<String> figis = rows.stream().map(StockShareObservation::getFigi).toList();
-                        if (statuses.findAllByIdForUpdate(figis).size() != rows.size()) {
+                        List<String> sortedFigis = rows.stream().map(StockShareObservation::getFigi).distinct().sorted().toList();
+                        if (statuses.findAllByIdForUpdate(sortedFigis).size() != sortedFigis.size()) {
                             throw new IllegalStateException("SHARE_OBSERVATION_STOCK_STATUS_MISSING");
                         }
                         for (StockShareObservation row : rows) {
                             entityManager.persist(row);
                         }
                         entityManager.flush();
+                        if (!sharesChangedFigis.isEmpty() && stockValuationService != null) {
+                            stockValuationService.rebuildFinancialPeriodsInCurrentTx(sharesChangedFigis);
+                        }
                     });
                     saved += rows.size();
                 }

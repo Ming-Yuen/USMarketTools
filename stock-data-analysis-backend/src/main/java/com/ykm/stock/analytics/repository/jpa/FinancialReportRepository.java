@@ -62,4 +62,16 @@ public interface FinancialReportRepository extends JpaRepository<FinancialReport
             order by f.periodEnd desc, f.periodType desc
             """)
     List<String> findLatestReportCurrencies(@Param("figi") String figi, Pageable pageable);
+
+    record FigiStatementPeriodEnd(String figi, int statementType, LocalDate latestPeriodEnd) {}
+
+    /** 批次讀取各股票損益／資產負債／現金流量三表各自的最新報表期末日，避免單一水位跳過晚到報表。 */
+    @Query("""
+            select new com.ykm.stock.analytics.repository.jpa.FinancialReportRepository$FigiStatementPeriodEnd(
+                f.figi, f.statementType, max(f.periodEnd))
+            from FinancialReport f
+            where f.figi in :figis and f.statementType in (1, 2, 3)
+            group by f.figi, f.statementType
+            """)
+    List<FigiStatementPeriodEnd> findLatestStatementPeriodEnds(@Param("figis") Collection<String> figis);
 }

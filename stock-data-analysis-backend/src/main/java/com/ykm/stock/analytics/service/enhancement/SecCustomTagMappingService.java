@@ -22,12 +22,15 @@ import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.repository.jpa.SecCustomFinancialFactRepository;
 import com.ykm.stock.analytics.repository.jpa.SecCustomTagMappingRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.enhancement.EnhancementAiGateway.AiJsonResult;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
+import com.ykm.stock.analytics.service.stock.SecIssuerHistory;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -201,6 +204,10 @@ public class SecCustomTagMappingService {
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactions;
     private final ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private StockStatusRepository stockStatusRepository;
+    @Autowired(required = false)
+    private SecIssuerHistory issuerHistory;
 
     /** 列出該股票發行人目前所有已確認／已停用之自訂標籤映射規則（唯讀）。 */
     @Transactional(readOnly = true)
@@ -370,17 +377,23 @@ public class SecCustomTagMappingService {
 
         // 1. 確定性抓取歷史事實（網路／ZIP I/O 在交易外執行）
         List<SecCustomFinancialFact> backfilled = extractFactsForConfirmedMappings(cik, toSave, now);
+        List<String> affectedFigis = findActiveIssuerFigis(cik, stock.getFigi());
 
-        // 2. 短交易持久化 CONFIRMED 映射與自訂事實
+        // 2. 短交易鎖定狀態列、持久化 CONFIRMED 映射與自訂事實，並同交易原地重建 stock_financial_period
         transactions.executeWithoutResult(tx -> {
+            if (!affectedFigis.isEmpty() && stockStatusRepository != null) {
+                stockStatusRepository.findAllByIdForUpdate(affectedFigis);
+            }
             mappingRepository.saveAll(toSave);
             persistCustomFacts(cik, backfilled);
+            if (!affectedFigis.isEmpty() && stockValuationService != null) {
+                stockValuationService.rebuildFinancialPeriodsInCurrentTx(affectedFigis);
+            }
         });
 
-        // 3. 觸發該發行人所有關聯有效股類整股重建 stock_financial_period 並刷新 stock_valuation_latest
-        List<String> affectedFigis = findActiveIssuerFigis(cik, stock.getFigi());
+        // 3. 交易提交後刷新受影響股類之最新估值快照（避免交易內搶全局發布鎖）
         if (!affectedFigis.isEmpty() && stockValuationService != null) {
-            stockValuationService.rebuildAndRefreshLatest(affectedFigis);
+            stockValuationService.refreshLatestValuations(affectedFigis, null);
         }
 
         List<CustomTagMappingDto> latestMappings = listMappings(stock);
@@ -389,7 +402,7 @@ public class SecCustomTagMappingService {
         return new CustomTagConfirmResultDto(cik, toSave.size(), backfilled.size(), affectedFigis.size(), latestMappings);
     }
 
-    /** 停用已確認映射、移除對應自訂事實，並立即重建受影響股類之財務期間與最新估值。 */
+    /** 停用已確認映射、移除對應自訂事實，並同交易重建受影響股類之財務期間後刷新最新估值。 */
     public CustomTagConfirmResultDto disableMapping(Stock stock, Long mappingId) {
         String cik = requireCorporateCik(stock);
         SecCustomTagMapping existing = mappingRepository.findById(mappingId)
@@ -398,25 +411,31 @@ public class SecCustomTagMappingService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CUSTOM_TAG_MAPPING_CIK_MISMATCH");
         }
         Instant now = dateTimeService.now();
+        List<String> affectedFigis = findActiveIssuerFigis(cik, stock.getFigi());
         transactions.executeWithoutResult(tx -> {
+            if (!affectedFigis.isEmpty() && stockStatusRepository != null) {
+                stockStatusRepository.findAllByIdForUpdate(affectedFigis);
+            }
             existing.setStatus(SecCustomTagMapping.STATUS_DISABLED);
             existing.setUpdatedAt(now);
             mappingRepository.save(existing);
             customFactRepository.deleteByCikAndTaxonomyAndTagAndUnit(
                     existing.getCik(), existing.getTaxonomy(), existing.getCustomTag(), existing.getUnit());
+            if (!affectedFigis.isEmpty() && stockValuationService != null) {
+                stockValuationService.rebuildFinancialPeriodsInCurrentTx(affectedFigis);
+            }
         });
-        List<String> affectedFigis = findActiveIssuerFigis(cik, stock.getFigi());
         if (!affectedFigis.isEmpty() && stockValuationService != null) {
-            stockValuationService.rebuildAndRefreshLatest(affectedFigis);
+            stockValuationService.refreshLatestValuations(affectedFigis, null);
         }
         return new CustomTagConfirmResultDto(cik, 0, 0, affectedFigis.size(), listMappings(stock));
     }
 
-    /** 供日常 SecFinancialFactsDailySyncJob 呼叫：僅對已有 CONFIRMED 映射的少數 CIK 進行 0 AI 消耗確定性續抓。 */
-    public int syncConfirmedMappingsForCik(String cik, JsonNode companyFactsNode) {
+    /** 交易外提取指定 CIK 的所有 CONFIRMED 映射自訂事實（含 XBRL_INSTANCE 網路下載），供三合一排程於交易外呼叫。 */
+    public List<SecCustomFinancialFact> extractConfirmedCustomFacts(String cik, JsonNode companyFactsNode) {
         List<SecCustomTagMapping> confirmed = mappingRepository.findByCikAndStatusOrderByIdAsc(cik, SecCustomTagMapping.STATUS_CONFIRMED);
         if (confirmed.isEmpty()) {
-            return 0;
+            return List.of();
         }
         Instant now = dateTimeService.now();
         List<SecCustomFinancialFact> extracted = new ArrayList<>();
@@ -430,6 +449,20 @@ public class SecCustomTagMappingService {
         if (!xbrlMappings.isEmpty() && secEdgarClient.isConfigured()) {
             extracted.addAll(extractFromRecentXbrlInstances(cik, xbrlMappings, now, 8));
         }
+        return extracted;
+    }
+
+    /** 於呼叫端既有交易中持久化自訂事實並回傳實際變更列數。 */
+    public int persistConfirmedCustomFactsInCurrentTx(String cik, List<SecCustomFinancialFact> extracted) {
+        if (extracted == null || extracted.isEmpty()) {
+            return 0;
+        }
+        return persistCustomFacts(cik, extracted);
+    }
+
+    /** 供日常排程呼叫：僅對已有 CONFIRMED 映射的少數 CIK 進行 0 AI 消耗確定性續抓。 */
+    public int syncConfirmedMappingsForCik(String cik, JsonNode companyFactsNode) {
+        List<SecCustomFinancialFact> extracted = extractConfirmedCustomFacts(cik, companyFactsNode);
         if (extracted.isEmpty()) {
             return 0;
         }
@@ -1031,10 +1064,14 @@ public class SecCustomTagMappingService {
     }
 
     private List<String> findActiveIssuerFigis(String cik, String fallbackFigi) {
+        String targetCanonical = issuerHistory == null ? cik : issuerHistory.canonicalCik(cik);
         List<String> figis = stockRepository.findAll().stream()
-                .filter(s -> s.getActiveStatus() == ActiveStatus.ACTIVE && cik.equals(s.getCik()))
+                .filter(s -> s.getActiveStatus() == ActiveStatus.ACTIVE && s.getCik() != null && !s.getCik().isBlank())
+                .filter(s -> cik.equals(s.getCik())
+                        || (issuerHistory != null && targetCanonical.equals(issuerHistory.canonicalCik(s.getCik()))))
                 .map(Stock::getFigi)
                 .distinct()
+                .sorted()
                 .toList();
         return figis.isEmpty() && fallbackFigi != null ? List.of(fallbackFigi) : figis;
     }

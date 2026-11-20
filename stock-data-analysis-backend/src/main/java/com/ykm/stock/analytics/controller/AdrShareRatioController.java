@@ -46,7 +46,7 @@ public class AdrShareRatioController {
         List<Stock> matching = stockRepository.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of(saved.getSymbol()));
         if (!matching.isEmpty()) {
             List<String> figis = matching.stream().map(Stock::getFigi).toList();
-            stockValuationService.rebuildAndRefreshLatest(figis);
+            stockValuationService.refreshLatestValuations(figis, null);
         }
         return saved;
     }

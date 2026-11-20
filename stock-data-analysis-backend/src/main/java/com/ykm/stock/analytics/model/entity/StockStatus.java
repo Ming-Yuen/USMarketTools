@@ -30,6 +30,10 @@ public class StockStatus {
     @Comment("富途財報已成功入庫的最新期末日。NULL 從 2014 年回補，後續包含水位當日重新同步。")
     private LocalDate financialReportDate;
 
+    @Column(name = "fundamental_sync_date")
+    @Comment("基本面與拆股三合一排程（STOCK_FUNDAMENTAL_DAILY_SYNC）已完成檢查的香港排程日；用於同日斷點續跑與跨日補完週六全市場巡檢。")
+    private LocalDate fundamentalSyncDate;
+
     @Comment("SEC 財務項目已成功入庫的最新報表期末日；NULL 從歷史起點回補。")
     private LocalDate secFinancialFactsDate;
 

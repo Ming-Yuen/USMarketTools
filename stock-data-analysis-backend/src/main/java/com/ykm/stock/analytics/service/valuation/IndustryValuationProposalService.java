@@ -12,6 +12,8 @@ import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.repository.jpa.IndustryValuationConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryRepository.IndustryActiveStockCount;
+import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -49,6 +51,12 @@ public class IndustryValuationProposalService {
     private final IndustryValuationConfigRepository configurations;
     private final IndustryValuationAiClient ai;
     private final DateTimeService dateTimeService;
+    @Autowired(required = false)
+    private StockRepository stockRepository;
+    @Autowired(required = false)
+    private StockStatusRepository stockStatusRepository;
+    @Autowired(required = false)
+    private StockValuationService stockValuationService;
 
     @Autowired
     public IndustryValuationProposalService(StockIndustryRepository industries,
@@ -174,6 +182,18 @@ public class IndustryValuationProposalService {
         next.setRationale(input.rationale());
         next.setSourceUrl(input.sourceUrl());
         configurations.saveAndFlush(next);
+        String previousModel = previous == null ? null : previous.getModelCode();
+        if (!Objects.equals(previousModel, next.getModelCode())
+                && stockRepository != null && stockValuationService != null) {
+            List<String> industryFigis = stockRepository.findActiveFigisByIndustryCode(code);
+            if (industryFigis != null && !industryFigis.isEmpty()) {
+                List<String> sortedFigis = industryFigis.stream().distinct().sorted().toList();
+                if (stockStatusRepository != null) {
+                    stockStatusRepository.findAllByIdForUpdate(sortedFigis);
+                }
+                stockValuationService.rebuildFinancialPeriodsInCurrentTx(sortedFigis);
+            }
+        }
         return get(code);
     }
 

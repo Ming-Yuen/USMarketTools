@@ -1,9 +1,14 @@
 package com.ykm.stock.analytics.service.valuation;
 
 import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.model.entity.AdrShareRatio;
+import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
+import com.ykm.stock.analytics.repository.jpa.StockRepository;
+import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +25,12 @@ import java.util.Locale;
 public class AdrShareRatioService {
     private final AdrShareRatioRepository repository;
     private final DateTimeService dateTimeService;
+    @Autowired(required = false)
+    private StockRepository stockRepository;
+    @Autowired(required = false)
+    private StockStatusRepository stockStatusRepository;
+    @Autowired(required = false)
+    private StockValuationService stockValuationService;
 
     public record AdrShareRatioRequest(
             String symbol,
@@ -68,7 +79,17 @@ public class AdrShareRatioService {
         entity.setVerified(Boolean.TRUE.equals(request.verified()));
         entity.setNote(request.note() == null || request.note().isBlank() ? null : request.note().trim());
         entity.setUpdatedAt(now);
-        return repository.saveAndFlush(entity);
+        List<String> affectedFigis = stockRepository == null ? List.of()
+                : stockRepository.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of(symbol)).stream()
+                        .map(Stock::getFigi).distinct().sorted().toList();
+        if (!affectedFigis.isEmpty() && stockStatusRepository != null) {
+            stockStatusRepository.findAllByIdForUpdate(affectedFigis);
+        }
+        AdrShareRatio saved = repository.saveAndFlush(entity);
+        if (!affectedFigis.isEmpty() && stockValuationService != null) {
+            stockValuationService.rebuildFinancialPeriodsInCurrentTx(affectedFigis);
+        }
+        return saved;
     }
 
     private static String normalizeSymbol(String symbol) {

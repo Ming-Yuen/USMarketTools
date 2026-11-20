@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.sql.Date;
@@ -49,6 +50,8 @@ public class FxRateService {
     private final DateTimeService dateTimeService;
     private final JdbcTemplate jdbcTemplate;
     private final long maxStaleDays;
+    @Autowired(required = false)
+    private TransactionTemplate transactionTemplate;
 
     public FxRateService(
             FxRateDailyRepository fxRates,
@@ -262,7 +265,11 @@ public class FxRateService {
             if (points.isEmpty()) {
                 continue;
             }
-            upsertRatePoints(points, now);
+            if (transactionTemplate != null) {
+                transactionTemplate.executeWithoutResult(tx -> upsertRatePoints(points, now));
+            } else {
+                upsertRatePoints(points, now);
+            }
             totalSaved += points.size();
         }
         log.info("FRED FX daily sync completed | currencies={} savedRows={}", specs.size(), totalSaved);

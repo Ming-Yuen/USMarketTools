@@ -257,8 +257,14 @@ public class MassiveService {
                 }
             }
             String nextUrl = page.path("next_url").asText("").trim();
-            if (nextUrl.isEmpty() || !seenUrls.add(nextUrl)) {
+            if (nextUrl.isEmpty()) {
                 break;
+            }
+            if (!seenUrls.add(nextUrl)) {
+                throw new IllegalStateException("MASSIVE_SHORT_INTEREST_CURSOR_LOOP:" + nextUrl);
+            }
+            if (i + 1 >= maxPages) {
+                throw new IllegalStateException("MASSIVE_SHORT_INTEREST_PAGE_LIMIT_EXCEEDED:" + maxPages);
             }
             page = next(nextUrl, JsonNode.class);
         }

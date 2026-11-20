@@ -28,10 +28,10 @@ import static org.mockito.Mockito.*;
 class DataInitializerTests {
     private static final List<String> CURRENT_JOBS = List.of(
             "TREASURY_DAILY_SYNC", "FX_RATE_DAILY_SYNC", "CREDIT_SPREAD_DAILY_SYNC",
-            "STOCK_DAILY", "STOCK_SPLIT_DAILY", "STOCK_QUOTE_DAILY", "FINANCIAL_REPORT_DAILY_SYNC",
+            "STOCK_DAILY", "STOCK_QUOTE_DAILY", "STOCK_FUNDAMENTAL_DAILY_SYNC",
             "STOCK_CLASSIFICATION_DAILY_SYNC", "SHORT_INTEREST_SYNC", "MARKET_SENTIMENT_DAILY",
             "MARKET_EVENT_DAILY_SYNC", "EARNINGS_FORECAST_DAILY_SYNC", "STOCK_VALUATION_DAILY",
-            "CHIP_EVENT_DAILY_SYNC", "INSTITUTIONAL_13F_SYNC", "SEC_FINANCIAL_FACTS_DAILY_SYNC");
+            "CHIP_EVENT_DAILY_SYNC", "INSTITUTIONAL_13F_SYNC");
 
     @Test
     void seedsOnlyTheCurrentJobs() {
@@ -107,10 +107,8 @@ class DataInitializerTests {
 
     @ParameterizedTest
     @CsvSource({
-            "FUTU_FINANCIAL_REPORT_DAILY_SYNC, FINANCIAL_REPORT_DAILY_SYNC, FinancialReportDailySyncJob",
             "FUTU_CLASSIFICATION_DAILY_SYNC, STOCK_CLASSIFICATION_DAILY_SYNC, StockClassificationDailySyncJob",
-            "FUTU_EARNINGS_DAILY_SYNC, EARNINGS_FORECAST_DAILY_SYNC, EarningsForecastDailySyncJob",
-            "SEC_SHARES_DAILY_SYNC, SEC_FINANCIAL_FACTS_DAILY_SYNC, SecFinancialFactsDailySyncJob"
+            "FUTU_EARNINGS_DAILY_SYNC, EARNINGS_FORECAST_DAILY_SYNC, EarningsForecastDailySyncJob"
     })
     void renamesJobsWithoutReplacingExistingSchedules(String oldCode, String newCode, String newClass) {
         JobConfigRepository jobs = mock(JobConfigRepository.class);

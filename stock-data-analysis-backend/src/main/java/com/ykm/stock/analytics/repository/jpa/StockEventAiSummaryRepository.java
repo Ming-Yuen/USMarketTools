@@ -31,4 +31,24 @@ public interface StockEventAiSummaryRepository extends JpaRepository<StockEventA
                           @Param("inProgress") String inProgressStatus,
                           @Param("provider") String provider,
                           @Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update StockEventAiSummary s set s.status = :timedOut, s.errorMessage = :errorMessage, s.updatedAt = :now "
+            + "where s.id = :id and s.status = :inProgress and s.updatedAt = :expectedUpdatedAt")
+    int markStaleInProgressTimedOut(@Param("id") Long id,
+                                    @Param("inProgress") String inProgressStatus,
+                                    @Param("expectedUpdatedAt") Instant expectedUpdatedAt,
+                                    @Param("timedOut") String timedOutStatus,
+                                    @Param("errorMessage") String errorMessage,
+                                    @Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update StockEventAiSummary s set s.status = :terminalStatus, s.errorMessage = :errorMessage, s.updatedAt = :now "
+            + "where s.id = :id and s.status = :inProgress and s.updatedAt = :expectedUpdatedAt")
+    int finalizeClaimedFailure(@Param("id") Long id,
+                               @Param("inProgress") String inProgressStatus,
+                               @Param("expectedUpdatedAt") Instant expectedUpdatedAt,
+                               @Param("terminalStatus") String terminalStatus,
+                               @Param("errorMessage") String errorMessage,
+                               @Param("now") Instant now);
 }

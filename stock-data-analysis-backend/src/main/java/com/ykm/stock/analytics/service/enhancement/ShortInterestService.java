@@ -8,6 +8,8 @@ import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockQuote;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.entity.StockShortInterest;
+import com.ykm.orm.entity.SysConfig;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
@@ -19,6 +21,7 @@ import com.ykm.stock.analytics.service.stock.MassiveService;
 import com.ykm.stock.analytics.service.stock.MassiveService.MassiveShortInterestRow;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -53,6 +56,7 @@ public class ShortInterestService {
     public static final String SIGNAL_ELEVATED_SHORT_INTEREST = "ELEVATED_SHORT_INTEREST";
     public static final String SIGNAL_NORMAL = "NORMAL";
     public static final String SIGNAL_ETF_INFO_ONLY = "ETF_INFO_ONLY";
+    public static final String CONFIG_KEY_MARKET_SYNCED_DATE = "short_interest_market_synced_date";
 
     private static final MathContext MC = MathContext.DECIMAL128;
 
@@ -65,26 +69,33 @@ public class ShortInterestService {
     private final MarketStatusService calendar;
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactionTemplate;
+    @Autowired(required = false)
+    private PortfolioSysConfigRepository sysConfigRepository;
 
     public record ShortSyncResult(int fetchedRows, int savedRows, LocalDate latestSettlementDate) {}
 
     /** 雙週全市場增量同步（逐頁至 next_url 耗盡，以既有 Massive Starter FINRA 官方結算資料為主）。 */
     public ShortSyncResult syncMarketBatch() {
+        LocalDate marketWatermark = readMarketSyncedWatermark();
         if (!massiveService.isConfigured()) {
             log.warn("Short interest batch sync skipped: MASSIVE_API_KEY not configured");
-            return new ShortSyncResult(0, 0, shortInterestRepository.findLatestSettlementDate().orElse(null));
+            return new ShortSyncResult(0, 0, marketWatermark);
         }
-        LocalDate latestStored = shortInterestRepository.findLatestSettlementDate().orElse(null);
         // 有重疊回看 21 天以涵蓋 FINRA 修訂，首次同步拉最近 45 天涵蓋最新 2–3 期結算日。
-        LocalDate from = latestStored != null
-                ? latestStored.minusDays(21)
+        LocalDate from = marketWatermark != null
+                ? marketWatermark.minusDays(21)
                 : dateTimeService.now().atZone(com.ykm.stock.analytics.service.market.MarketStatusService.NY_ZONE).toLocalDate().minusDays(45);
         List<MassiveShortInterestRow> fetched = massiveService.getShortInterestFrom(from);
         if (fetched.isEmpty()) {
-            return new ShortSyncResult(0, 0, latestStored);
+            return new ShortSyncResult(0, 0, marketWatermark);
         }
-        int saved = persistRows(fetched, StockShortInterest.SOURCE_MASSIVE_FINRA);
-        LocalDate latestAfter = shortInterestRepository.findLatestSettlementDate().orElse(latestStored);
+        LocalDate batchLatest = fetched.stream()
+                .map(MassiveShortInterestRow::settlementDate)
+                .filter(java.util.Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(marketWatermark);
+        int saved = persistMarketBatchRows(fetched, StockShortInterest.SOURCE_MASSIVE_FINRA, batchLatest);
+        LocalDate latestAfter = batchLatest != null ? batchLatest : shortInterestRepository.findLatestSettlementDate().orElse(marketWatermark);
         log.info("Short interest batch sync completed | from={} fetched={} saved={} latestSettlementDate={}",
                 from, fetched.size(), saved, latestAfter);
         return new ShortSyncResult(fetched.size(), saved, latestAfter);
@@ -105,6 +116,10 @@ public class ShortInterestService {
     }
 
     public int persistRows(List<MassiveShortInterestRow> rows, String source) {
+        return persistMarketBatchRows(rows, source, null);
+    }
+
+    private int persistMarketBatchRows(List<MassiveShortInterestRow> rows, String source, LocalDate marketWatermarkToAdvance) {
         Integer saved = transactionTemplate.execute(txStatus -> {
             List<Stock> activeStocks = stockRepository.findAll().stream()
                     .filter(s -> s.getActiveStatus() == ActiveStatus.ACTIVE && s.getSymbol() != null)
@@ -129,9 +144,57 @@ public class ShortInterestService {
             if (!batch.isEmpty()) {
                 shortInterestRepository.saveAll(batch);
             }
+            if (marketWatermarkToAdvance != null) {
+                advanceMarketSyncedWatermarkInCurrentTx(marketWatermarkToAdvance);
+            }
             return batch.size();
         });
         return saved == null ? 0 : saved;
+    }
+
+    private LocalDate readMarketSyncedWatermark() {
+        if (sysConfigRepository != null) {
+            List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_MARKET_SYNCED_DATE));
+            if (matches != null && !matches.isEmpty()) {
+                String raw = matches.getFirst().getConfigValue();
+                if (raw != null && !raw.isBlank()) {
+                    try {
+                        return LocalDate.parse(raw.trim());
+                    } catch (RuntimeException ignored) {
+                    }
+                }
+            }
+        }
+        return shortInterestRepository.findLatestSettlementDate().orElse(null);
+    }
+
+    private void advanceMarketSyncedWatermarkInCurrentTx(LocalDate candidate) {
+        if (sysConfigRepository == null || candidate == null) {
+            return;
+        }
+        List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_MARKET_SYNCED_DATE));
+        if (matches == null || matches.isEmpty()) {
+            SysConfig created = new SysConfig();
+            created.setConfigKey(CONFIG_KEY_MARKET_SYNCED_DATE);
+            created.setConfigValue(candidate.toString());
+            created.setDescription("全市場做空比例批次同步已成功提交的最新 FINRA 結算日（不受單股刷新影響）");
+            created.setEnabled(true);
+            sysConfigRepository.save(created);
+            return;
+        }
+        SysConfig primary = matches.getFirst();
+        LocalDate existing = null;
+        if (primary.getConfigValue() != null && !primary.getConfigValue().isBlank()) {
+            try {
+                existing = LocalDate.parse(primary.getConfigValue().trim());
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (existing == null || candidate.isAfter(existing)) {
+            primary.setConfigValue(candidate.toString());
+            primary.setEnabled(true);
+            sysConfigRepository.save(primary);
+        }
     }
 
     public int persistSingleStockRows(Stock stock, List<MassiveShortInterestRow> rows, String source) {

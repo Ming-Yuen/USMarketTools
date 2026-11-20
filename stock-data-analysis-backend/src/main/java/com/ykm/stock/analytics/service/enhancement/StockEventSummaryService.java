@@ -305,7 +305,7 @@ public class StockEventSummaryService {
         String fingerprint = computeFingerprint(stock.getFigi(), events);
         Optional<StockEventAiSummary> existing = summaryRepository.findByFigiAndInputFingerprint(stock.getFigi(), fingerprint);
         if (existing.isPresent()) {
-            StockEventAiSummary found = existing.get();
+            StockEventAiSummary found = recoverStaleInProgressIfNeeded(existing.get());
             if (StockEventAiSummary.STATUS_COMPLETED.equals(found.getStatus())
                     || StockEventAiSummary.STATUS_IN_PROGRESS.equals(found.getStatus())
                     || StockEventAiSummary.STATUS_TIMED_OUT.equals(found.getStatus())) {
@@ -322,25 +322,33 @@ public class StockEventSummaryService {
             return toSummaryDto(claim.row());
         }
         StockEventAiSummary claimed = claim.row();
+        Instant claimedAt = claimed.getUpdatedAt();
 
         String payload = buildStructuredPromptPayload(stock, events);
+        AiJsonResult aiResult;
         try {
-            AiJsonResult aiResult = aiGateway.generateStructuredJson(
+            aiResult = aiGateway.generateStructuredJson(
                     "stock_event_summary", EVENT_SUMMARY_JSON_SCHEMA, SUMMARY_INSTRUCTIONS, payload);
-            ValidatedSummary validated = validateAndNormalizeSummaryJson(aiResult.json(), events);
-            StockEventAiSummary completed = finalizeSummarySuccess(claimed.getId(), aiResult.provider(), aiResult.model(), validated);
-            return toSummaryDto(completed);
         } catch (EnhancementAiGateway.AiChannelBusyException ex) {
-            finalizeSummaryFailure(claimed.getId(), StockEventAiSummary.STATUS_FAILED, ex.getMessage());
+            finalizeSummaryFailure(claimed.getId(), claimedAt, StockEventAiSummary.STATUS_FAILED, ex.getMessage());
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "AI_CHANNEL_BUSY_RETRY_LATER");
         } catch (AiExecutionException ex) {
             String terminalStatus = ex.isAmbiguousTimeout()
                     ? StockEventAiSummary.STATUS_TIMED_OUT
                     : StockEventAiSummary.STATUS_FAILED;
-            finalizeSummaryFailure(claimed.getId(), terminalStatus, ex.getMessage());
+            finalizeSummaryFailure(claimed.getId(), claimedAt, terminalStatus, ex.getMessage());
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, ex.getMessage());
         } catch (RuntimeException ex) {
-            finalizeSummaryFailure(claimed.getId(), StockEventAiSummary.STATUS_FAILED, ex.getMessage());
+            finalizeSummaryFailure(claimed.getId(), claimedAt, StockEventAiSummary.STATUS_FAILED, ex.getMessage());
+            throw ex;
+        }
+        try {
+            ValidatedSummary validated = validateAndNormalizeSummaryJson(aiResult.json(), events);
+            StockEventAiSummary completed = finalizeSummarySuccess(claimed.getId(), claimedAt, aiResult.provider(), aiResult.model(), validated);
+            return toSummaryDto(completed);
+        } catch (RuntimeException ex) {
+            // AI 回應已取得並可能計費，驗證或入庫失敗標為 TIMED_OUT 避免自動重送重複計費
+            finalizeSummaryFailure(claimed.getId(), claimedAt, StockEventAiSummary.STATUS_TIMED_OUT, ex.getMessage());
             throw ex;
         }
     }
@@ -387,7 +395,7 @@ public class StockEventSummaryService {
             return tx.execute(status -> {
                 Optional<StockEventAiSummary> existing = summaryRepository.findByFigiAndInputFingerprint(stock.getFigi(), fingerprint);
                 if (existing.isPresent()) {
-                    StockEventAiSummary row = existing.get();
+                    StockEventAiSummary row = recoverStaleInProgressInCurrentTx(existing.get());
                     if (StockEventAiSummary.STATUS_FAILED.equals(row.getStatus())) {
                         // 嚴格以條件式 UPDATE（WHERE status='FAILED'）原子搶佔重試權，僅 updated==1 者取得 owner=true
                         int updated = summaryRepository.reclaimFailedSlot(
@@ -421,11 +429,52 @@ public class StockEventSummaryService {
         }
     }
 
-    private StockEventAiSummary finalizeSummarySuccess(Long id, String provider, String model, ValidatedSummary validated) {
+    private StockEventAiSummary recoverStaleInProgressIfNeeded(StockEventAiSummary row) {
+        if (!isStaleInProgress(row)) {
+            return row;
+        }
+        TransactionTemplate tx = new TransactionTemplate(transactions.getTransactionManager());
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        StockEventAiSummary recovered = tx.execute(status -> recoverStaleInProgressInCurrentTx(row));
+        return recovered == null ? row : recovered;
+    }
+
+    private StockEventAiSummary recoverStaleInProgressInCurrentTx(StockEventAiSummary row) {
+        if (!isStaleInProgress(row)) {
+            return row;
+        }
+        int updated = summaryRepository.markStaleInProgressTimedOut(
+                row.getId(),
+                StockEventAiSummary.STATUS_IN_PROGRESS,
+                row.getUpdatedAt(),
+                StockEventAiSummary.STATUS_TIMED_OUT,
+                "AI_IN_PROGRESS_STALE_RECOVERED",
+                dateTimeService.now());
+        if (updated == 1) {
+            return summaryRepository.findById(row.getId()).orElse(row);
+        }
+        return summaryRepository.findById(row.getId()).orElse(row);
+    }
+
+    private boolean isStaleInProgress(StockEventAiSummary row) {
+        if (row == null || !StockEventAiSummary.STATUS_IN_PROGRESS.equals(row.getStatus()) || row.getUpdatedAt() == null) {
+            return false;
+        }
+        java.time.Duration providerTimeout = aiGateway == null || aiGateway.activeTimeout() == null
+                ? java.time.Duration.ofSeconds(60) : aiGateway.activeTimeout();
+        Instant cutoff = dateTimeService.now().minus(providerTimeout.plusSeconds(60));
+        return row.getUpdatedAt().isBefore(cutoff);
+    }
+
+    private StockEventAiSummary finalizeSummarySuccess(Long id, Instant expectedUpdatedAt, String provider, String model, ValidatedSummary validated) {
         TransactionTemplate tx = new TransactionTemplate(transactions.getTransactionManager());
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         return tx.execute(status -> {
             StockEventAiSummary row = summaryRepository.findById(id).orElseThrow();
+            if (!StockEventAiSummary.STATUS_IN_PROGRESS.equals(row.getStatus())
+                    || (expectedUpdatedAt != null && !expectedUpdatedAt.equals(row.getUpdatedAt()))) {
+                return row;
+            }
             row.setStatus(StockEventAiSummary.STATUS_COMPLETED);
             row.setAiProvider(provider);
             row.setModelName(model);
@@ -439,15 +488,28 @@ public class StockEventSummaryService {
         });
     }
 
-    private void finalizeSummaryFailure(Long id, String terminalStatus, String errorMsg) {
+    private void finalizeSummaryFailure(Long id, Instant expectedUpdatedAt, String terminalStatus, String errorMsg) {
         TransactionTemplate tx = new TransactionTemplate(transactions.getTransactionManager());
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        tx.executeWithoutResult(status -> summaryRepository.findById(id).ifPresent(row -> {
-            row.setStatus(terminalStatus);
-            row.setErrorMessage(truncate(errorMsg, 500));
-            row.setUpdatedAt(dateTimeService.now());
-            summaryRepository.saveAndFlush(row);
-        }));
+        tx.executeWithoutResult(status -> {
+            if (expectedUpdatedAt != null) {
+                summaryRepository.finalizeClaimedFailure(
+                        id,
+                        StockEventAiSummary.STATUS_IN_PROGRESS,
+                        expectedUpdatedAt,
+                        terminalStatus,
+                        truncate(errorMsg, 500),
+                        dateTimeService.now());
+                return;
+            }
+            summaryRepository.findById(id).ifPresent(row -> {
+                if (!StockEventAiSummary.STATUS_IN_PROGRESS.equals(row.getStatus())) return;
+                row.setStatus(terminalStatus);
+                row.setErrorMessage(truncate(errorMsg, 500));
+                row.setUpdatedAt(dateTimeService.now());
+                summaryRepository.saveAndFlush(row);
+            });
+        });
     }
 
     private StockEventAiSummary saveManualSummary(Stock stock, LocalDate triggerDate, String fingerprint, ValidatedSummary validated) {

@@ -151,6 +151,20 @@ class StockValuationDailyTaskTests {
                     Collection<String> figis = inv.getArgument(0);
                     return figis.stream().filter(storedPeriods::containsKey).collect(java.util.stream.Collectors.toSet());
                 });
+        when(periodRepo.findPeriodSignaturesByFigiIn(anyCollection()))
+                .thenAnswer(inv -> {
+                    Collection<String> figis = inv.getArgument(0);
+                    List<StockFinancialPeriodRepository.FigiPeriodSignature> sigs = new ArrayList<>();
+                    for (String f : figis) {
+                        List<StockFinancialPeriod> rows = storedPeriods.get(f);
+                        if (rows != null && !rows.isEmpty()) {
+                            Instant maxUpdated = rows.stream().map(StockFinancialPeriod::getUpdatedAt)
+                                    .filter(java.util.Objects::nonNull).max(java.util.Comparator.naturalOrder()).orElse(null);
+                            sigs.add(new StockFinancialPeriodRepository.FigiPeriodSignature(f, rows.size(), maxUpdated));
+                        }
+                    }
+                    return sigs;
+                });
         when(latestRepo.findById(anyString())).thenAnswer(inv -> Optional.ofNullable(storedLatest.get((String) inv.getArgument(0))));
         when(latestRepo.findByFigiIn(anyCollection())).thenAnswer(inv -> {
             Collection<String> figis = inv.getArgument(0);
@@ -575,6 +589,28 @@ class StockValuationDailyTaskTests {
         assertThat(storedLatest.get("F_ISO")).isNotNull();
         org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
         org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(signalTrackingService).settlePendingSignals(DAY_NOV_12);
+        org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+    }
+
+    @Test
+    void sameDayRerunSkipsFrozenRadarAndSectorFlowWhileStillRunningSettlementAndBriefing() {
+        ActiveStockWithStatus target = stockWithStatus("FIGI_FROZEN", "FRZN");
+        stubStock(target, "100", 10000000L);
+        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(target));
+        when(latestRepo.findMaxValuationDateAtOrBefore(DAY_NOV_12)).thenReturn(Optional.of(DAY_NOV_12));
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of());
+        com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository radarRunRepo =
+                mock(com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository.class);
+        when(radarRunRepo.existsById(DAY_NOV_12)).thenReturn(true);
+        org.springframework.test.util.ReflectionTestUtils.setField(task, "radarRunRepository", radarRunRepo);
+
+        task.execute(null);
+
+        org.mockito.Mockito.verify(sectorMoneyFlowService, org.mockito.Mockito.never()).refreshDaily(any(), any());
+        org.mockito.Mockito.verify(dailyOpportunityRadarService, org.mockito.Mockito.never()).refreshDaily(any(), any());
         org.mockito.Mockito.verify(signalTrackingService).settlePendingSignals(DAY_NOV_12);
         org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
     }

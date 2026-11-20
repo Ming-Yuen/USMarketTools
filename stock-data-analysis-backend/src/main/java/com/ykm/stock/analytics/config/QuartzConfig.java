@@ -35,9 +35,10 @@ public class QuartzConfig implements CommandLineRunner {
     /** DataInitializer 完成資料初始化後，才註冊排程及啟動 Quartz。 */
     @Override
     public void run(String... args) throws SchedulerException {
-        // 升級既有資料庫時移除 SEC 財務任務及已合併至 STOCK_VALUATION_DAILY 的富途任務。
-        jobService.retireSchedule("SEC_FINANCIAL_FACT_DAILY");
-        jobService.retireSchedule("FUTU_VALUATION_DAILY_SYNC");
+        // 升級既有資料庫時先退役已合併或淘汰的舊排程，避免 reconcile 嘗試載入已移除的 Job 類別。
+        for (String retiredCode : TaskCode.RETIRED_SCHEDULE_CODES) {
+            jobService.retireSchedule(retiredCode);
+        }
         if (!schedulesEnabled) {
             log.info("Quartz disabled for controlled maintenance or API verification");
             return;

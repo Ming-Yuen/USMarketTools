@@ -470,9 +470,9 @@ public class DailyOpportunityRadarService {
         FxResolution fxRes = resolveFxForCandidate(batchFxLookup, matchedPeriod, s.getCurrency(), radarDate);
         BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
         String valuationBlockedReason = fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null;
-        DayEpsResolution epsResolution = verifiedAdr
-                ? new DayEpsResolution(null, null)
-                : StockValuationService.resolveDayEps(s.getCurrency(), status, matchedPeriod, stockSplits, radarDate, fxRateToQuote);
+        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(
+                s.getCurrency(), status, matchedPeriod, stockSplits, radarDate, fxRateToQuote,
+                isAdr, verifiedAdr, v.getMarketCap(), evalPrice);
         BigDecimal epsAtDay = epsResolution.epsAtDay();
         String peReason = v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());

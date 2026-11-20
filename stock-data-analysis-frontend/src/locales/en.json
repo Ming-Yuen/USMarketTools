@@ -2018,6 +2018,7 @@
           "inBuyZone": "In zone",
           "sharesUnit": "{{shares}} sh",
           "sharesEstimateHint": "On trigger",
+          "planNetRr": "Plan {{rr}}",
           "sectorWarn": "Sector Cap Warn",
           "daysUnit": "{{days}}d",
           "todayEarnings": "Today",

@@ -559,4 +559,60 @@ describe("BuyRankingReportPage & i18n", () => {
     expect(submittedBodies[2].minNetRiskReward).toBeNull();
     expect(screen.queryByTestId("validation-error-alert")).not.toBeInTheDocument();
   });
+
+  test("renders planNetRiskReward secondary subtitle on TIER_2 Net R/R cell only", async () => {
+    const i18nInstance = await createI18n("zh-HK");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const tier2Item = {
+      ...sampleResponse.items[0],
+      rank: 2,
+      recommendedRank: 2,
+      tier: "TIER_2" as const,
+      tierScore: null,
+      figi: "BBG000TIER20",
+      symbol: "WAIT2",
+      stockName: "Wait Pullback Corp",
+      currentPrice: 108.0,
+      netRiskReward: 0.75,
+      planNetRiskReward: 2.15,
+      positionSizingActionable: false,
+      reasonCode: "WAIT_PULLBACK_TO_BUY_ZONE",
+      actionReason: "現價仍高於買區上緣 8.0%，等待回踩",
+    };
+    const responseWithTier2 = {
+      ...sampleResponse,
+      tierCounts: { TIER_1: 1, TIER_2: 1, TIER_3: 0, TIER_4: 0 },
+      items: [sampleResponse.items[0], tier2Item],
+    };
+    (apiClient.post as jest.Mock).mockImplementation((url: string) => {
+      if (url === "stock/classification") {
+        return Promise.resolve({ data: { classifications: [] } });
+      }
+      if (url === "reports/buy-ranking") {
+        return Promise.resolve({ data: responseWithTier2 });
+      }
+      return Promise.reject(new Error(`Unexpected post: ${url}`));
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <I18nextProvider i18n={i18nInstance}>
+          <BuyRankingReportPage />
+        </I18nextProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("自訂標的")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByLabelText("自訂標的"));
+    fireEvent.change(screen.getByLabelText("自訂標的代碼"), { target: { value: "NVDA, WAIT2" } });
+    fireEvent.click(screen.getByTestId("run-ranking-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tier2-plan-rr-WAIT2")).toHaveTextContent("計畫 2.15");
+    });
+    expect(screen.queryByTestId("tier2-plan-rr-NVDA")).not.toBeInTheDocument();
+  });
 });

@@ -2469,6 +2469,7 @@
           "inBuyZone": "買區內",
           "sharesUnit": "{{shares}} 股",
           "sharesEstimateHint": "觸發後試算",
+          "planNetRr": "計畫 {{rr}}",
           "sectorWarn": "超過板塊上限",
           "daysUnit": "{{days}} 天",
           "todayEarnings": "今日財報",

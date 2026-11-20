@@ -341,6 +341,10 @@ public final class BuyRankingReasonFormatter {
                     "不可试算：" + item.positionSizingReasonCode(),
                     "Unavailable: " + item.positionSizingReasonCode()));
         }
+        if (BuyRankingDtos.TIER_2.equals(item.tier()) && item.planNetRiskReward() != null) {
+            String planRr = item.planNetRiskReward().setScale(2, RoundingMode.HALF_UP).toPlainString();
+            parts.add(pick(loc, "計畫 R/R " + planRr, "计划 R/R " + planRr, "Plan R/R " + planRr));
+        }
         if (item.sectorConcentrationWarning()) {
             parts.add(pick(loc, "⚠ 產業曝險超過設定上限（股數未自動裁減）",
                     "⚠ 行业敞口超过设定上限（股数未自动裁减）",

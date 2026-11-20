@@ -171,6 +171,28 @@ class ReportExportServiceTests {
 
         String tier4TextHk = BuyRankingReasonFormatter.formatSizingConditions(tier4EmptyTags, true, "zh-HK");
         assertThat(tier4TextHk).contains("暫不建議").contains("資料日回退");
+
+        BuyRankingItemDto tier2Item = new BuyRankingItemDto(
+                3, 3, BuyRankingDtos.TIER_2, null,
+                "FIGI_T2", "T2", "Wait Pullback Corp", "USD", "SEMI", "Semiconductors",
+                BuyRankingDtos.ASSET_COMMON_STOCK, "Common Stock", "MODERATELY_UNDERVALUED", "STRONG",
+                "WATCH_PULLBACK_TO_BAND", null, new BigDecimal("108.00"),
+                new BuyZoneDto(new BigDecimal("95.00"), new BigDecimal("97.50"), new BigDecimal("100.00")),
+                new BigDecimal("0.080000"), false, "TRADE_PLAN_ENTRY",
+                new BigDecimal("90.00"), new BigDecimal("-0.1667"), new BigDecimal("122.00"),
+                new BigDecimal("0.75"), new BigDecimal("2.15"),
+                100L, "FULL", "AVAILABLE", false, null, false, List.of(),
+                new BigDecimal("-0.100"), new BigDecimal("1.10"), new BigDecimal("20.0"),
+                new BigDecimal("0.22"), new BigDecimal("1000000000"), new BigDecimal("0.10"),
+                "SBC_ADJUSTED_FCF", "AVAILABLE", null, null, null,
+                null, null, "INFLOW", new BigDecimal("0.12"),
+                "WAIT_PULLBACK_TO_BUY_ZONE", Map.of("distancePct", new BigDecimal("0.08")), "wait");
+        assertThat(BuyRankingReasonFormatter.formatSizingConditions(tier2Item, false, "zh-HK"))
+                .contains("觸發後試算").contains("計畫 R/R 2.15");
+        assertThat(BuyRankingReasonFormatter.formatSizingConditions(tier2Item, false, "zh-CN"))
+                .contains("触发后试算").contains("计划 R/R 2.15");
+        assertThat(BuyRankingReasonFormatter.formatSizingConditions(tier2Item, false, "en"))
+                .contains("On-Trigger Preview").contains("Plan R/R 2.15");
     }
 
     private CachedReportSnapshot sampleSnapshot(String locale) {

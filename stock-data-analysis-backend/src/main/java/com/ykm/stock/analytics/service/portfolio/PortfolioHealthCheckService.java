@@ -801,9 +801,12 @@ public class PortfolioHealthCheckService {
             BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
             String valuationBlockedReason = isAdr && !verifiedAdr ? "ADR_RATIO_UNVERIFIED"
                     : (fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null);
-            DayEpsResolution epsResolution = (isAdr)
-                    ? new DayEpsResolution(null, verifiedAdr ? null : "ADR_RATIO_UNVERIFIED")
-                    : StockValuationService.resolveDayEps(stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate, fxRateToQuote);
+            BigDecimal capAtDay = valuationFresh ? v.getMarketCap() : null;
+            BigDecimal capClosePrice = (valuationFresh && v.getClosePrice() != null && v.getClosePrice().signum() > 0)
+                    ? v.getClosePrice() : evalPrice;
+            DayEpsResolution epsResolution = StockValuationService.resolveDayEps(
+                    stock.getCurrency(), pre.status(), matchedPeriod, stockSplits, targetDate, fxRateToQuote,
+                    isAdr, verifiedAdr, capAtDay, capClosePrice);
             String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
             boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
             FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
@@ -1218,9 +1221,12 @@ public class PortfolioHealthCheckService {
         BigDecimal fxRateToQuote = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
         String valuationBlockedReason = fxRes != null && !fxRes.isUsable() && fxRes.reason() != null
                 ? fxRes.reason().name() : null;
-        DayEpsResolution epsResolution = (isAdr)
-                ? new DayEpsResolution(null, null)
-                : StockValuationService.resolveDayEps(stock.getCurrency(), status, matchedPeriod, stockSplits, targetDate, fxRateToQuote);
+        BigDecimal capAtDay = valuationFresh ? v.getMarketCap() : null;
+        BigDecimal capClosePrice = (valuationFresh && v.getClosePrice() != null && v.getClosePrice().signum() > 0)
+                ? v.getClosePrice() : evalPrice;
+        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(
+                stock.getCurrency(), status, matchedPeriod, stockSplits, targetDate, fxRateToQuote,
+                isAdr, verifiedAdr, capAtDay, capClosePrice);
         String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(

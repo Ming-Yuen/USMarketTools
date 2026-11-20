@@ -19,7 +19,7 @@ public interface StockIndustryHistoryRepository extends JpaRepository<StockIndus
     @Query("select h from StockIndustryHistory h join fetch h.industry where h.figi = :figi and h.observedFrom <= :asOf and (h.observedTo is null or h.observedTo > :asOf)")
     Optional<StockIndustryHistory> findAt(@Param("figi") String figi, @Param("asOf") Instant asOf);
 
-    @Query("select h from StockIndustryHistory h join fetch h.industry where h.figi in :figis and h.observedFrom <= :asOf and (h.observedTo is null or h.observedTo > :asOf)")
+    @Query("select h from StockIndustryHistory h join fetch h.industry where h.figi in :figis and h.observedFrom <= :asOf and (h.observedTo is null or h.observedTo > :asOf) order by h.figi asc, h.observedFrom desc, h.id desc")
     List<StockIndustryHistory> findByFigisAt(@Param("figis") Collection<String> figis, @Param("asOf") Instant asOf);
 
     /** 批次讀取與 [windowStart, windowEnd] 有重疊之歷史產業歸屬，供板塊量價資金流按各交易日當時已知產業彙總。 */

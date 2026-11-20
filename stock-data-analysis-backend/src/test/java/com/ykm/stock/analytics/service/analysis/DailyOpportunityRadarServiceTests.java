@@ -37,6 +37,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.VolumeAnalysisDto
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneRole;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneState;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.ZoneStrengthLabel;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
 import com.ykm.stock.analytics.model.entity.SectorMoneyFlowDaily;
@@ -46,6 +47,7 @@ import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
@@ -254,6 +256,59 @@ class DailyOpportunityRadarServiceTests {
         assertThat(starter.getPositionFraction()).isEqualTo("1/3");
         // 次清單不編造假目標價
         assertThat(starter.getFirstTargetPrice()).isNull();
+    }
+
+    @Test
+    void verifiedAdrWithForwardSwingToLossIsBlockedFromValueRadar() {
+        AdrShareRatioRepository adrRepo = mock(AdrShareRatioRepository.class);
+        TransactionTemplate tx = new TransactionTemplate(new NoOpTransactionManager());
+        DailyOpportunityRadarService adrService = new DailyOpportunityRadarService(
+                latestValuations, quotes, splits, statuses, financialPeriods, financialReports,
+                forecasts, marketEvents, industries, sectorMoneyFlows, radarRepository, radarRunRepository,
+                quoteNormalization, priceStructures, marketContextService, supportResistanceService,
+                tradePlanService, signalTrackingService, calendar, clock, tx, entityManager, null, adrRepo);
+
+        stubPreloadedMarket(MarketRegime.RISK_ON);
+        Stock adr = operatingStock("F_ARM", "ARM");
+        adr.setStockType("ADR");
+        AdrShareRatio ratio = new AdrShareRatio();
+        ratio.setSymbol("ARM");
+        ratio.setAdrRatio(BigDecimal.ONE);
+        ratio.setVerified(true);
+        when(adrRepo.findBySymbolIn(anyCollection())).thenReturn(List.of(ratio));
+
+        StockValuationLatest latest = valuationSnapshot("F_ARM", "DEEP_UNDERVALUED", "STRONG", "100", "110", "130", "150");
+        latest.setMarketCap(new BigDecimal("100000000000"));
+        when(latestValuations.findValueRadarCandidates(eq(RADAR_DATE), any(), any(), anyCollection(), anyCollection(), anyCollection()))
+                .thenReturn(List.<Object[]>of(new Object[]{latest, adr}));
+        when(latestValuations.findStarterRadarCandidates(eq(RADAR_DATE), any(), any(), any(), any(), anyCollection()))
+                .thenReturn(List.of());
+
+        StockFinancialPeriod period = new StockFinancialPeriod();
+        period.setFigi("F_ARM");
+        period.setReportingCurrency("USD");
+        period.setPeriodStart(LocalDate.of(2025, 10, 1));
+        period.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        period.setNetIncomeCommonTtm(new BigDecimal("2000000000"));
+        period.setNetIncomeCommonTtmStatus("AVAILABLE");
+        when(financialPeriods.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(List.of(period));
+
+        StockEarningsForecast fy1Loss = new StockEarningsForecast();
+        fy1Loss.setFigi("F_ARM");
+        fy1Loss.setSource("ALPHAVANTAGE");
+        fy1Loss.setPeriodType("ANNUAL");
+        fy1Loss.setFiscalPeriod("FY2027");
+        fy1Loss.setPeriodEnd(LocalDate.of(2027, 9, 30));
+        fy1Loss.setCurrency("USD");
+        fy1Loss.setEps(new BigDecimal("-0.50"));
+        fy1Loss.setObservationDate(RADAR_DATE.minusDays(2));
+        fy1Loss.setObservedAt(NOW.minusSeconds(3600));
+        when(forecasts.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(List.of(fy1Loss));
+
+        stubTechnicalStack("F_ARM", "100", "98", "101", "94", "130", MarketRegime.RISK_ON, EntryPermission.ALLOW, "UPTREND", null);
+
+        List<DailyOpportunityRadar> published = adrService.refreshDaily(RADAR_DATE, NOW);
+        assertThat(published).isEmpty();
     }
 
     @Test

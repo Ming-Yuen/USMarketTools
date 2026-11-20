@@ -1242,24 +1242,29 @@ public class BuyRankingReportService {
                 ? (evalPrice != null ? evalPrice : (valuationFresh ? v.getClosePrice() : null))
                 : null;
         String splitError = StockValuationService.splitSyncError(status);
-        DayEpsResolution epsResolution = isAdr
-                ? new DayEpsResolution(null, verifiedAdr ? null : ValuationReason.ADR_RATIO_UNVERIFIED.name())
-                : StockValuationService.resolveDayEps(stock.getCurrency(), status, matchedPeriod, stockSplits, asOfDate, fxRateToQuote);
+        BigDecimal capAtDay = valuationFresh ? v.getMarketCap() : null;
+        BigDecimal capClosePrice = (valuationFresh && v.getClosePrice() != null && v.getClosePrice().signum() > 0)
+                ? v.getClosePrice() : effectivePrice;
+        DayEpsResolution epsResolution = StockValuationService.resolveDayEps(
+                stock.getCurrency(), status, matchedPeriod, stockSplits, asOfDate, fxRateToQuote,
+                isAdr, verifiedAdr, capAtDay, capClosePrice);
         String peReason = valuationFresh && v.getPeReason() != null ? v.getPeReason().name() : epsResolution.peReason();
         boolean financialInstitution = v != null && IndustryValuationProposalService.isFinancialInstitutionModel(v.getModelCode());
 
         FundamentalSnapshotDto fundamentalsDto = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
                 stockPeriods, matchedPeriod, stockSplits, asOfDate, stock.getCurrency(),
-                effectivePrice, valuationFresh ? v.getMarketCap() : null, null,
+                effectivePrice, capAtDay, null,
                 epsResolution.epsAtDay(), peReason, valuationFresh ? v.getPe() : null,
                 financialInstitution, splitError, fxRateToQuote, valuationBlockedReason, verifiedAdr));
         FutuObservationsDto futuObs = buildReadOnlyForwardObservations(
                 asOfDate, obsCutoff, maxAnnualObsDate, stock.getCurrency(), effectivePrice,
-                valuationFresh ? v.getMarketCap() : null, epsResolution.epsAtDay(), peReason,
+                capAtDay, epsResolution.epsAtDay(), peReason,
                 stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
 
+        BigDecimal fxMult = resolveQuoteFxMultiplier(fxRateToQuote, matchedPeriod, stock.getCurrency());
         BigDecimal roic = extractAvailableValue(fundamentalsDto == null ? null : fundamentalsDto.roic());
-        BigDecimal adjFcfTtm = extractAvailableValue(fundamentalsDto == null ? null : fundamentalsDto.adjFcfTtm());
+        BigDecimal rawAdjFcfTtm = extractAvailableValue(fundamentalsDto == null ? null : fundamentalsDto.adjFcfTtm());
+        BigDecimal adjFcfTtm = (rawAdjFcfTtm != null && fxMult != null) ? rawAdjFcfTtm.multiply(fxMult, MC) : null;
         BigDecimal forwardPeg = (futuObs != null && futuObs.forward() != null)
                 ? extractAvailableValue(futuObs.forward().forwardPeg()) : null;
         BigDecimal forwardPe = (futuObs != null && futuObs.forward() != null)
@@ -1270,7 +1275,7 @@ public class BuyRankingReportService {
         LocalDate validatedTenYearDate = data.preloadedMarket() != null ? data.preloadedMarket().validatedTenYearObservationDate() : null;
         ReverseDcfSelection reverseDcf = computeReverseDcf(
                 stock, v, valuationFresh, asOfDate, effectivePrice, matchedPeriod, fundamentalsDto, futuObs,
-                fxRateToQuote, valuationBlockedReason, financialInstitution, validatedTenYear, validatedTenYearDate);
+                fxMult, adjFcfTtm, valuationBlockedReason, financialInstitution, validatedTenYear, validatedTenYearDate);
 
         // 估值折價百分比：報表契約採 (price - fairValueMid) / fairValueMid（負值表折價，如 -0.152 = -15.2%）
         BigDecimal valuationDiscountPct = (valuationFresh && effectivePrice != null && effectivePrice.signum() > 0
@@ -1590,11 +1595,12 @@ public class BuyRankingReportService {
                     && matchedPlan.riskReward().value() != null) {
                 planNetRr = scale4(matchedPlan.riskReward().value().netRR());
             }
-            if (matchedPlan.targets() != null && !matchedPlan.targets().isEmpty() && evalPrice != null) {
+            if (matchedPlan.targets() != null && !matchedPlan.targets().isEmpty()) {
                 TargetDto first = matchedPlan.targets().getFirst();
-                if (first != null && first.price() != null && first.price().compareTo(evalPrice) > 0) {
+                if (first != null && first.price() != null && first.price().signum() > 0) {
                     firstTarget = first.price();
-                    if (stopLoss != null && stopLoss.signum() > 0 && evalPrice.compareTo(stopLoss) > 0) {
+                    if (evalPrice != null && firstTarget.compareTo(evalPrice) > 0
+                            && stopLoss != null && stopLoss.signum() > 0 && evalPrice.compareTo(stopLoss) > 0) {
                         MetricResult<RiskRewardDto> rr = costCalculator.calculate(evalPrice, stopLoss, matchedPlan.targets());
                         if (rr.status() == MetricStatus.AVAILABLE && rr.value() != null) {
                             evalNetRr = scale4(rr.value().netRR());
@@ -1727,6 +1733,21 @@ public class BuyRankingReportService {
 
     private record ReverseDcfSelection(BigDecimal impliedGrowth, String basis, String status) {}
 
+    /** 僅於已明確確認同幣（reportingCurrency 非空且等於 quoteCurrency）時才採 1.0；其餘必用已核驗匯率，不可把未知幣別當 USD。 */
+    private BigDecimal resolveQuoteFxMultiplier(
+            BigDecimal fxRateToQuote, StockFinancialPeriod matchedPeriod, String quoteCurrency) {
+        if (fxRateToQuote != null && fxRateToQuote.signum() > 0) {
+            return fxRateToQuote;
+        }
+        if (matchedPeriod != null && matchedPeriod.getReportingCurrency() != null
+                && !matchedPeriod.getReportingCurrency().isBlank()
+                && quoteCurrency != null
+                && matchedPeriod.getReportingCurrency().trim().equalsIgnoreCase(quoteCurrency.trim())) {
+            return BigDecimal.ONE;
+        }
+        return null;
+    }
+
     private ReverseDcfSelection computeReverseDcf(
             Stock stock,
             StockValuationLatest v,
@@ -1736,7 +1757,8 @@ public class BuyRankingReportService {
             StockFinancialPeriod matchedPeriod,
             FundamentalSnapshotDto fundamentalsDto,
             FutuObservationsDto futuObs,
-            BigDecimal fxRateToQuote,
+            BigDecimal fxMult,
+            BigDecimal adjFcfUsd,
             String valuationBlockedReason,
             boolean financialInstitution,
             BigDecimal tenYearYieldPct,
@@ -1747,28 +1769,11 @@ public class BuyRankingReportService {
                 && evalPrice != null && evalPrice.signum() > 0)
                 ? marketCapUsd.divide(evalPrice, 6, RoundingMode.HALF_UP) : null;
 
-        // 僅於已明確確認同幣（reportingCurrency 非空且等於 quoteCurrency）時才採 1.0；其餘必用已核驗匯率，不可把未知幣別當 USD
-        BigDecimal fxMult = null;
-        if (fxRateToQuote != null && fxRateToQuote.signum() > 0) {
-            fxMult = fxRateToQuote;
-        } else if (matchedPeriod != null && matchedPeriod.getReportingCurrency() != null
-                && !matchedPeriod.getReportingCurrency().isBlank()
-                && stock.getCurrency() != null
-                && matchedPeriod.getReportingCurrency().trim().equalsIgnoreCase(stock.getCurrency().trim())) {
-            fxMult = BigDecimal.ONE;
-        }
-
         BigDecimal fcfUsd = null;
         if (fxMult != null && matchedPeriod != null
                 && MetricStatus.AVAILABLE.name().equals(matchedPeriod.getFreeCashFlowTtmStatus())
                 && matchedPeriod.getFreeCashFlowTtm() != null) {
             fcfUsd = matchedPeriod.getFreeCashFlowTtm().multiply(fxMult, MC);
-        }
-        BigDecimal adjFcfUsd = null;
-        if (fxMult != null && fundamentalsDto != null && fundamentalsDto.adjFcfTtm() != null
-                && fundamentalsDto.adjFcfTtm().status() == MetricStatus.AVAILABLE
-                && fundamentalsDto.adjFcfTtm().value() != null) {
-            adjFcfUsd = fundamentalsDto.adjFcfTtm().value().multiply(fxMult, MC);
         }
         BigDecimal revCagr3y = extractAvailableValue(fundamentalsDto == null ? null : fundamentalsDto.revenueCagr3y());
         BigDecimal fcfCagr3y = extractAvailableValue(fundamentalsDto == null ? null : fundamentalsDto.fcfCagr3y());
@@ -1960,7 +1965,9 @@ public class BuyRankingReportService {
             }
         }
         if (params.minNetRiskReward() != null) {
-            if (item.netRiskReward() == null || item.netRiskReward().compareTo(params.minNetRiskReward()) < 0) {
+            BigDecimal effectiveRr = BuyRankingDtos.TIER_2.equals(item.tier()) && item.planNetRiskReward() != null
+                    ? item.planNetRiskReward() : item.netRiskReward();
+            if (effectiveRr == null || effectiveRr.compareTo(params.minNetRiskReward()) < 0) {
                 return false;
             }
         }

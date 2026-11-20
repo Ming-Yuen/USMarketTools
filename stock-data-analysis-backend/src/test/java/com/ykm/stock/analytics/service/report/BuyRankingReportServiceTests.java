@@ -52,9 +52,11 @@ import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos;
 import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos.BuyRankingItemDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos.BuyRankingRequest;
 import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos.BuyRankingResponse;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
 import com.ykm.stock.analytics.model.entity.StockIndustry;
 import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
@@ -973,6 +975,198 @@ class BuyRankingReportServiceTests {
         CachedReportSnapshot relocalized = service.resolveForExport(respEn.reportId(), bodyOnlyLocale, null);
         assertThat(relocalized.resolvedLocale()).isEqualTo("zh-HK");
         assertThat(relocalized.fullSortedItems().getFirst().actionReason()).contains("行情");
+    }
+
+    @Test
+    void verifiedAdrComputesAlignedEpsForForwardTrapAndForwardPegAndAlignsAdjFcfToQuoteCurrency() {
+        // 1) 已核實 USD 財報 ADR（ARM）：當期 TTM 淨利為正（epsAtDay = 2.00），估值偏低且在有效支撐買區（ACTIVE），
+        //    但年度共識預估 FY1 EPS = -0.50（轉虧）且無 90D 修正 -> 必攔截為 TIER_4 (VALUE_TRAP_WARNING, 0 股)，不可誤進 TIER_1
+        Stock arm = stock("FIGI_ARM", "ARM", "Arm Holdings ADR", "ADR", "USD", true);
+        StockValuationLatest valArm = valuation("FIGI_ARM", "SEMI", new BigDecimal("100.00"),
+                new BigDecimal("110.00"), new BigDecimal("130.00"), new BigDecimal("150.00"),
+                "DEEP_UNDERVALUED", "STRONG");
+        valArm.setMarketCap(new BigDecimal("100000000000"));
+        AdrShareRatio armRatio = new AdrShareRatio();
+        armRatio.setSymbol("ARM");
+        armRatio.setAdrRatio(BigDecimal.ONE);
+        armRatio.setVerified(true);
+
+        StockFinancialPeriod armPeriod = new StockFinancialPeriod();
+        armPeriod.setFigi("FIGI_ARM");
+        armPeriod.setPeriodStart(LocalDate.of(2025, 10, 1));
+        armPeriod.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        armPeriod.setReportingCurrency("USD");
+        armPeriod.setNetIncomeCommonTtm(new BigDecimal("2000000000"));
+        armPeriod.setNetIncomeCommonTtmStatus("AVAILABLE");
+        armPeriod.setFreeCashFlowTtm(new BigDecimal("2500000000"));
+        armPeriod.setFreeCashFlowTtmStatus("AVAILABLE");
+        armPeriod.setSbcTtm(new BigDecimal("500000000"));
+
+        StockEarningsForecast armFy1 = new StockEarningsForecast();
+        armFy1.setFigi("FIGI_ARM");
+        armFy1.setSource("ALPHAVANTAGE");
+        armFy1.setPeriodType("ANNUAL");
+        armFy1.setFiscalPeriod("FY2027");
+        armFy1.setPeriodEnd(LocalDate.of(2027, 9, 30));
+        armFy1.setCurrency("USD");
+        armFy1.setEps(new BigDecimal("-0.50"));
+        armFy1.setObservationDate(AS_OF.minusDays(2));
+        armFy1.setObservedAt(SESSION_CLOSE.minusSeconds(3600));
+
+        // 2) 已核實 TWD 財報 ADR（TSM）：netIncome = 1.28T TWD, adjFcf = 0.64T TWD, FX = 0.03125 USD/TWD
+        //    -> netIncomeUsd = 40B, adjFcfUsd = 20B, marketCap = 1T, close = 200 -> shares = 5B, epsAtDay = 8.00
+        //    FY1 EPS = 10.00 (+25% vs TTM, 無 FY2) -> forwardPe = 20.0000, forwardPeg = 0.8000, adjFcfTtm = 20B USD
+        Stock tsm = stock("FIGI_TSM", "TSM", "TSMC ADR", "ADR", "USD", true);
+        StockValuationLatest valTsm = valuation("FIGI_TSM", "SEMI", new BigDecimal("200.00"),
+                new BigDecimal("210.00"), new BigDecimal("240.00"), new BigDecimal("270.00"),
+                "MODERATELY_UNDERVALUED", "STRONG");
+        valTsm.setMarketCap(new BigDecimal("1000000000000"));
+        AdrShareRatio tsmRatio = new AdrShareRatio();
+        tsmRatio.setSymbol("TSM");
+        tsmRatio.setAdrRatio(new BigDecimal("5"));
+        tsmRatio.setVerified(true);
+
+        StockFinancialPeriod tsmPeriod = new StockFinancialPeriod();
+        tsmPeriod.setFigi("FIGI_TSM");
+        tsmPeriod.setPeriodStart(LocalDate.of(2025, 10, 1));
+        tsmPeriod.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        tsmPeriod.setReportingCurrency("TWD");
+        tsmPeriod.setNetIncomeCommonTtm(new BigDecimal("1280000000000"));
+        tsmPeriod.setNetIncomeCommonTtmStatus("AVAILABLE");
+        tsmPeriod.setFreeCashFlowTtm(new BigDecimal("700000000000"));
+        tsmPeriod.setFreeCashFlowTtmStatus("AVAILABLE");
+        tsmPeriod.setSbcTtm(new BigDecimal("60000000000"));
+
+        StockEarningsForecast tsmFy1 = new StockEarningsForecast();
+        tsmFy1.setFigi("FIGI_TSM");
+        tsmFy1.setSource("FUTU");
+        tsmFy1.setPeriodType("ANNUAL");
+        tsmFy1.setFiscalPeriod("FY2027");
+        tsmFy1.setPeriodEnd(LocalDate.of(2027, 9, 30));
+        tsmFy1.setCurrency("USD");
+        tsmFy1.setEps(new BigDecimal("10.00"));
+        tsmFy1.setObservationDate(AS_OF.minusDays(2));
+        tsmFy1.setObservedAt(SESSION_CLOSE.minusSeconds(3600));
+
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), anyCollection()))
+                .thenReturn(List.of(arm, tsm));
+        when(latestValuations.findByFigiIn(anyCollection())).thenReturn(List.of(valArm, valTsm));
+        when(adrShareRatioRepository.findBySymbolIn(anyCollection())).thenReturn(List.of(armRatio, tsmRatio));
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE))).thenReturn(List.of());
+        when(financialPeriodRepository.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection()))
+                .thenReturn(List.of(armPeriod, tsmPeriod));
+        when(forecastRepository.findVisibleForStocksBetween(anyCollection(), any(), any(), any()))
+                .thenReturn(List.of(armFy1, tsmFy1));
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(quoteRow("FIGI_ARM", new BigDecimal("100.00")),
+                        quoteRow("FIGI_TSM", new BigDecimal("200.00"))));
+
+        FxRateService.FxRateLookup fxLookup = mock(FxRateService.FxRateLookup.class);
+        when(fxLookup.resolve(eq("TWD"), eq("USD"), eq(AS_OF)))
+                .thenReturn(FxRateService.FxResolution.converted(new BigDecimal("0.03125"), "TWD", "USD", AS_OF, "FRED"));
+        when(fxRateService.preload(anyCollection(), any(), any())).thenReturn(fxLookup);
+
+        stubTechnicalStack("FIGI_ARM", new BigDecimal("100.00"), new BigDecimal("98.00"), new BigDecimal("101.00"),
+                new BigDecimal("94.00"), new BigDecimal("130.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+        stubTechnicalStack("FIGI_TSM", new BigDecimal("200.00"), new BigDecimal("196.00"), new BigDecimal("202.00"),
+                new BigDecimal("188.00"), new BigDecimal("250.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+
+        BuyRankingRequest req = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("ARM", "TSM"),
+                List.of(BuyRankingDtos.ASSET_ADR), true,
+                null, BuyRankingDtos.GRADE_ALL, null, null, null, "POSITION", "zh-HK", 1, 300);
+        BuyRankingResponse resp = service.generateReport(req, "zh-HK");
+        assertThat(resp.items()).hasSize(2);
+
+        BuyRankingItemDto armItem = resp.items().stream().filter(i -> "ARM".equals(i.symbol())).findFirst().orElseThrow();
+        assertThat(armItem.tier()).isEqualTo(BuyRankingDtos.TIER_4);
+        assertThat(armItem.reasonCode()).isEqualTo("VALUE_TRAP_WARNING");
+        assertThat(armItem.suggestedShares()).isEqualTo(0L);
+
+        BuyRankingItemDto tsmItem = resp.items().stream().filter(i -> "TSM".equals(i.symbol())).findFirst().orElseThrow();
+        assertThat(tsmItem.tier()).isEqualTo(BuyRankingDtos.TIER_1);
+        assertThat(tsmItem.forwardPe()).isEqualByComparingTo("20.0000");
+        assertThat(tsmItem.forwardPeg()).isEqualByComparingTo("0.8000");
+        // adjFcfTtm 必須對齊報價幣別 USD（640B TWD * 0.03125 = 20B USD），不可直接塞入原幣 TWD
+        assertThat(tsmItem.adjFcfTtm()).isEqualByComparingTo("20000000000");
+    }
+
+    @Test
+    void extractRegularBuyZonePreservesFirstTargetPriceWhenCurrentPriceExceedsFirstTarget() {
+        Stock overTarget = stock("FIGI_OVERTGT", "OVRT", "Over Target Corp", "Common Stock", "USD", true);
+        StockValuationLatest valOver = valuation("FIGI_OVERTGT", "SEMI", new BigDecimal("118.00"),
+                new BigDecimal("100.00"), new BigDecimal("120.00"), new BigDecimal("135.00"),
+                "FAIR_UPPER", "STRONG");
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), eq(List.of("OVRT"))))
+                .thenReturn(List.of(overTarget));
+        when(latestValuations.findByFigiIn(anyCollection())).thenReturn(List.of(valOver));
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE))).thenReturn(List.of());
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(quoteRow("FIGI_OVERTGT", new BigDecimal("118.00"))));
+
+        // 計畫買區 95..100、止損 90、第一目標價 115，而現價短線衝至 118（高於第一目標價 115）
+        stubTechnicalStack("FIGI_OVERTGT", new BigDecimal("118.00"), new BigDecimal("95.00"), new BigDecimal("100.00"),
+                new BigDecimal("90.00"), new BigDecimal("115.00"), TradePlanStatus.WAITING_TRIGGER,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+
+        BuyRankingRequest req = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("OVRT"),
+                List.of(BuyRankingDtos.ASSET_COMMON_STOCK), true,
+                null, BuyRankingDtos.GRADE_ALL, null, null, null, "POSITION", "zh-HK", 1, 300);
+        BuyRankingResponse resp = service.generateReport(req, "zh-HK");
+        assertThat(resp.items()).hasSize(1);
+        BuyRankingItemDto item = resp.items().getFirst();
+        assertThat(item.firstTargetPrice()).isEqualByComparingTo("115.0000");
+        assertThat(item.netRiskReward()).isNull();
+        assertThat(item.planNetRiskReward()).isEqualByComparingTo("3.7900");
+    }
+
+    @Test
+    void tier2MinNetRrUsesPlanNetRrWhileSortNetRrDescRemainsCurrentPrice() {
+        // Tier 1 標的：現價 100 在買區內，現價 Net R/R = 2.50（目標 116、止損 94）
+        // Tier 2 標的：買區 95..100、止損 90、目標 122 -> planNetRr = 3.79 (>= 2.0)，但現價 108 距買區 +8%，現價 Net R/R 約 0.75 (< 2.0)
+        Stock t1 = stock("FIGI_T1RR", "T1RR", "Tier1 RR Corp", "Common Stock", "USD", true);
+        Stock t2 = stock("FIGI_T2RR", "T2RR", "Tier2 RR Corp", "Common Stock", "USD", true);
+        StockValuationLatest v1 = valuation("FIGI_T1RR", "SEMI", new BigDecimal("100.00"),
+                new BigDecimal("110.00"), new BigDecimal("130.00"), new BigDecimal("150.00"),
+                "DEEP_UNDERVALUED", "STRONG");
+        StockValuationLatest v2 = valuation("FIGI_T2RR", "SEMI", new BigDecimal("108.00"),
+                new BigDecimal("110.00"), new BigDecimal("130.00"), new BigDecimal("150.00"),
+                "MODERATELY_UNDERVALUED", "STRONG");
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), anyCollection()))
+                .thenReturn(List.of(t1, t2));
+        when(latestValuations.findByFigiIn(anyCollection())).thenReturn(List.of(v1, v2));
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE))).thenReturn(List.of());
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(quoteRow("FIGI_T1RR", new BigDecimal("100.00")),
+                        quoteRow("FIGI_T2RR", new BigDecimal("108.00"))));
+
+        stubTechnicalStack("FIGI_T1RR", new BigDecimal("100.00"), new BigDecimal("98.00"), new BigDecimal("101.00"),
+                new BigDecimal("94.00"), new BigDecimal("116.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+        stubTechnicalStack("FIGI_T2RR", new BigDecimal("108.00"), new BigDecimal("95.00"), new BigDecimal("100.00"),
+                new BigDecimal("90.00"), new BigDecimal("122.00"), TradePlanStatus.WAITING_TRIGGER,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+
+        BuyRankingRequest req = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("T1RR", "T2RR"),
+                List.of(BuyRankingDtos.ASSET_COMMON_STOCK), true,
+                List.of(BuyRankingDtos.TIER_1, BuyRankingDtos.TIER_2),
+                BuyRankingDtos.GRADE_ALL, new BigDecimal("2.0"), null,
+                BuyRankingDtos.SORT_NET_RR_DESC, "POSITION", "zh-HK", 1, 300);
+        BuyRankingResponse resp = service.generateReport(req, "zh-HK");
+
+        // TIER_2 因 planNetRiskReward (3.79) >= 2.0 應保留，不被現價 Net R/R (~0.75) 誤刪；
+        // 且 SORT_NET_RR_DESC 仍以現價 Net R/R 降冪排序，故 T1RR 排在 T2RR 前面
+        assertThat(resp.items()).hasSize(2);
+        assertThat(resp.items().get(0).symbol()).isEqualTo("T1RR");
+        assertThat(resp.items().get(0).tier()).isEqualTo(BuyRankingDtos.TIER_1);
+        assertThat(resp.items().get(1).symbol()).isEqualTo("T2RR");
+        assertThat(resp.items().get(1).tier()).isEqualTo(BuyRankingDtos.TIER_2);
+        assertThat(resp.items().get(1).netRiskReward()).isLessThan(new BigDecimal("2.0"));
+        assertThat(resp.items().get(1).planNetRiskReward()).isEqualByComparingTo("3.7900");
     }
 
     private void stubTechnicalStackAtDate(

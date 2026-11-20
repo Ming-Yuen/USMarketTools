@@ -3312,18 +3312,28 @@ public class StockValuationService {
         return "PE";
     }
 
-    /** 供估值計算與每日機會雷達共用之交易日拆股對齊 TTM EPS 分母與原因碼解析（含幣別檢查與拆股基準驗證）。 */
+    /** 供估值計算、每日機會雷達、持倉體檢與建議買入排行榜共用之交易日對齊 TTM EPS 分母與原因碼解析（含已核實 ADR、幣別與拆股基準驗證）。 */
     public record DayEpsResolution(BigDecimal epsAtDay, String peReason) {}
 
     public static DayEpsResolution resolveDayEps(
             String quoteCurrency, StockStatus status, StockFinancialPeriod period,
             List<StockSplit> stockSplits, LocalDate day) {
-        return resolveDayEps(quoteCurrency, status, period, stockSplits, day, null);
+        return resolveDayEps(quoteCurrency, status, period, stockSplits, day, null, false, false, null, null);
     }
 
     public static DayEpsResolution resolveDayEps(
             String quoteCurrency, StockStatus status, StockFinancialPeriod period,
             List<StockSplit> stockSplits, LocalDate day, BigDecimal fxRateToQuote) {
+        return resolveDayEps(quoteCurrency, status, period, stockSplits, day, fxRateToQuote, false, false, null, null);
+    }
+
+    public static DayEpsResolution resolveDayEps(
+            String quoteCurrency, StockStatus status, StockFinancialPeriod period,
+            List<StockSplit> stockSplits, LocalDate day, BigDecimal fxRateToQuote,
+            boolean isAdr, boolean verifiedAdr, BigDecimal marketCapAtDay, BigDecimal closePriceAtDay) {
+        if (isAdr && !verifiedAdr) {
+            return new DayEpsResolution(null, "ADR_RATIO_UNVERIFIED");
+        }
         if (period == null) {
             return new DayEpsResolution(null, "NO_FINANCIAL_VERSION_KNOWN_AT_CLOSE");
         }
@@ -3331,6 +3341,22 @@ public class StockValuationService {
         boolean hasFx = fxRateToQuote != null && fxRateToQuote.signum() > 0;
         if (!sameCcy && !hasFx) {
             return new DayEpsResolution(null, "REPORTING_CURRENCY_MISMATCH");
+        }
+        if (isAdr) {
+            if (!MetricStatus.AVAILABLE.name().equals(period.getNetIncomeCommonTtmStatus())
+                    || period.getNetIncomeCommonTtm() == null) {
+                String niReason = period.getNetIncomeCommonTtmReason() != null
+                        ? period.getNetIncomeCommonTtmReason().name() : "NET_INCOME_COMMON_MISSING";
+                return new DayEpsResolution(null, niReason);
+            }
+            if (marketCapAtDay == null || marketCapAtDay.signum() <= 0
+                    || closePriceAtDay == null || closePriceAtDay.signum() <= 0) {
+                return new DayEpsResolution(null, "VALUATION_DATE_SHARES_MISSING");
+            }
+            BigDecimal fxMult = sameCcy ? BigDecimal.ONE : fxRateToQuote;
+            BigDecimal sharesAtDay = marketCapAtDay.divide(closePriceAtDay, MC);
+            BigDecimal netIncomeQuote = period.getNetIncomeCommonTtm().multiply(fxMult, MC);
+            return new DayEpsResolution(netIncomeQuote.divide(sharesAtDay, MC), null);
         }
         String splitError = splitSyncError(status);
         BigDecimal epsAtDay = null;

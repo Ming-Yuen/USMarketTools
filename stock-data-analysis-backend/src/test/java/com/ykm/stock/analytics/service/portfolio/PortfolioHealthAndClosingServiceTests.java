@@ -48,6 +48,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.Ho
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioAlertDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioHealthSummaryDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto;
+import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.DailyClosingBriefing;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
@@ -63,6 +64,7 @@ import com.ykm.stock.analytics.model.entity.StockIndustryHistory;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.entity.StockValuationLatest;
+import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyClosingBriefingRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
@@ -1045,6 +1047,164 @@ class PortfolioHealthAndClosingServiceTests {
         assertThat(qqqRes.referenceTarget1()).isEqualByComparingTo("540.0000");
         org.mockito.Mockito.verify(marketContextService).evaluateWithPreloaded(
                 any(), any(), any(), org.mockito.ArgumentMatchers.eq(List.of()), org.mockito.ArgumentMatchers.eq(List.of()), any());
+    }
+
+    @Test
+    void verifiedAdrForwardSwingToLossTriggersHoldingValueTrapAndBlocksWatchlistBuyAlert() {
+        AdrShareRatioRepository adrRepo = mock(AdrShareRatioRepository.class);
+        TransactionTemplate tx = new TransactionTemplate(new NoOpTransactionManager());
+        PortfolioHealthCheckService adrHealthService = new PortfolioHealthCheckService(
+                itemRepo, configService, briefingRepo, stockRepo, statusRepo, quoteRepo, splitRepo,
+                latestValRepo, periodRepo, reportRepo, forecastRepo, eventRepo, industryRepo,
+                quoteNorm, priceStructures, marketContextService, supportResistanceService, tradePlanService,
+                splitAligner, sizingCalculator, calendar, clock, tx, null, adrRepo);
+
+        PortfolioItem holdArm = portfolioItem("F_ARM_H", PortfolioItem.TYPE_HOLDING, "10", "100", PRIOR_DAY);
+        PortfolioItem watchArm = portfolioItem("F_ARM_W", PortfolioItem.TYPE_WATCHLIST, null, null, null);
+        when(itemRepo.findAllByOrderByItemTypeAscUpdatedAtDescFigiAsc()).thenReturn(List.of(holdArm, watchArm));
+
+        Stock sHold = stock("F_ARM_H", "ARM", "USD");
+        sHold.setStockType("ADR");
+        Stock sWatch = stock("F_ARM_W", "ARM2", "USD");
+        sWatch.setStockType("ADR");
+        when(stockRepo.findAllById(anyCollection())).thenReturn(List.of(sHold, sWatch));
+        when(statusRepo.findAllById(anyCollection())).thenReturn(List.of(splitStatus("F_ARM_H"), splitStatus("F_ARM_W")));
+        when(splitRepo.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of());
+        when(briefingRepo.findTopByTradeDateBeforeOrderByTradeDateDesc(DAY)).thenReturn(Optional.empty());
+        when(industryRepo.findByFigisAt(anyCollection(), any())).thenReturn(List.of());
+        when(eventRepo.findVisibleEarningsForFigis(anyCollection(), any())).thenReturn(List.of());
+
+        AdrShareRatio r1 = new AdrShareRatio();
+        r1.setSymbol("ARM");
+        r1.setAdrRatio(BigDecimal.ONE);
+        r1.setVerified(true);
+        AdrShareRatio r2 = new AdrShareRatio();
+        r2.setSymbol("ARM2");
+        r2.setAdrRatio(BigDecimal.ONE);
+        r2.setVerified(true);
+        when(adrRepo.findBySymbolIn(anyCollection())).thenReturn(List.of(r1, r2));
+
+        when(quoteRepo.findQuoteBarsOrdered(anyCollection(), any(), any())).thenReturn(List.of(
+                barRow("F_ARM_H", DAY, "100"), barRow("F_ARM_W", DAY, "100")));
+
+        StockValuationLatest vHold = valLatest("F_ARM_H", "DEEP_UNDERVALUED", "STRONG", "100");
+        vHold.setMarketCap(new BigDecimal("100000000000"));
+        vHold.setFairValueLow(new BigDecimal("110"));
+        vHold.setFairValueMid(new BigDecimal("130"));
+        vHold.setFairValueHigh(new BigDecimal("150"));
+        StockValuationLatest vWatch = valLatest("F_ARM_W", "DEEP_UNDERVALUED", "STRONG", "100");
+        vWatch.setMarketCap(new BigDecimal("100000000000"));
+        vWatch.setFairValueLow(new BigDecimal("110"));
+        vWatch.setFairValueMid(new BigDecimal("130"));
+        vWatch.setFairValueHigh(new BigDecimal("150"));
+        when(latestValRepo.findByFigiIn(anyCollection())).thenReturn(List.of(vHold, vWatch));
+
+        StockFinancialPeriod pHold = new StockFinancialPeriod();
+        pHold.setFigi("F_ARM_H");
+        pHold.setReportingCurrency("USD");
+        pHold.setPeriodStart(LocalDate.of(2025, 10, 1));
+        pHold.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        pHold.setNetIncomeCommonTtm(new BigDecimal("2000000000"));
+        pHold.setNetIncomeCommonTtmStatus("AVAILABLE");
+        StockFinancialPeriod pWatch = new StockFinancialPeriod();
+        pWatch.setFigi("F_ARM_W");
+        pWatch.setReportingCurrency("USD");
+        pWatch.setPeriodStart(LocalDate.of(2025, 10, 1));
+        pWatch.setPeriodEnd(LocalDate.of(2026, 9, 30));
+        pWatch.setNetIncomeCommonTtm(new BigDecimal("2000000000"));
+        pWatch.setNetIncomeCommonTtmStatus("AVAILABLE");
+        when(periodRepo.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(List.of(pHold, pWatch));
+
+        StockEarningsForecast fHold = new StockEarningsForecast();
+        fHold.setFigi("F_ARM_H");
+        fHold.setSource("ALPHAVANTAGE");
+        fHold.setPeriodType("ANNUAL");
+        fHold.setFiscalPeriod("FY2027");
+        fHold.setPeriodEnd(LocalDate.of(2027, 9, 30));
+        fHold.setCurrency("USD");
+        fHold.setEps(new BigDecimal("-0.50"));
+        fHold.setObservationDate(DAY.minusDays(2));
+        fHold.setObservedAt(NOW.minusSeconds(3600));
+        StockEarningsForecast fWatch = new StockEarningsForecast();
+        fWatch.setFigi("F_ARM_W");
+        fWatch.setSource("ALPHAVANTAGE");
+        fWatch.setPeriodType("ANNUAL");
+        fWatch.setFiscalPeriod("FY2027");
+        fWatch.setPeriodEnd(LocalDate.of(2027, 9, 30));
+        fWatch.setCurrency("USD");
+        fWatch.setEps(new BigDecimal("-0.50"));
+        fWatch.setObservationDate(DAY.minusDays(2));
+        fWatch.setObservedAt(NOW.minusSeconds(3600));
+        when(forecastRepo.findVisibleForStocksBetween(anyCollection(), any(), any(), any())).thenReturn(List.of(fHold, fWatch));
+
+        MetricResult<BigDecimal> naMetric = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of());
+        MarketSnapshotDto snap = new MarketSnapshotDto(MarketRegime.RISK_ON, naMetric, naMetric, naMetric, DAY, NOW, List.of(), List.of());
+        PreloadedMarketData preloaded = new PreloadedMarketData(
+                DAY, NOW, null, null, Map.of(), List.of(),
+                MetricResult.available(snap), MetricResult.available(new BigDecimal("15.2")));
+        when(marketContextService.preloadMarketData(DAY, NOW)).thenReturn(preloaded);
+
+        when(quoteNorm.normalizeFromLoaded(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            Stock st = inv.getArgument(3);
+            NormalizedBarDto b = new NormalizedBarDto(DAY, new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                    new BigDecimal("100"), MetricResult.available(BigDecimal.valueOf(1_000_000)), NOW, NOW, NOW, NOW, null, "B1");
+            PriceBasisDescriptor desc = new PriceBasisDescriptor("B1", "STORED", PriceAdjustment.SPLIT_ADJUSTED,
+                    DAY, null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, "USD", true, null);
+            return MetricResult.available(new NormalizedPriceSeriesDto(
+                    st.getFigi(), "DAILY", List.of(b), desc, null, MetricStatus.AVAILABLE, List.of(), "H1"));
+        });
+        when(priceStructures.analyze(any(), any())).thenAnswer(inv -> {
+            NormalizedPriceSeriesDto s = inv.getArgument(1);
+            AtrPointDto atr = new AtrPointDto(DAY, 14, new BigDecimal("2"), new BigDecimal("0.02"), DAY, 14, 14);
+            StructureTrendDto up = new StructureTrendDto(TrendState.UPTREND, NOW, PriceRelation.HH, PriceRelation.HL, List.of(), NOW);
+            TimeframeStructureDto daily = new TimeframeStructureDto(AnalysisTimeframe.DAILY, s.bars(),
+                    MetricResult.available(atr), List.of(), List.of(),
+                    MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL),
+                    MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            TimeframeStructureDto weekly = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, s.bars(),
+                    MetricResult.available(atr), List.of(), List.of(),
+                    MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL),
+                    MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+            return MetricResult.available(new PriceStructureDto(s.figi(), "B1", DAY, List.of(daily, weekly), List.of(), List.of()));
+        });
+        when(marketContextService.evaluateWithPreloaded(any(), any(), any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new MarketContextDto(
+                        null, null, MetricResult.available(snap), List.of(),
+                        new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()),
+                        List.of(), List.of(),
+                        new MomentumAnalysisDto(Map.of("SMA200", MetricResult.available(new BigDecimal("90"))), naMetric, List.of()),
+                        null,
+                        null, null, Map.of(), MetricResult.available(new BigDecimal("15.2")))));
+
+        LevelZoneDto sup = new LevelZoneDto("Z_ARM", AnalysisTimeframe.WEEKLY, new BigDecimal("98"), new BigDecimal("101"),
+                ZoneRole.SUPPORT, new BigDecimal("78"), NOW, 3, NOW, ZoneState.ACTIVE,
+                new BigDecimal("99.5"), new BigDecimal("3"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("78"),
+                1, NOW, null, List.of(), List.of(), 3, 0, 2, BigDecimal.ZERO, BigDecimal.ZERO, RetestState.NONE, true, List.of());
+        when(supportResistanceService.analyze(any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new SupportResistanceDto(
+                        List.of(sup), List.of(), List.of(), List.of(), List.of(), List.of(), null, List.of())));
+        TradePlanDto activePlan = new TradePlanDto(
+                "P_ARM", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                new PriceRangeDto(new BigDecimal("98"), new BigDecimal("101"), "B1"),
+                EntryMethod.ZONE_LIMIT, "trigger",
+                new StopRuleDto(new BigDecimal("94.00"), new BigDecimal("95.00"), 2, AnalysisTimeframe.DAILY,
+                        new BigDecimal("0.5"), new BigDecimal("3"), AnalysisTimeframe.WEEKLY, NOW, List.of(), new BigDecimal("3")),
+                List.of(new TargetDto(new BigDecimal("130"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "R1", "r1", List.of())),
+                MetricResult.available(new RiskRewardDto(new BigDecimal("100"), new BigDecimal("94"),
+                        new BigDecimal("6"), new BigDecimal("30"), new BigDecimal("5.0"),
+                        new BigDecimal("6"), new BigDecimal("30"), new BigDecimal("5.0"),
+                        new BigDecimal("30"), new BigDecimal("6"))),
+                TradePlanStatus.ACTIVE, List.of(), "Z_ARM", 1, AnalysisTimeframe.WEEKLY, NOW, null, List.of());
+        when(tradePlanService.build(any(), any(), any(), any(), any())).thenReturn(
+                MetricResult.available(new TradePlanResultDto(List.of(activePlan), new BigDecimal("100"), DAY,
+                        activePlan.riskReward(), List.of(), List.of(), true)));
+
+        PortfolioHealthSummaryDto summary = adrHealthService.evaluate(DAY, NOW, PortfolioHealthCheckService.SOURCE_MODE_CLOSING_SNAPSHOT).summary();
+        assertThat(summary.holdings()).hasSize(1);
+        assertThat(summary.holdings().getFirst().stance()).isEqualTo("CAUTION_VALUE_TRAP");
+        assertThat(summary.holdings().getFirst().alerts().stream().map(PortfolioAlertDto::alertCode))
+                .contains(PortfolioHealthCheckService.ALERT_HOLDING_VALUE_TRAP);
+        assertThat(summary.watchlistOpportunities()).isEmpty();
     }
 
     private PortfolioItem portfolioItem(String figi, String type, String shares, String avgCost, LocalDate basisDate) {

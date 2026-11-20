@@ -860,6 +860,16 @@ export function BuyRankingReportPage() {
                           >
                             {formatNum(item.netRiskReward, 2)}
                           </Typography>
+                          {item.tier === "TIER_2" && item.planNetRiskReward != null && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              display="block"
+                              data-testid={`tier2-plan-rr-${item.symbol}`}
+                            >
+                              {t("reports.buyRanking.cell.planNetRr", { rr: formatNum(item.planNetRiskReward, 2) })}
+                            </Typography>
+                          )}
                         </TableCell>
 
                         <TableCell>

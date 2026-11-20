@@ -792,7 +792,7 @@ const DynamicFormTable: React.FC<DynamicFormTableProps> = ({
             "& .MuiTableHead-root .MuiTableCell-root": {
               borderBottom: "1px solid",
               borderBottomColor: "divider",
-              bgcolor: "#F8FAFC",
+              bgcolor: "#F1F5F9",
               color: "text.secondary",
               fontSize: 11,
               fontWeight: 800,
@@ -818,9 +818,10 @@ const DynamicFormTable: React.FC<DynamicFormTableProps> = ({
                   onRowDoubleClick?.(row);
                 }}
                 sx={{
+                  backgroundColor: rowIndex % 2 === 1 ? "#F4F7FB" : "#FFFFFF",
                   transition: "background-color .15s ease",
                   cursor: onRowDoubleClick ? "pointer" : "default",
-                  "&:hover": { backgroundColor: "#F8FAFC" },
+                  "&:hover": { backgroundColor: "#EFF6FF" },
                 }}
               >
                 {columns.map((col) => (

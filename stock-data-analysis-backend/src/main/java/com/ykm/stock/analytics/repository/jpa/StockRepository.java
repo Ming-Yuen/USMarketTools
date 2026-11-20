@@ -167,10 +167,11 @@ public interface StockRepository extends JpaRepository<Stock, String>, JpaSpecif
     }
 
     @Query("""
-            select s.figi from Stock s
-            join s.classification c
-            where s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
-              and c.industryCode = :industryCode
+            select distinct s.figi from StockIndustryHistory h
+            join Stock s on s.figi = h.figi
+            where h.observedTo is null
+              and s.activeStatus = com.ykm.stock.analytics.enums.ActiveStatus.ACTIVE
+              and h.industry.code = :industryCode
             order by s.figi asc
             """)
     List<String> findActiveFigisByIndustryCode(@Param("industryCode") String industryCode);

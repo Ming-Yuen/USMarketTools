@@ -83,31 +83,31 @@ public class FutuService {
     public ClassificationSession openSession() {
         FutuQuoteClient client = clients.get();
         try {
-            return new ClassificationSession(client, supportedUsStocks(client));
+            return new ClassificationSession(client, supportedUsStocks(client, false));
         } catch (RuntimeException ex) {
             client.close();
             throw ex;
         }
     }
 
-    private Set<String> supportedUsStocks(FutuQuoteClient client) {
-        return supportedUsSymbols(client.getStockBasicInfo(), STOCK);
+    private Set<String> supportedUsStocks(FutuQuoteClient client, boolean excludePink) {
+        return supportedUsSymbols(client.getStockBasicInfo(), STOCK, excludePink);
     }
 
     private Set<String> supportedUsFinancialReportStocks(FutuQuoteClient client) {
-        Set<String> supported = new LinkedHashSet<>(supportedUsStocks(client));
-        supported.addAll(supportedUsSymbols(client.getTrustBasicInfo(), TRUST));
+        Set<String> supported = new LinkedHashSet<>(supportedUsStocks(client, true));
+        supported.addAll(supportedUsSymbols(client.getTrustBasicInfo(), TRUST, true));
         return Set.copyOf(supported);
     }
 
-    private Set<String> supportedUsSymbols(QotGetStaticInfo.Response info, int securityType) {
+    private Set<String> supportedUsSymbols(QotGetStaticInfo.Response info, int securityType, boolean excludePink) {
         if (info.getRetType() != 0) throw new IllegalStateException("FUTU_GET_STATIC_INFO_FAILED:" + info.getRetType() + ":" + info.getRetMsg());
         if (!info.hasS2C()) throw new IllegalStateException("FUTU_GET_STATIC_INFO_DATA_MISSING");
         Set<String> supported = new LinkedHashSet<>();
         for (QotCommon.SecurityStaticInfo item : info.getS2C().getStaticInfoListList()) {
             QotCommon.SecurityStaticBasic basic = item.getBasic();
             if (basic.getSecurity().getMarket() == US && basic.getSecType() == securityType
-                    && !basic.getDelisting() && basic.getExchType() != US_PINK)
+                    && !basic.getDelisting() && (!excludePink || basic.getExchType() != US_PINK))
                 supported.add(basic.getSecurity().getCode());
         }
         return Set.copyOf(supported);
@@ -321,7 +321,7 @@ public class FutuService {
         }
 
         public Set<String> supportedUsStocks() {
-            Set<String> supported = FutuService.this.supportedUsStocks(client);
+            Set<String> supported = FutuService.this.supportedUsStocks(client, true);
             if (supported.isEmpty()) throw new IllegalStateException("FUTU_GET_STATIC_INFO_EMPTY");
             return supported;
         }

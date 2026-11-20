@@ -39,7 +39,7 @@ class FutuServiceTests {
     }
 
     @Test
-    void supportedUsStocksExcludesUsPinkOtcSymbols() {
+    void observationSessionsExcludeUsPinkOtcSymbolsWhileClassificationKeepsThem() {
         QotGetStaticInfo.Response stockInfo = QotGetStaticInfo.Response.newBuilder().setRetType(0)
                 .setS2C(QotGetStaticInfo.S2C.newBuilder()
                         .addStaticInfoList(staticInfoItem(STOCK, "AAPL", QotCommon.ExchType.ExchType_US_Nasdaq_VALUE))
@@ -51,6 +51,10 @@ class FutuServiceTests {
         try (FutuService.ObservationSession session = service.openObservationSession()) {
             assertThat(session.supportedUsStocks()).containsExactly("AAPL");
             assertThat(session.supportedUsFinancialReportStocks()).containsExactlyInAnyOrder("AAPL", "EQIX");
+        }
+        try (FutuService.ClassificationSession session = service.openSession()) {
+            assertThat(session.supportsStock("AAPL")).isTrue();
+            assertThat(session.supportsStock("SCKT")).isTrue();
         }
     }
 

@@ -1,14 +1,19 @@
 package com.ykm.stock.analytics.scheduling;
 
 import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.client.TreasuryDirectClient;
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.dto.treasury.TreasuryYieldCurveFeed;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.TreasuryParYieldDailyRepository;
 import com.ykm.stock.analytics.service.market.TreasuryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -17,6 +22,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -135,6 +141,60 @@ class TreasuryDailySyncJobTests {
                 .when(service).saveOrUpdateTreasuryParYieldDailies(feed);
         JobExecutionContext saveContext = mock(JobExecutionContext.class);
         assertThrows(JobExecutionException.class, () -> job.execute(saveContext));
+    }
+
+    // Scenario：job_config.watermark_date 為 NULL 時自 sync_history_start_date 逐年全量拉取並推進水位；已有水位時只拉當月與重疊月份。
+    @Test
+    void nullWatermarkBackfillsYearByYearAndIncrementalUsesOverlapMonths() throws Exception {
+        JobConfigRepository jobConfigRepo = mock(JobConfigRepository.class);
+        PortfolioSysConfigRepository sysConfigRepo = mock(PortfolioSysConfigRepository.class);
+        ReflectionTestUtils.setField(job, "jobConfigRepository", jobConfigRepo);
+        ReflectionTestUtils.setField(job, "sysConfigRepository", sysConfigRepo);
+
+        SysConfig startCfg = new SysConfig();
+        startCfg.setConfigKey(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE);
+        startCfg.setConfigValue("2024-01-01");
+        startCfg.setEnabled(true);
+        when(sysConfigRepo.findByConfigKeyInOrderByIdAsc(List.of(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE)))
+                .thenReturn(List.of(startCfg));
+        when(jobConfigRepo.findWatermarkDateByTaskCode(TaskCode.TREASURY_DAILY_SYNC)).thenReturn(Optional.empty());
+
+        TreasuryYieldCurveFeed y2024 = feed(LocalDateTime.of(2024, 12, 31, 0, 0));
+        TreasuryYieldCurveFeed y2025 = feed(LocalDateTime.of(2025, 12, 31, 0, 0));
+        TreasuryYieldCurveFeed y2026 = feed(LocalDateTime.of(2026, 10, 16, 0, 0));
+        when(client.getYieldCurveForYear(2024)).thenReturn(y2024);
+        when(client.getYieldCurveForYear(2025)).thenReturn(y2025);
+        when(client.getYieldCurveForYear(2026)).thenReturn(y2026);
+
+        job.execute(mock(JobExecutionContext.class));
+
+        verify(client).getYieldCurveForYear(2024);
+        verify(client).getYieldCurveForYear(2025);
+        verify(client).getYieldCurveForYear(2026);
+        verify(service).saveOrUpdateTreasuryParYieldDailies(y2024);
+        verify(service).saveOrUpdateTreasuryParYieldDailies(y2025);
+        verify(service).saveOrUpdateTreasuryParYieldDailies(y2026);
+        verify(jobConfigRepo).updateWatermarkDate(TaskCode.TREASURY_DAILY_SYNC, LocalDate.of(2026, 10, 16));
+
+        // Empty prior year must NOT advance watermark
+        org.mockito.Mockito.clearInvocations(jobConfigRepo);
+        when(client.getYieldCurveForYear(2025)).thenReturn(feed());
+        job.execute(mock(JobExecutionContext.class));
+        verify(jobConfigRepo, never()).updateWatermarkDate(org.mockito.ArgumentMatchers.anyString(), any());
+
+        // Incremental run with watermark 2026-10-16 -> current month (2026-10) + overlap month (2026-09)
+        when(jobConfigRepo.findWatermarkDateByTaskCode(TaskCode.TREASURY_DAILY_SYNC))
+                .thenReturn(Optional.of(LocalDate.of(2026, 10, 16)));
+        TreasuryYieldCurveFeed octFeed = feed(LocalDateTime.of(2026, 10, 17, 0, 0));
+        TreasuryYieldCurveFeed sepFeed = feed(LocalDateTime.of(2026, 9, 30, 0, 0));
+        when(client.getCurrentMonthYieldCurve()).thenReturn(octFeed);
+        when(client.getYieldCurveForMonth(YearMonth.of(2026, 9))).thenReturn(sepFeed);
+
+        job.execute(mock(JobExecutionContext.class));
+
+        verify(client).getCurrentMonthYieldCurve();
+        verify(client).getYieldCurveForMonth(YearMonth.of(2026, 9));
+        verify(jobConfigRepo).updateWatermarkDate(TaskCode.TREASURY_DAILY_SYNC, LocalDate.of(2026, 10, 17));
     }
 
     private TreasuryYieldCurveFeed feed(LocalDateTime... dates) {

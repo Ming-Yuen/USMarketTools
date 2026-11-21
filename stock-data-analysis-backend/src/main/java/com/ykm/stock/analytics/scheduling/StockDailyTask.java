@@ -1,6 +1,7 @@
 package com.ykm.stock.analytics.scheduling;
 
 import com.google.common.collect.Lists;
+import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.client.SecSubmissionsArchive;
 import com.ykm.stock.analytics.client.SecTickerClient;
 import com.ykm.stock.analytics.constant.TaskCode;
@@ -9,9 +10,11 @@ import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.model.dto.finnhub.response.Symbol;
 import com.ykm.stock.analytics.model.dto.massive.response.MassiveTickerDetails;
 import com.ykm.stock.analytics.model.entity.Stock;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.market.FinnhubService;
+import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.MassiveService;
 import com.ykm.stock.analytics.service.stock.StockService;
 import com.ykm.stock.analytics.service.valuation.StockValuationService;
@@ -25,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -53,6 +57,10 @@ public class StockDailyTask implements Job {
     private StockStatusRepository stockStatusRepository;
     @Autowired(required = false)
     private StockValuationService stockValuationService;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
+    @Autowired(required = false)
+    private DateTimeService dateTimeService;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -169,6 +177,10 @@ public class StockDailyTask implements Job {
         if (!valuationAffectedFigis.isEmpty() && stockValuationService != null) {
             stockValuationService.refreshLatestValuations(valuationAffectedFigis, null);
         }
+        LocalDate businessDate = dateTimeService != null
+                ? dateTimeService.now().atZone(MarketStatusService.NY_ZONE).toLocalDate()
+                : LocalDate.now(MarketStatusService.NY_ZONE);
+        JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_DAILY, businessDate);
     }
 
     private String resolveTickerCik(String primaryTicker, String supersededTicker, Map<String, String> secCiks) {

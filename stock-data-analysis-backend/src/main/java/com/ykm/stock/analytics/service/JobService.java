@@ -150,19 +150,35 @@ public class JobService {
     // 用途：複製可由 Job update 修改的排程欄位，供 reconcile 失敗時補償恢復。
     private JobConfig copyScheduleFields(JobConfig source) {
         JobConfig copy = new JobConfig();
-        copy.setTaskCode(source.getTaskCode()); copy.setTaskGroup(source.getTaskGroup()); copy.setJobClassName(source.getJobClassName());
-        copy.setCronExpression(source.getCronExpression()); copy.setTriggerType(source.getTriggerType());
-        copy.setConfig(source.getConfig() == null ? null : Map.copyOf(source.getConfig())); copy.setActiveStatus(source.getActiveStatus());
-        copy.setStartTime(source.getStartTime()); copy.setEndTime(source.getEndTime()); copy.setRetryCount(source.getRetryCount()); copy.setMaxRetryCount(source.getMaxRetryCount());
+        copy.setTaskCode(source.getTaskCode());
+        copy.setTaskGroup(source.getTaskGroup());
+        copy.setJobClassName(source.getJobClassName());
+        copy.setCronExpression(source.getCronExpression());
+        copy.setTriggerType(source.getTriggerType());
+        copy.setConfig(source.getConfig() == null ? null : Map.copyOf(source.getConfig()));
+        copy.setActiveStatus(source.getActiveStatus());
+        copy.setStartTime(source.getStartTime());
+        copy.setEndTime(source.getEndTime());
+        copy.setRetryCount(source.getRetryCount());
+        copy.setMaxRetryCount(source.getMaxRetryCount());
+        copy.setWatermarkDate(source.getWatermarkDate());
         return copy;
     }
 
     // 用途：把先前快照欄位恢復到同一 persistent JobConfig entity。
     private void restoreScheduleFields(JobConfig target, JobConfig source) {
-        target.setTaskCode(source.getTaskCode()); target.setTaskGroup(source.getTaskGroup()); target.setJobClassName(source.getJobClassName());
-        target.setCronExpression(source.getCronExpression()); target.setTriggerType(source.getTriggerType());
-        target.setConfig(source.getConfig()); target.setActiveStatus(source.getActiveStatus()); target.setStartTime(source.getStartTime()); target.setEndTime(source.getEndTime());
-        target.setRetryCount(source.getRetryCount()); target.setMaxRetryCount(source.getMaxRetryCount());
+        target.setTaskCode(source.getTaskCode());
+        target.setTaskGroup(source.getTaskGroup());
+        target.setJobClassName(source.getJobClassName());
+        target.setCronExpression(source.getCronExpression());
+        target.setTriggerType(source.getTriggerType());
+        target.setConfig(source.getConfig());
+        target.setActiveStatus(source.getActiveStatus());
+        target.setStartTime(source.getStartTime());
+        target.setEndTime(source.getEndTime());
+        target.setRetryCount(source.getRetryCount());
+        target.setMaxRetryCount(source.getMaxRetryCount());
+        target.setWatermarkDate(source.getWatermarkDate());
     }
 
 }

@@ -138,24 +138,26 @@
 
 | `taskCode` | 預設時間（香港） | 主要職責 |
 | --- | --- | --- |
-| `TREASURY_DAILY_SYNC` | 每日 07:15 | 美國財政部國債殖利率同步（近 60 日有效 10Y 不足 25 筆時自動回補前 1–2 個月） |
-| `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率增量同步（寫入 `fx_rate_daily`） |
-| `CREDIT_SPREAD_DAILY_SYNC` | 每日 05:08 | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）增量同步（遇假日沿用最近有效觀測日不中斷估值排程） |
+| `TREASURY_DAILY_SYNC` | 每日 07:15 | 美國財政部國債殖利率同步（`watermark_date` 為 `NULL` 時自 `sync_history_start_date` 逐年全量拉取；已有水位時同步當月及重疊月份） |
+| `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率同步（`watermark_date` 為 `NULL` 時自 `fx_sync_start_date` 全量回補，有水位回看 21 天增量） |
+| `CREDIT_SPREAD_DAILY_SYNC` | 每日 05:08 | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）同步（`watermark_date` 為 `NULL` 時自 `sync_history_start_date` 拉取來源可提供全區間，歷史回補列 `observed_at = NULL` 保留歷史查詢可見性） |
 | `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步（CIK／SIC／股類異動同交易重建財季分母） |
-| `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（回看最近 5 個交易日補漏） |
+| `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（首次歷史起點讀取 `sys_config.sync_history_start_date`，日常回看最近 5 個交易日補漏） |
 | `STOCK_FUNDAMENTAL_DAILY_SYNC` | 每日 06:30 | 三合一逐公司原子同步拆股（平日 Massive／週六與新股富途復權；當日收盤前已掃過而 `split_date` 落後時自動走輕量拆股補齊）、富途三大財報（三表獨立水位、OTC 粉單跳過）與 SEC 財務事實（含已確認自訂標籤，0 AI 消耗），變更時同交易原地重建 `stock_financial_period` 並推進 `fundamental_sync_date` 斷點（取代原 `STOCK_SPLIT_DAILY`、`FINANCIAL_REPORT_DAILY_SYNC`、`SEC_FINANCIAL_FACTS_DAILY_SYNC`） |
 | `STOCK_CLASSIFICATION_DAILY_SYNC` | 週二至六 07:00 | 富途產業與概念分類同步 |
-| `SHORT_INTEREST_SYNC` | 週二、五 08:20 | FINRA 雙週做空比例增量同步（透過 Massive `/stocks/v1/short-interest` 批量更新） |
-| `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
+| `SHORT_INTEREST_SYNC` | 週二、五 08:20 | FINRA 雙週做空比例增量同步（透過 Massive `/stocks/v1/short-interest` 批量更新，水位統一由 `job_config.watermark_date` 管理） |
+| `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒（CNN）與 VIX（FRED `VIXCLS` 歷史補缺 + Yahoo 日頻）同步；`job_config.watermark_date` 專責控制 VIX 水位，不受 CNN 異常影響 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
 | `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日營運股行情／估值覆蓋 `>= 95%`、有行情且無拆股對帳差異標記之估值股拆股覆蓋 `>= 95%` 及大盤基準（`SPY`/`QQQ`）拆股就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含板塊廣度崩壞警示與財報跳空止損風險）及站內收盤簡報／提醒寫入，並於雷達正式發布後非同步觸發 `CHIP_EVENT_DAILY_SYNC`；上游未齊延後時寫入冪等 `EOD_PIPELINE_DEFERRED` 警告並於收盤簡報亦恢復發布後自動標為已讀 |
-| `CHIP_EVENT_DAILY_SYNC` | 週二至六 11:00（兜底；主路徑由雷達發布後異步觸發） | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗；完成含正式雷達之無錯誤同步後寫入 `sys_config` 水位避免兜底重抓，可傳 `force=true` 強制重跑） |
+| `CHIP_EVENT_DAILY_SYNC` | 週二至六 11:00（兜底；主路徑由雷達發布後異步觸發） | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗；完成含正式雷達之無錯誤同步後推進 `job_config.watermark_date` 避免兜底重抓，可傳 `force=true` 強制重跑） |
 | `INSTITUTIONAL_13F_SYNC` | 每週日 09:00 | 旗艦機構（約 15 家）SEC 13F-HR 季度持倉同步與 OpenFIGI／Massive CUSIP→FIGI 解析 |
+
+全部 14 支排程均於整輪成功後透過 `job_config.watermark_date` 單向局部更新最新業務資料日期（不覆蓋 Cron／啟停設定）；歷史回補起點統一由 `sys_config` 的 `sync_history_start_date`（預設 `2016-01-01`）與 `fx_sync_start_date`（預設 `2014-01-01`）管理並於啟動時冪等初始化。
 
 ### 舊版資料庫清理與枚舉約束說明
 
-DEV 環境由 Hibernate `ddl-auto=update` 自動建立 `stock_financial_period`、`stock_valuation_latest`、`fx_rate_daily` 與 `adr_share_ratio`，並於 `DataInitializer` 啟動時自動清除既有 `stock_financial_period`／`stock_valuation_latest` 上因 Hibernate 舊版枚舉產生的 `*_reason*_check` 約束（避免新增 `ValuationReason` 如 `ADR_RATIO_UNVERIFIED`、`FX_RATE_UNAVAILABLE`、`FX_RATE_STALE` 時觸發 PostgreSQL `23514` 約束違規）。於 `ddl-auto=none` 的 UAT／PROD 升級前，須同步套用新表、擴充欄位並移除該兩表舊有 `*_reason*_check` 約束。
+DEV 環境由 Hibernate `ddl-auto=update` 自動維護新表與新欄位（含 `job_config.watermark_date`），並於 `DataInitializer` 啟動時自動清除 `stock_financial_period`／`stock_valuation_latest` 上過期的 `*_reason*_check` 約束及放寬 `macro_credit_spread_daily.observed_at` 為可空。於 `ddl-auto=none` 的 UAT／PROD 升級前，須同步套用新表、擴充欄位（含 `job_config.watermark_date` 與 `macro_credit_spread_daily.observed_at DROP NOT NULL`）並移除該兩表舊有 `*_reason*_check` 約束。
 
 已退役的 `stock_valuation_daily` 與 `financial_report_item_mapping` 已從程式碼與 ORM 移除；確認新鏈路驗收無誤後，可在已確認的目標資料庫手動執行清理：
 

@@ -1,10 +1,13 @@
 package com.ykm.stock.analytics.scheduling;
 
+import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.dto.classification.StockClassificationSnapshot;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
+import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.StockClassificationSyncService;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.JobScheduleReconciler;
@@ -16,6 +19,7 @@ import org.quartz.CronTrigger;
 import org.quartz.Job;
 import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -40,6 +44,10 @@ public class StockClassificationDailySyncJob implements Job {
     private final FutuService futuService;
     private final StockClassificationSyncService classificationSyncService;
     private final TransactionTemplate transactionTemplate;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
+    @Autowired(required = false)
+    private DateTimeService dateTimeService;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -50,10 +58,11 @@ public class StockClassificationDailySyncJob implements Job {
         if (active.isEmpty()) throw new IllegalStateException("STOCK_CLASSIFICATION_UNIVERSE_EMPTY");
 
         // 2. 手動指定 FIGI 優先；週六原排程完整刷新，其餘只處理尚未同步目前代碼的股票。
-        JobDataMap parameters = context.getMergedJobDataMap();
+        JobDataMap parameters = context == null ? null : context.getMergedJobDataMap();
         String requestedFigis = parameters == null ? null : parameters.getString("figis");
+        boolean manualFigisMode = requestedFigis != null && !requestedFigis.isBlank();
         List<Stock> candidates;
-        if (requestedFigis != null && !requestedFigis.isBlank()) {
+        if (manualFigisMode) {
             Set<String> selected = Arrays.stream(requestedFigis.split(",")).map(String::trim).collect(Collectors.toSet());
             candidates = active.stream().map(ActiveStockWithStatus::stock).filter(stock -> selected.contains(stock.getFigi())).toList();
             if (candidates.isEmpty()) throw new IllegalStateException("STOCK_CLASSIFICATION_UNIVERSE_EMPTY");
@@ -65,6 +74,9 @@ public class StockClassificationDailySyncJob implements Job {
                     .map(ActiveStockWithStatus::stock).toList();
         }
         if (candidates.isEmpty()) {
+            if (!manualFigisMode) {
+                advanceJobWatermark();
+            }
             log.info("Stock classification skipped | reason=NO_PENDING_STOCKS");
             return;
         }
@@ -72,14 +84,16 @@ public class StockClassificationDailySyncJob implements Job {
         // 3. 載入富途正股清單及字典；用本次分析範圍內所有 ACTIVE FIGI 判斷代碼是否唯一。
         Map<String, Long> activeSymbolCounts = active.stream().map(ActiveStockWithStatus::stock)
                 .collect(Collectors.groupingBy(Stock::getSymbol, Collectors.counting()));
+        int targetCount;
+        int matched = 0;
         try (FutuService.ClassificationSession futu = futuService.openSession()) {
             List<Stock> targets = candidates.stream().filter(stock -> futu.supportsStock(stock.getSymbol()))
                     .filter(stock -> activeSymbolCounts.get(stock.getSymbol()) == 1L).toList();
+            targetCount = targets.size();
             int unsupported = (int) candidates.stream().filter(stock -> !futu.supportsStock(stock.getSymbol())).count();
             int ambiguous = candidates.size() - unsupported - targets.size();
             log.info("Stock classification started | candidates={} supportedUnique={} unsupported={} ambiguous={}",
                     candidates.size(), targets.size(), unsupported, ambiguous);
-            int matched = 0;
             for (int offset = 0; offset < targets.size(); offset += BATCH_SIZE) {
                 List<Stock> batch = targets.subList(offset, Math.min(offset + BATCH_SIZE, targets.size()));
                 // 4. 交易外取得本批關聯，成功後原子保存字典、關聯與同步代碼。
@@ -88,11 +102,21 @@ public class StockClassificationDailySyncJob implements Job {
                 log.info("Stock classification progress | committed={}/{} matched={}", offset + batch.size(), targets.size(), matched);
             }
         }
+        if (!manualFigisMode && (targetCount == 0 || matched > 0)) {
+            advanceJobWatermark();
+        }
+    }
+
+    private void advanceJobWatermark() {
+        LocalDate businessDate = dateTimeService != null
+                ? dateTimeService.now().atZone(MarketStatusService.NY_ZONE).toLocalDate()
+                : LocalDate.now(MarketStatusService.NY_ZONE);
+        JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_CLASSIFICATION_DAILY_SYNC, businessDate);
     }
 
     /** 只在週六的 Cron 觸發時完整刷新。 */
     private boolean isWeeklyRefresh(JobExecutionContext context) {
-        return context.getTrigger() instanceof CronTrigger && context.getScheduledFireTime() != null && context.getScheduledFireTime().toInstant()
+        return context != null && context.getTrigger() instanceof CronTrigger && context.getScheduledFireTime() != null && context.getScheduledFireTime().toInstant()
                 .atZone(ZoneId.of(JobScheduleReconciler.SCHEDULE_TIMEZONE)).getDayOfWeek() == DayOfWeek.SATURDAY;
     }
 }

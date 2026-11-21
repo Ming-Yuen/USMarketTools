@@ -1,6 +1,7 @@
 package com.ykm.stock.analytics.init;
 
 import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.enums.TaskGroup;
@@ -10,7 +11,9 @@ import com.ykm.stock.analytics.model.entity.Menu;
 import com.ykm.stock.analytics.repository.jpa.AdrShareRatioRepository;
 import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MenuRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.service.JobScheduleReconciler;
+import com.ykm.stock.analytics.service.enhancement.ShortInterestService;
 import com.ykm.stock.analytics.scheduling.*;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +25,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
@@ -35,25 +39,35 @@ public class DataInitializer implements CommandLineRunner {
     private final MenuRepository menuRepository;
     private final JobConfigRepository jobConfigRepository;
     private final AdrShareRatioRepository adrShareRatioRepository;
+    private final PortfolioSysConfigRepository sysConfigRepository;
     private final DateTimeService dateTimeService;
     private final JdbcTemplate jdbcTemplate;
     private final String ddlAuto;
 
     public DataInitializer(MenuRepository menuRepository, JobConfigRepository jobConfigRepository) {
-        this(menuRepository, jobConfigRepository, (AdrShareRatioRepository) null, null, null, "none");
+        this(menuRepository, jobConfigRepository, (AdrShareRatioRepository) null, null, null, null, "none");
     }
 
     public DataInitializer(MenuRepository menuRepository, JobConfigRepository jobConfigRepository,
                            AdrShareRatioRepository adrShareRatioRepository, DateTimeService dateTimeService) {
-        this(menuRepository, jobConfigRepository, adrShareRatioRepository, dateTimeService, null, "none");
+        this(menuRepository, jobConfigRepository, adrShareRatioRepository, null, dateTimeService, null, "none");
     }
 
     public DataInitializer(MenuRepository menuRepository, JobConfigRepository jobConfigRepository,
                            AdrShareRatioRepository adrShareRatioRepository, DateTimeService dateTimeService,
                            JdbcTemplate jdbcTemplate, String ddlAuto) {
+        this(menuRepository, jobConfigRepository, adrShareRatioRepository, null, dateTimeService, jdbcTemplate, ddlAuto);
+    }
+
+    public DataInitializer(MenuRepository menuRepository, JobConfigRepository jobConfigRepository,
+                           AdrShareRatioRepository adrShareRatioRepository,
+                           PortfolioSysConfigRepository sysConfigRepository,
+                           DateTimeService dateTimeService,
+                           JdbcTemplate jdbcTemplate, String ddlAuto) {
         this.menuRepository = menuRepository;
         this.jobConfigRepository = jobConfigRepository;
         this.adrShareRatioRepository = adrShareRatioRepository;
+        this.sysConfigRepository = sysConfigRepository;
         this.dateTimeService = dateTimeService;
         this.jdbcTemplate = jdbcTemplate;
         this.ddlAuto = ddlAuto == null ? "none" : ddlAuto.trim().toLowerCase(Locale.ROOT);
@@ -62,11 +76,13 @@ public class DataInitializer implements CommandLineRunner {
     @Autowired
     public DataInitializer(MenuRepository menuRepository, JobConfigRepository jobConfigRepository,
                            ObjectProvider<AdrShareRatioRepository> adrShareRatioProvider,
+                           ObjectProvider<PortfolioSysConfigRepository> sysConfigRepositoryProvider,
                            ObjectProvider<DateTimeService> dateTimeServiceProvider,
                            ObjectProvider<JdbcTemplate> jdbcTemplateProvider,
                            @Value("${spring.jpa.hibernate.ddl-auto:none}") String ddlAuto) {
         this(menuRepository, jobConfigRepository,
                 adrShareRatioProvider == null ? null : adrShareRatioProvider.getIfAvailable(),
+                sysConfigRepositoryProvider == null ? null : sysConfigRepositoryProvider.getIfAvailable(),
                 dateTimeServiceProvider == null ? null : dateTimeServiceProvider.getIfAvailable(),
                 jdbcTemplateProvider == null ? null : jdbcTemplateProvider.getIfAvailable(),
                 ddlAuto);
@@ -75,8 +91,10 @@ public class DataInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) {
         dropStaleValuationReasonCheckConstraints();
+        relaxMacroCreditSpreadObservedAtNullability();
         initializeMenuData();
         initializeJobConfigData();
+        initializeSyncSysConfigData();
         initializeVerifiedAdrRatios();
     }
 
@@ -107,6 +125,57 @@ public class DataInitializer implements CommandLineRunner {
                 jdbcTemplate.execute("ALTER TABLE " + tbl + " DROP CONSTRAINT IF EXISTS " + con);
             }
         }
+    }
+
+    /** Hibernate ddl-auto=update 不會自動移除既有欄位的 NOT NULL 約束；放寬 macro_credit_spread_daily.observed_at 以支援歷史回補為 NULL。 */
+    private void relaxMacroCreditSpreadObservedAtNullability() {
+        if (jdbcTemplate == null || !("update".equals(ddlAuto) || "create".equals(ddlAuto) || "create-drop".equals(ddlAuto))) {
+            return;
+        }
+        List<Map<String, Object>> cols = jdbcTemplate.queryForList("""
+                select is_nullable
+                from information_schema.columns
+                where table_schema = current_schema()
+                  and table_name = 'macro_credit_spread_daily'
+                  and column_name = 'observed_at'
+                """);
+        if (!cols.isEmpty() && "NO".equalsIgnoreCase(String.valueOf(cols.getFirst().get("is_nullable")))) {
+            jdbcTemplate.execute("ALTER TABLE macro_credit_spread_daily ALTER COLUMN observed_at DROP NOT NULL");
+        }
+    }
+
+    /** 冪等初始化系統同步開始日（不覆寫既有修改），並將舊 sys_config 同步水位平滑遷移至 job_config.watermark_date 後清理舊鍵。 */
+    void initializeSyncSysConfigData() {
+        if (sysConfigRepository == null) {
+            return;
+        }
+        seedSysConfigIfAbsent(
+                PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE,
+                PortfolioSysConfigRepository.DEFAULT_SYNC_HISTORY_START_DATE.toString(),
+                "全系統歷史行情、VIX、高收益債利差與美債殖利率同步開始日（YYYY-MM-DD）");
+        seedSysConfigIfAbsent(
+                PortfolioSysConfigRepository.KEY_FX_SYNC_START_DATE,
+                PortfolioSysConfigRepository.DEFAULT_FX_SYNC_START_DATE.toString(),
+                "外幣匯率（FRED H.10）歷史同步開始日（YYYY-MM-DD）；停用或缺失時回退 sync_history_start_date");
+        PortfolioSysConfigRepository.migrateLegacyWatermark(
+                sysConfigRepository, jobConfigRepository,
+                ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE, TaskCode.SHORT_INTEREST_SYNC);
+        PortfolioSysConfigRepository.migrateLegacyWatermark(
+                sysConfigRepository, jobConfigRepository,
+                ChipEventDailySyncJob.CONFIG_KEY_SYNCED_TRADE_DATE, TaskCode.CHIP_EVENT_DAILY_SYNC);
+    }
+
+    private void seedSysConfigIfAbsent(String key, String defaultValue, String description) {
+        List<SysConfig> existing = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(key));
+        if (existing != null && !existing.isEmpty()) {
+            return;
+        }
+        SysConfig created = new SysConfig();
+        created.setConfigKey(key);
+        created.setConfigValue(defaultValue);
+        created.setDescription(description);
+        created.setEnabled(true);
+        sysConfigRepository.save(created);
     }
 
     private void initializeMenuData() {

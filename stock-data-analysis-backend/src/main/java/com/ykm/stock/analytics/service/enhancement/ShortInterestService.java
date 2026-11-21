@@ -1,6 +1,7 @@
 package com.ykm.stock.analytics.service.enhancement;
 
 import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.ShortInterestSummaryDto;
 import com.ykm.stock.analytics.model.entity.Stock;
@@ -9,6 +10,7 @@ import com.ykm.stock.analytics.model.entity.StockQuote;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
 import com.ykm.stock.analytics.model.entity.StockShortInterest;
 import com.ykm.orm.entity.SysConfig;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
@@ -70,6 +72,8 @@ public class ShortInterestService {
     private final DateTimeService dateTimeService;
     private final TransactionTemplate transactionTemplate;
     @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
+    @Autowired(required = false)
     private PortfolioSysConfigRepository sysConfigRepository;
 
     public record ShortSyncResult(int fetchedRows, int savedRows, LocalDate latestSettlementDate) {}
@@ -89,13 +93,11 @@ public class ShortInterestService {
         if (fetched.isEmpty()) {
             return new ShortSyncResult(0, 0, marketWatermark);
         }
-        LocalDate batchLatest = fetched.stream()
-                .map(MassiveShortInterestRow::settlementDate)
-                .filter(java.util.Objects::nonNull)
-                .max(Comparator.naturalOrder())
-                .orElse(marketWatermark);
-        int saved = persistMarketBatchRows(fetched, StockShortInterest.SOURCE_MASSIVE_FINRA, batchLatest);
-        LocalDate latestAfter = batchLatest != null ? batchLatest : shortInterestRepository.findLatestSettlementDate().orElse(marketWatermark);
+        int saved = persistMarketBatchRows(fetched, StockShortInterest.SOURCE_MASSIVE_FINRA, true);
+        LocalDate latestAfter = readMarketSyncedWatermark();
+        if (latestAfter == null) {
+            latestAfter = shortInterestRepository.findLatestSettlementDate().orElse(marketWatermark);
+        }
         log.info("Short interest batch sync completed | from={} fetched={} saved={} latestSettlementDate={}",
                 from, fetched.size(), saved, latestAfter);
         return new ShortSyncResult(fetched.size(), saved, latestAfter);
@@ -116,10 +118,10 @@ public class ShortInterestService {
     }
 
     public int persistRows(List<MassiveShortInterestRow> rows, String source) {
-        return persistMarketBatchRows(rows, source, null);
+        return persistMarketBatchRows(rows, source, false);
     }
 
-    private int persistMarketBatchRows(List<MassiveShortInterestRow> rows, String source, LocalDate marketWatermarkToAdvance) {
+    private int persistMarketBatchRows(List<MassiveShortInterestRow> rows, String source, boolean advanceWatermark) {
         Integer saved = transactionTemplate.execute(txStatus -> {
             List<Stock> activeStocks = stockRepository.findAll().stream()
                     .filter(s -> s.getActiveStatus() == ActiveStatus.ACTIVE && s.getSymbol() != null)
@@ -130,6 +132,7 @@ public class ShortInterestService {
             }
             Instant now = dateTimeService.now();
             List<StockShortInterest> batch = new ArrayList<>();
+            LocalDate persistedLatest = null;
             for (MassiveShortInterestRow row : rows) {
                 if (row == null || row.ticker() == null || row.settlementDate() == null || row.shortInterest() == null) {
                     continue;
@@ -140,12 +143,15 @@ public class ShortInterestService {
                 }
                 Stock stock = matched.getFirst();
                 batch.add(toEntity(stock, row, source, now));
+                if (persistedLatest == null || row.settlementDate().isAfter(persistedLatest)) {
+                    persistedLatest = row.settlementDate();
+                }
             }
             if (!batch.isEmpty()) {
                 shortInterestRepository.saveAll(batch);
-            }
-            if (marketWatermarkToAdvance != null) {
-                advanceMarketSyncedWatermarkInCurrentTx(marketWatermarkToAdvance);
+                if (advanceWatermark && persistedLatest != null) {
+                    advanceMarketSyncedWatermarkInCurrentTx(persistedLatest);
+                }
             }
             return batch.size();
         });
@@ -153,23 +159,30 @@ public class ShortInterestService {
     }
 
     private LocalDate readMarketSyncedWatermark() {
-        if (sysConfigRepository != null) {
-            List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_MARKET_SYNCED_DATE));
-            if (matches != null && !matches.isEmpty()) {
-                String raw = matches.getFirst().getConfigValue();
-                if (raw != null && !raw.isBlank()) {
-                    try {
-                        return LocalDate.parse(raw.trim());
-                    } catch (RuntimeException ignored) {
-                    }
-                }
+        if (jobConfigRepository != null) {
+            LocalDate watermark = jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.SHORT_INTEREST_SYNC).orElse(null);
+            if (watermark != null) {
+                return watermark;
             }
+            return PortfolioSysConfigRepository.migrateLegacyWatermark(
+                    sysConfigRepository, jobConfigRepository, CONFIG_KEY_MARKET_SYNCED_DATE, TaskCode.SHORT_INTEREST_SYNC);
+        }
+        LocalDate legacy = PortfolioSysConfigRepository.resolveDateConfig(sysConfigRepository, CONFIG_KEY_MARKET_SYNCED_DATE, null);
+        if (legacy != null) {
+            return legacy;
         }
         return shortInterestRepository.findLatestSettlementDate().orElse(null);
     }
 
     private void advanceMarketSyncedWatermarkInCurrentTx(LocalDate candidate) {
-        if (sysConfigRepository == null || candidate == null) {
+        if (candidate == null) {
+            return;
+        }
+        if (jobConfigRepository != null) {
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.SHORT_INTEREST_SYNC, candidate);
+            return;
+        }
+        if (sysConfigRepository == null) {
             return;
         }
         List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_MARKET_SYNCED_DATE));
@@ -183,13 +196,7 @@ public class ShortInterestService {
             return;
         }
         SysConfig primary = matches.getFirst();
-        LocalDate existing = null;
-        if (primary.getConfigValue() != null && !primary.getConfigValue().isBlank()) {
-            try {
-                existing = LocalDate.parse(primary.getConfigValue().trim());
-            } catch (RuntimeException ignored) {
-            }
-        }
+        LocalDate existing = PortfolioSysConfigRepository.resolveDateConfig(sysConfigRepository, CONFIG_KEY_MARKET_SYNCED_DATE, null);
         if (existing == null || candidate.isAfter(existing)) {
             primary.setConfigValue(candidate.toString());
             primary.setEnabled(true);

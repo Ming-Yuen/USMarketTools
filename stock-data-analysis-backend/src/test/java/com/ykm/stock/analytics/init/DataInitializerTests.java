@@ -1,5 +1,6 @@
 package com.ykm.stock.analytics.init;
 
+import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.config.QuartzConfig;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ActiveStatus;
@@ -8,6 +9,9 @@ import com.ykm.stock.analytics.model.entity.JobConfig;
 import com.ykm.stock.analytics.model.entity.Menu;
 import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MenuRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
+import com.ykm.stock.analytics.scheduling.ChipEventDailySyncJob;
+import com.ykm.stock.analytics.service.enhancement.ShortInterestService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -15,6 +19,7 @@ import org.mockito.ArgumentCaptor;
 import org.quartz.Scheduler;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -207,5 +212,59 @@ class DataInitializerTests {
         assertThatThrownBy(() -> new DataInitializer(menus, jobs).run())
                 .isInstanceOf(IllegalStateException.class).hasMessage("seed failed");
         verifyNoInteractions(jobs);
+    }
+
+    @Test
+    void seedsStartDatesIdempotentlyAndMigratesLegacySysConfigWatermarks() {
+        JobConfigRepository jobs = mock(JobConfigRepository.class);
+        PortfolioSysConfigRepository sysConfigs = mock(PortfolioSysConfigRepository.class);
+
+        SysConfig existingHistStart = new SysConfig();
+        existingHistStart.setConfigKey(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE);
+        existingHistStart.setConfigValue("2018-01-01");
+        existingHistStart.setEnabled(true);
+
+        SysConfig legacyChip = new SysConfig();
+        legacyChip.setConfigKey(ChipEventDailySyncJob.CONFIG_KEY_SYNCED_TRADE_DATE);
+        legacyChip.setConfigValue("2026-11-20");
+        legacyChip.setEnabled(true);
+
+        SysConfig legacyShort = new SysConfig();
+        legacyShort.setConfigKey(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE);
+        legacyShort.setConfigValue("2026-10-30");
+        legacyShort.setEnabled(true);
+
+        when(sysConfigs.findByConfigKeyInOrderByIdAsc(List.of(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE)))
+                .thenReturn(List.of(existingHistStart));
+        when(sysConfigs.findByConfigKeyInOrderByIdAsc(List.of(PortfolioSysConfigRepository.KEY_FX_SYNC_START_DATE)))
+                .thenReturn(List.of());
+        when(sysConfigs.findByConfigKeyInOrderByIdAsc(List.of(ChipEventDailySyncJob.CONFIG_KEY_SYNCED_TRADE_DATE)))
+                .thenReturn(List.of(legacyChip));
+        when(sysConfigs.findByConfigKeyInOrderByIdAsc(List.of(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE)))
+                .thenReturn(List.of(legacyShort));
+
+        JobConfig chipJob = new JobConfig();
+        chipJob.setTaskCode(TaskCode.CHIP_EVENT_DAILY_SYNC);
+        JobConfig shortJob = new JobConfig();
+        shortJob.setTaskCode(TaskCode.SHORT_INTEREST_SYNC);
+        shortJob.setWatermarkDate(LocalDate.of(2026, 11, 15));
+        when(jobs.findByTaskCode(TaskCode.CHIP_EVENT_DAILY_SYNC)).thenReturn(chipJob);
+        when(jobs.findByTaskCode(TaskCode.SHORT_INTEREST_SYNC)).thenReturn(shortJob);
+
+        DataInitializer initializer = new DataInitializer(mock(MenuRepository.class), jobs, null, sysConfigs, null, null, "none");
+        initializer.initializeSyncSysConfigData();
+
+        // User's customized sync_history_start_date is untouched; only missing fx_sync_start_date is seeded
+        ArgumentCaptor<SysConfig> savedSysConfig = ArgumentCaptor.forClass(SysConfig.class);
+        verify(sysConfigs, times(1)).save(savedSysConfig.capture());
+        assertThat(savedSysConfig.getValue().getConfigKey()).isEqualTo(PortfolioSysConfigRepository.KEY_FX_SYNC_START_DATE);
+        assertThat(savedSysConfig.getValue().getConfigValue()).isEqualTo("2014-01-01");
+        assertThat(existingHistStart.getConfigValue()).isEqualTo("2018-01-01");
+
+        // CHIP had null watermark -> migrated from sys_config; SHORT already had watermark -> not overwritten; both legacy keys deleted
+        verify(jobs).updateWatermarkDate(TaskCode.CHIP_EVENT_DAILY_SYNC, LocalDate.of(2026, 11, 20));
+        verify(jobs, never()).updateWatermarkDate(eq(TaskCode.SHORT_INTEREST_SYNC), any());
+        verify(sysConfigs).deleteAll(List.of(legacyChip));
+        verify(sysConfigs).deleteAll(List.of(legacyShort));
     }
 }

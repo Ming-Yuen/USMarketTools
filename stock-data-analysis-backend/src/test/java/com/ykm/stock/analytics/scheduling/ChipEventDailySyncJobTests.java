@@ -280,6 +280,39 @@ class ChipEventDailySyncJobTests {
         assertThat(storedWatermark).isNotNull();
     }
 
+    @Test
+    void migratesLegacySysConfigWatermarkIntoJobConfigAndAdvancesJobConfigWatermark() {
+        com.ykm.stock.analytics.repository.jpa.JobConfigRepository jobConfigRepo =
+                mock(com.ykm.stock.analytics.repository.jpa.JobConfigRepository.class);
+        ReflectionTestUtils.setField(job, "jobConfigRepository", jobConfigRepo);
+
+        SysConfig legacy = new SysConfig();
+        legacy.setConfigKey(ChipEventDailySyncJob.CONFIG_KEY_SYNCED_TRADE_DATE);
+        legacy.setConfigValue(TRADE_DATE.minusDays(1).toString());
+        legacy.setEnabled(true);
+        storedWatermark = legacy;
+
+        com.ykm.stock.analytics.model.entity.JobConfig jobRow = new com.ykm.stock.analytics.model.entity.JobConfig();
+        jobRow.setTaskCode(com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC);
+        when(jobConfigRepo.findByTaskCode(com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC)).thenReturn(jobRow);
+        when(jobConfigRepo.findWatermarkDateByTaskCode(com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC))
+                .thenReturn(Optional.empty(), Optional.of(TRADE_DATE.minusDays(1)));
+        when(portfolioItemRepository.findAll()).thenReturn(List.of());
+        DailyOpportunityRadarRun run = new DailyOpportunityRadarRun();
+        run.setRadarDate(TRADE_DATE);
+        when(radarRunRepository.findTopByOrderByRadarDateDesc()).thenReturn(Optional.of(run));
+        when(radarRunRepository.existsById(TRADE_DATE)).thenReturn(true);
+        when(radarRepository.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(TRADE_DATE)).thenReturn(List.of());
+
+        job.execute(null);
+
+        verify(jobConfigRepo).updateWatermarkDate(
+                com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC, TRADE_DATE.minusDays(1));
+        verify(sysConfigRepository, org.mockito.Mockito.atLeastOnce()).deleteAll(List.of(legacy));
+        verify(jobConfigRepo).updateWatermarkDate(
+                com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC, TRADE_DATE);
+    }
+
     private Stock stock(String figi, String symbol, String cik) {
         Stock s = new Stock();
         s.setFigi(figi);

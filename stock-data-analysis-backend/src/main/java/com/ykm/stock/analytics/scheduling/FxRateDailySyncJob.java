@@ -36,7 +36,11 @@ public class FxRateDailySyncJob implements Job {
         if (raw == null || raw.isBlank()) {
             return List.of();
         }
-        return Arrays.stream(raw.split(",")).map(String::trim).filter(s -> !s.isBlank()).toList();
+        List<String> parsed = Arrays.stream(raw.split(",")).map(String::trim).filter(s -> !s.isBlank()).toList();
+        if (parsed.isEmpty()) {
+            throw new IllegalArgumentException("FX_CURRENCIES_PARAM_EMPTY");
+        }
+        return parsed;
     }
 
     private LocalDate parseDate(String raw) {

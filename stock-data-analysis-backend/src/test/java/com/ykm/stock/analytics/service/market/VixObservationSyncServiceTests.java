@@ -1,14 +1,19 @@
 package com.ykm.stock.analytics.service.market;
 
+import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.client.FredVixClient;
 import com.ykm.stock.analytics.client.FredVixClient.VixPoint;
 import com.ykm.stock.analytics.client.YahooVixClient;
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.dto.thirdparty.response.YahooVixChartResponse;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MarketSentimentDailyRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.service.analysis.VixObservationSyncService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -16,6 +21,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -88,6 +94,8 @@ class VixObservationSyncServiceTests {
         MarketStatusService market = mock(MarketStatusService.class);
         FredVixClient fred = mock(FredVixClient.class);
         MarketSentimentDailyRepository repository = mock(MarketSentimentDailyRepository.class);
+        PortfolioSysConfigRepository sysConfigRepository = mock(PortfolioSysConfigRepository.class);
+        JobConfigRepository jobConfigRepository = mock(JobConfigRepository.class);
 
         LocalDate start = LocalDate.of(2016, 1, 1);
         LocalDate through = LocalDate.of(2016, 2, 10);
@@ -97,6 +105,13 @@ class VixObservationSyncServiceTests {
             sessions.add(LocalDate.of(2016, 1, 4).plusDays(i));
         }
 
+        SysConfig startConfig = new SysConfig();
+        startConfig.setConfigKey(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE);
+        startConfig.setConfigValue("2016-01-01");
+        startConfig.setEnabled(true);
+        when(sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE)))
+                .thenReturn(List.of(startConfig));
+        when(jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.MARKET_SENTIMENT_DAILY)).thenReturn(Optional.empty());
         when(fred.isConfigured()).thenReturn(true);
         when(market.getLastClosedTradingDay()).thenReturn(through);
         when(market.getPreviousTradingDay(through)).thenReturn(prev);
@@ -111,7 +126,9 @@ class VixObservationSyncServiceTests {
                 new VixPoint(LocalDate.of(2016, 1, 18), new BigDecimal("24.1000"), LocalDate.of(2026, 11, 20))
         ));
 
-        VixObservationSyncService service = new VixObservationSyncService(yahoo, sentiment, market, fred, repository, start);
+        VixObservationSyncService service = new VixObservationSyncService(yahoo, sentiment, market, fred, repository);
+        ReflectionTestUtils.setField(service, "sysConfigRepository", sysConfigRepository);
+        ReflectionTestUtils.setField(service, "jobConfigRepository", jobConfigRepository);
         Instant observedAt = Instant.parse("2026-11-21T10:00:00Z");
         int inserted = service.backfillHistoricalIfNeeded(observedAt);
 
@@ -133,6 +150,23 @@ class VixObservationSyncServiceTests {
         assertThat(service.backfillHistoricalIfNeeded(observedAt)).isZero();
         verify(fred, never()).fetchVixCloses(any(), any());
         verifyNoInteractions(sentiment);
+
+        // Incremental run with watermark W only checks [W - 45d, through]
+        LocalDate watermark = LocalDate.of(2026, 11, 10);
+        LocalDate latestDay = LocalDate.of(2026, 11, 20);
+        LocalDate prevDay = LocalDate.of(2026, 11, 19);
+        LocalDate overlapFrom = watermark.minusDays(45);
+        when(jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.MARKET_SENTIMENT_DAILY)).thenReturn(Optional.of(watermark));
+        when(market.getLastClosedTradingDay()).thenReturn(latestDay);
+        when(market.getPreviousTradingDay(latestDay)).thenReturn(prevDay);
+        when(market.getTradingDays(overlapFrom, prevDay)).thenReturn(List.of(LocalDate.of(2026, 10, 15)));
+        when(market.isTradingDay(LocalDate.of(2026, 10, 15))).thenReturn(true);
+        when(repository.findDatesWithVixBetween(overlapFrom, latestDay)).thenReturn(List.of());
+        when(fred.fetchVixCloses(overlapFrom, latestDay)).thenReturn(List.of(
+                new VixPoint(LocalDate.of(2026, 10, 15), new BigDecimal("18.5000"), latestDay)));
+
+        assertThat(service.backfillHistoricalIfNeeded(observedAt)).isEqualTo(1);
+        verify(fred).fetchVixCloses(overlapFrom, latestDay);
     }
 
     private YahooVixChartResponse response(LocalDate date, double close) {

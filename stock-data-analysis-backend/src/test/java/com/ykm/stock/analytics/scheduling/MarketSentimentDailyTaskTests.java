@@ -1,12 +1,17 @@
 package com.ykm.stock.analytics.scheduling;
 
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.service.market.MarketSentimentService;
 import com.ykm.stock.analytics.service.analysis.VixObservationSyncService;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -71,5 +76,28 @@ class MarketSentimentDailyTaskTests {
         verify(sentiment).save(cnnRows);
         verify(vix).downloadObservations(any());
         verify(vix).saveObservations(yahooRows);
+    }
+
+    @Test
+    void advancesVixWatermarkEvenWhenCnnFailsAndBlocksWatermarkOnVixFailure() {
+        JobConfigRepository jobConfigRepository = mock(JobConfigRepository.class);
+        ReflectionTestUtils.setField(job, "jobConfigRepository", jobConfigRepository);
+        when(jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.MARKET_SENTIMENT_DAILY)).thenReturn(Optional.empty());
+        when(vix.isHistoryReadyForWatermark()).thenReturn(true);
+
+        MarketSentimentDaily vixRow = new MarketSentimentDaily();
+        vixRow.setMarketDate(LocalDate.of(2026, 11, 20));
+        IllegalStateException cnnFailure = new IllegalStateException("CNN_DOWN");
+        when(sentiment.downloadDailySnapshot()).thenThrow(cnnFailure);
+        when(vix.downloadObservations(any())).thenReturn(List.of(vixRow));
+
+        assertThatThrownBy(() -> job.execute(null)).isSameAs(cnnFailure);
+        verify(jobConfigRepository).updateWatermarkDate(TaskCode.MARKET_SENTIMENT_DAILY, LocalDate.of(2026, 11, 20));
+
+        clearInvocations(jobConfigRepository);
+        doReturn(List.of(new MarketSentimentDaily())).when(sentiment).downloadDailySnapshot();
+        when(vix.backfillHistoricalIfNeeded(any())).thenThrow(new IllegalStateException("FRED_DOWN"));
+        assertThatThrownBy(() -> job.execute(null)).hasMessage("FRED_DOWN");
+        verify(jobConfigRepository, never()).updateWatermarkDate(anyString(), any());
     }
 }

@@ -42,4 +42,21 @@ public class TreasuryDirectClient {
                 .retrieve()
                 .body(TreasuryYieldCurveFeed.class);
     }
+
+    /** 按西曆年份抓取整年美國國債殖利率曲線 XML（供初次全量歷史回補，每年僅 1 次請求）。 */
+    public TreasuryYieldCurveFeed getYieldCurveForYear(int year) {
+        if (year < 1990 || year > 2100) {
+            throw new IllegalArgumentException("TREASURY_YEAR_INVALID:" + year);
+        }
+        return restClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .scheme("https")
+                        .host("home.treasury.gov")
+                        .path("/resource-center/data-chart-center/interest-rates/pages/xml")
+                        .queryParam("data", "daily_treasury_yield_curve")
+                        .queryParam("field_tdr_date_value", String.valueOf(year))
+                        .build())
+                .retrieve()
+                .body(TreasuryYieldCurveFeed.class);
+    }
 }

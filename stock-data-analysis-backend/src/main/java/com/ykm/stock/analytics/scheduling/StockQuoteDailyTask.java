@@ -8,6 +8,8 @@ import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockQuote;
 import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.projection.ActiveStockQuoteDate;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.service.stock.AlpacaService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import com.ykm.stock.analytics.service.stock.StockQuoteHistoryService;
@@ -18,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -45,7 +48,7 @@ public class StockQuoteDailyTask implements Job {
     private static final int RECENT_LOOKBACK_SESSIONS = 5;
 
     @Value("${market-history.start-date:2016-01-01}")
-    private LocalDate historyStartDate = LocalDate.of(2016, 1, 1);
+    private LocalDate historyStartDate = PortfolioSysConfigRepository.DEFAULT_SYNC_HISTORY_START_DATE;
 
     private final StockService stockService;
     private final StockQuoteHistoryService stockQuoteHistoryService;
@@ -53,9 +56,15 @@ public class StockQuoteDailyTask implements Job {
     private final MarketStatusService marketStatusService;
     private final AlpacaService alpacaService;
     private final TransactionTemplate transactionTemplate;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
+    @Autowired(required = false)
+    private PortfolioSysConfigRepository sysConfigRepository;
 
     @Override
     public void execute(JobExecutionContext context) {
+        LocalDate effectiveHistoryStart = PortfolioSysConfigRepository.resolveDateConfig(
+                sysConfigRepository, PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE, historyStartDate);
         LocalDate latestClosedTradingDay = marketStatusService.getLastClosedTradingDay();
         List<LocalDate> recentSessions = marketStatusService.getTradingDays(latestClosedTradingDay.minusDays(15), latestClosedTradingDay);
         LocalDate lookbackStart = recentSessions != null && recentSessions.size() >= RECENT_LOOKBACK_SESSIONS
@@ -73,17 +82,23 @@ public class StockQuoteDailyTask implements Job {
             }
             LocalDate from;
             if (target.quoteDate() == null) {
-                from = historyStartDate;
+                from = effectiveHistoryStart;
             } else {
                 LocalDate nextDay = target.quoteDate().plusDays(1);
                 from = lookbackStart != null && lookbackStart.isBefore(nextDay) ? lookbackStart : nextDay;
             }
-            if (from.isBefore(historyStartDate)) from = historyStartDate;
+            if (from.isBefore(effectiveHistoryStart)) from = effectiveHistoryStart;
             if (!from.isAfter(latestClosedTradingDay)) stocksByFrom.computeIfAbsent(from, date -> new ArrayList<>()).add(stock);
         }
         if (!ambiguous.isEmpty()) stockService.recordQuoteFailures(ambiguous);
         stocksByFrom.values().forEach(group -> group.removeIf(stock -> ambiguous.containsKey(stock.getFigi())));
+        int pendingStocks = 0;
+        for (List<Stock> group : stocksByFrom.values()) {
+            pendingStocks += group.size();
+        }
         int failedStocks = ambiguous.size();
+        int totalSavedQuotes = 0;
+        LocalDate latestCommittedDate = null;
         for (Map.Entry<LocalDate, List<Stock>> group : stocksByFrom.entrySet()) {
             LocalDate from = group.getKey();
             // 多年歷史日線分小批下載，避免把數百隻股票的全部歷史同時放入記憶體。
@@ -95,7 +110,12 @@ public class StockQuoteDailyTask implements Job {
                 failedStocks += failures.size();
                 if (!quotes.isEmpty()) {
                     Map<String, LocalDate> latestDates = new HashMap<>();
-                    for (StockQuote quote : quotes) latestDates.merge(quote.getFigi(), quote.getQuoteDate(), BinaryOperator.maxBy(LocalDate::compareTo));
+                    for (StockQuote quote : quotes) {
+                        latestDates.merge(quote.getFigi(), quote.getQuoteDate(), BinaryOperator.maxBy(LocalDate::compareTo));
+                        if (latestCommittedDate == null || quote.getQuoteDate().isAfter(latestCommittedDate)) {
+                            latestCommittedDate = quote.getQuoteDate();
+                        }
+                    }
                     // 行情與每隻股票最後實際儲存的日期一併提交，缺少 bar 不推進水位。
                     transactionTemplate.executeWithoutResult(tx -> {
                         stockQuoteHistoryService.updateStockQuote(quotes);
@@ -107,12 +127,17 @@ public class StockQuoteDailyTask implements Job {
                         }
                         stockService.updateStockStatuses(statuses);
                     });
+                    totalSavedQuotes += quotes.size();
                 }
                 log.info("Alpaca quotes | from={} through={} requested={} saved={}",
                         from, latestClosedTradingDay, batch.size(), quotes.size());
             }
         }
         if (failedStocks > 0) throw new IllegalStateException("QUOTE_SYNC_INCOMPLETE:failedStocks=" + failedStocks);
+        if (pendingStocks == 0 || totalSavedQuotes > 0) {
+            LocalDate watermarkDate = latestCommittedDate != null ? latestCommittedDate : latestClosedTradingDay;
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_QUOTE_DAILY, watermarkDate);
+        }
     }
 
     private List<StockQuote> downloadQuotes(List<Stock> targets, LocalDate from, LocalDate through, Map<String, String> failures) {

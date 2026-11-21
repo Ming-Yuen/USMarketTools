@@ -4,10 +4,13 @@ import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.client.FredFxClient;
 import com.ykm.stock.analytics.client.FredFxClient.RatePoint;
 import com.ykm.stock.analytics.client.FredFxClient.SeriesSpec;
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ValuationReason;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.entity.FxRateDaily;
 import com.ykm.stock.analytics.repository.jpa.FxRateDailyRepository;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,7 +45,6 @@ import java.util.TreeMap;
 @Slf4j
 public class FxRateService {
     public static final String CURRENCY_USD = "USD";
-    private static final LocalDate DEFAULT_BACKFILL_START = LocalDate.of(2014, 1, 1);
     private static final long INCREMENTAL_OVERLAP_DAYS = 21L;
 
     private final FxRateDailyRepository fxRates;
@@ -52,6 +54,10 @@ public class FxRateService {
     private final long maxStaleDays;
     @Autowired(required = false)
     private TransactionTemplate transactionTemplate;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
+    @Autowired(required = false)
+    private PortfolioSysConfigRepository sysConfigRepository;
 
     public FxRateService(
             FxRateDailyRepository fxRates,
@@ -241,7 +247,7 @@ public class FxRateService {
         return FxResolution.converted(row.getUsdPerUnit(), rep, quote, row.getRateDate(), row.getSource());
     }
 
-    /** 同步所有支援幣別之 FRED H.10 官方日頻匯率（外部 HTTP 於交易外執行，入庫以 PostgreSQL 批次 ON CONFLICT upsert 避免逐列 SELECT）。 */
+    /** 同步所有支援幣別之 FRED H.10 官方日頻匯率（無水位時自 fx_sync_start_date 全量回補，有水位時往回重疊 21 天增量同步）。 */
     public int syncFredRates(Collection<String> targetCurrencies, LocalDate explicitFromDate, LocalDate explicitThroughDate) {
         if (!fredFxClient.isConfigured()) {
             log.warn("FRED FX sync skipped: fred.api.api-key is not configured");
@@ -250,19 +256,39 @@ public class FxRateService {
         Instant now = dateTimeService.now();
         LocalDate throughDate = explicitThroughDate != null
                 ? explicitThroughDate : now.atZone(MarketStatusService.NY_ZONE).toLocalDate();
+        boolean fullSync = (targetCurrencies == null || targetCurrencies.isEmpty())
+                && explicitFromDate == null && explicitThroughDate == null;
+        LocalDate backfillStart = PortfolioSysConfigRepository.resolveFxSyncStartDate(sysConfigRepository);
+        LocalDate jobWatermark = (fullSync && jobConfigRepository != null)
+                ? jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.FX_RATE_DAILY_SYNC).orElse(null)
+                : null;
         List<SeriesSpec> specs = resolveSpecs(targetCurrencies);
         int totalSaved = 0;
+        boolean anySeriesEmpty = false;
+        LocalDate minCurrencyLatest = null;
         for (SeriesSpec spec : specs) {
             LocalDate start = explicitFromDate;
             if (start == null) {
-                LocalDate latest = fxRates.findLatestRateDate(spec.currency()).orElse(null);
-                start = latest == null ? DEFAULT_BACKFILL_START : latest.minusDays(INCREMENTAL_OVERLAP_DAYS);
+                LocalDate currencyLatest = fxRates.findLatestRateDate(spec.currency()).orElse(null);
+                if (fullSync && jobConfigRepository != null) {
+                    if (jobWatermark == null || currencyLatest == null) {
+                        start = backfillStart;
+                    } else {
+                        LocalDate effectiveBase = currencyLatest.isBefore(jobWatermark) ? currencyLatest : jobWatermark;
+                        LocalDate overlapFrom = effectiveBase.minusDays(INCREMENTAL_OVERLAP_DAYS);
+                        start = overlapFrom.isBefore(backfillStart) ? backfillStart : overlapFrom;
+                    }
+                } else {
+                    start = currencyLatest == null ? backfillStart : currencyLatest.minusDays(INCREMENTAL_OVERLAP_DAYS);
+                }
             }
             if (start.isAfter(throughDate)) {
+                anySeriesEmpty = true;
                 continue;
             }
             List<RatePoint> points = fredFxClient.fetchSeries(spec, start, throughDate);
             if (points.isEmpty()) {
+                anySeriesEmpty = true;
                 continue;
             }
             if (transactionTemplate != null) {
@@ -270,9 +296,25 @@ public class FxRateService {
             } else {
                 upsertRatePoints(points, now);
             }
+            LocalDate seriesLatest = null;
+            for (RatePoint point : points) {
+                if (point != null && point.rateDate() != null
+                        && (seriesLatest == null || point.rateDate().isAfter(seriesLatest))) {
+                    seriesLatest = point.rateDate();
+                }
+            }
+            if (seriesLatest == null) {
+                anySeriesEmpty = true;
+            } else if (minCurrencyLatest == null || seriesLatest.isBefore(minCurrencyLatest)) {
+                minCurrencyLatest = seriesLatest;
+            }
             totalSaved += points.size();
         }
-        log.info("FRED FX daily sync completed | currencies={} savedRows={}", specs.size(), totalSaved);
+        if (fullSync && !anySeriesEmpty && totalSaved > 0 && minCurrencyLatest != null) {
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.FX_RATE_DAILY_SYNC, minCurrencyLatest);
+        }
+        log.info("FRED FX daily sync completed | currencies={} savedRows={} watermarkCandidate={} anySeriesEmpty={}",
+                specs.size(), totalSaved, minCurrencyLatest, anySeriesEmpty);
         return totalSaved;
     }
 

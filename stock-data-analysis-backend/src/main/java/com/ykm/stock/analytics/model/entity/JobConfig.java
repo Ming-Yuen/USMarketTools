@@ -10,6 +10,7 @@ import org.hibernate.annotations.Comment;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -87,6 +88,10 @@ public class JobConfig {
     @Comment("允許的最大重試次數。")
     // 用途：儲存「maxRetryCount」欄位值，供此實體的持久化、查詢或業務判斷使用。
     private Integer maxRetryCount = 3;
+
+    @Column(name = "watermark_date")
+    @Comment("該排程最新成功推進之業務資料日期；全域型排程兼作增量同步水位，NULL 代表尚未完成初次全量同步。")
+    private LocalDate watermarkDate;
 
     // 用途：表示「TriggerType」資料的持久化實體，保存相關業務狀態與可追溯欄位。
     public enum TriggerType { CRON, SIMPLE, CALENDAR }

@@ -4,6 +4,7 @@ import com.ykm.stock.analytics.enums.ActiveStatus;
 import com.ykm.stock.analytics.enums.TaskGroup;
 import lombok.Data;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -18,4 +19,5 @@ public class JobTask {
     private LocalDateTime startTime;
     private LocalDateTime endTime;
     private ActiveStatus activeStatus;
+    private LocalDate watermarkDate;
 }

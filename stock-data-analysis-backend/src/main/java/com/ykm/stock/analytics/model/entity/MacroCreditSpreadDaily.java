@@ -42,7 +42,7 @@ public class MacroCreditSpreadDaily {
     @Comment("FRED 回應標示的 realtime_start 日期，用於追溯來源修訂與發佈時間窗口。")
     private LocalDate sourceRealtimeStart;
 
-    @Column(name = "observed_at", nullable = false)
-    @Comment("本系統首次下載或確認此觀測值變動的 UTC 時間。")
+    @Column(name = "observed_at")
+    @Comment("本系統首次下載或確認近期觀測值變動的 UTC 時間；歷史回補舊日期為 NULL（代表官方日終序列，未知精確盤後抓取秒數，允許歷史查詢讀取）。")
     private Instant observedAt;
 }

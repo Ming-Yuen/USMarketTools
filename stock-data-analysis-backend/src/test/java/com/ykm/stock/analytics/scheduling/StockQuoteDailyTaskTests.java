@@ -264,6 +264,33 @@ class StockQuoteDailyTaskTests {
         assertThat(status.getQuoteDate()).isEqualTo(DAY);
     }
 
+    /** Scenario：有配置 PortfolioSysConfigRepository 與 JobConfigRepository 時，即時讀取 sync_history_start_date 並於整輪成功後推進 job_config.watermark_date。 */
+    @Test
+    void readsStartDateFromSysConfigAndAdvancesJobWatermarkOnFullSuccess() {
+        com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository sysConfigRepo =
+                mock(com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository.class);
+        com.ykm.stock.analytics.repository.jpa.JobConfigRepository jobConfigRepo =
+                mock(com.ykm.stock.analytics.repository.jpa.JobConfigRepository.class);
+        ReflectionTestUtils.setField(task, "sysConfigRepository", sysConfigRepo);
+        ReflectionTestUtils.setField(task, "jobConfigRepository", jobConfigRepo);
+
+        com.ykm.orm.entity.SysConfig startCfg = new com.ykm.orm.entity.SysConfig();
+        startCfg.setConfigKey(com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE);
+        startCfg.setConfigValue("2017-01-01");
+        startCfg.setEnabled(true);
+        when(sysConfigRepo.findByConfigKeyInOrderByIdAsc(
+                List.of(com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository.KEY_SYNC_HISTORY_START_DATE)))
+                .thenReturn(List.of(startCfg));
+        when(jobConfigRepo.findWatermarkDateByTaskCode(com.ykm.stock.analytics.constant.TaskCode.STOCK_QUOTE_DAILY))
+                .thenReturn(java.util.Optional.empty());
+
+        respond(page(DAY));
+        task.execute(null);
+
+        verify(alpaca).readHistoricalBars(eq(List.of("ABC")), eq(LocalDate.of(2017, 1, 1)), eq(DAY), any());
+        verify(jobConfigRepo).updateWatermarkDate(com.ykm.stock.analytics.constant.TaskCode.STOCK_QUOTE_DAILY, DAY);
+    }
+
     private void respond(AlpacaBarsResponse... pages) {
         doAnswer(call -> {
             Consumer<AlpacaBarsResponse> consumer = call.getArgument(3);

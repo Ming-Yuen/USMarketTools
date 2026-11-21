@@ -26,6 +26,7 @@ import com.ykm.stock.analytics.model.entity.key.FinancialReportId;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository;
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository.FigiStatementPeriodEnd;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.SecFinancialFactRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
@@ -139,6 +140,8 @@ public class StockFundamentalDailySyncJob implements Job {
     private final StockValuationService stockValuationService;
     @Autowired(required = false)
     private ObjectProvider<SecCustomTagMappingService> customTagMappingServiceProvider;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
 
     @Value("${split.history-start-date:2014-01-01}")
     private LocalDate splitHistoryStartDate = LocalDate.of(2014, 1, 1);
@@ -236,6 +239,9 @@ public class StockFundamentalDailySyncJob implements Job {
                 universeByFigi, initialStatuses, splitEligibleFigis, splitSymbolCounts,
                 reportEligibleFigis, secEligibleFigis, todayHk, latestSaturdayHk, isSaturdayHk, splitThrough, requestedFigis);
         if (allGroups.isEmpty()) {
+            if (!manualFigisMode) {
+                JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_FUNDAMENTAL_DAILY_SYNC, todayHk);
+            }
             log.info("Fundamental daily sync skipped | reason=ALL_ALREADY_SYNCED todayHk={} splitThrough={}", todayHk, splitThrough);
             return;
         }
@@ -351,6 +357,9 @@ public class StockFundamentalDailySyncJob implements Job {
             log.warn("SEC Company Facts ZIP missing entries | count={} ciks={}",
                     missingSecEntries.size(), missingSecEntries.stream().limit(30).toList());
         }
+        if (!manualFigisMode && splitFailures == 0 && splitDiscrepancies == 0) {
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_FUNDAMENTAL_DAILY_SYNC, todayHk);
+        }
         log.info("Fundamental daily sync completed | todayHk={} splitThrough={} splitOnlyCatchupGroups={} fastSplitStocks={} groups={} reports={} secChanges={} rebuiltValuationStocks={} unsupportedReports={} splitDiscrepancies={} splitFailures={}",
                 todayHk, splitThrough, splitOnlyCatchupGroups, fastAdvanced, groupsProcessed, reportsSaved, secFactChanges,
                 modifiedValuationFigis.size(), unsupportedReportStocks, splitDiscrepancies, splitFailures);
@@ -362,8 +371,12 @@ public class StockFundamentalDailySyncJob implements Job {
         if (requested == null || requested.isBlank()) {
             return Set.of();
         }
-        return Arrays.stream(requested.split(",")).map(String::trim)
+        Set<String> parsed = Arrays.stream(requested.split(",")).map(String::trim)
                 .filter(value -> !value.isBlank()).collect(Collectors.toCollection(LinkedHashSet::new));
+        if (parsed.isEmpty()) {
+            throw new IllegalArgumentException("FUNDAMENTAL_FIGIS_PARAM_EMPTY");
+        }
+        return parsed;
     }
 
     private List<CompanyGroup> buildCompanyGroups(Map<String, Stock> universeByFigi,

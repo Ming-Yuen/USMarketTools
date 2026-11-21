@@ -129,6 +129,7 @@ class ShortInterestServiceTest {
         com.ykm.orm.entity.SysConfig storedWatermark = new com.ykm.orm.entity.SysConfig();
         storedWatermark.setConfigKey(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE);
         storedWatermark.setConfigValue("2026-09-15");
+        storedWatermark.setEnabled(true);
         when(sysConfigRepo.findByConfigKeyInOrderByIdAsc(List.of(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE)))
                 .thenReturn(List.of(storedWatermark));
         when(massiveService.isConfigured()).thenReturn(true);
@@ -150,5 +151,48 @@ class ShortInterestServiceTest {
         assertThat(result.savedRows()).isEqualTo(1);
         assertThat(storedWatermark.getConfigValue()).isEqualTo("2026-10-30");
         org.mockito.Mockito.verify(massiveService).getShortInterestFrom(LocalDate.of(2026, 8, 25));
+    }
+
+    @Test
+    void migratesLegacySysConfigWatermarkIntoJobConfigAndCleansOldKey() {
+        com.ykm.stock.analytics.repository.jpa.JobConfigRepository jobConfigRepo =
+                org.mockito.Mockito.mock(com.ykm.stock.analytics.repository.jpa.JobConfigRepository.class);
+        com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository sysConfigRepo =
+                org.mockito.Mockito.mock(com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "jobConfigRepository", jobConfigRepo);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "sysConfigRepository", sysConfigRepo);
+
+        com.ykm.orm.entity.SysConfig legacy = new com.ykm.orm.entity.SysConfig();
+        legacy.setConfigKey(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE);
+        legacy.setConfigValue("2026-09-15");
+        legacy.setEnabled(true);
+        com.ykm.stock.analytics.model.entity.JobConfig jobRow = new com.ykm.stock.analytics.model.entity.JobConfig();
+        jobRow.setTaskCode(com.ykm.stock.analytics.constant.TaskCode.SHORT_INTEREST_SYNC);
+        when(jobConfigRepo.findByTaskCode(com.ykm.stock.analytics.constant.TaskCode.SHORT_INTEREST_SYNC)).thenReturn(jobRow);
+        when(jobConfigRepo.findWatermarkDateByTaskCode(com.ykm.stock.analytics.constant.TaskCode.SHORT_INTEREST_SYNC))
+                .thenReturn(java.util.Optional.empty(), java.util.Optional.of(LocalDate.of(2026, 10, 30)));
+        when(sysConfigRepo.findByConfigKeyInOrderByIdAsc(List.of(ShortInterestService.CONFIG_KEY_MARKET_SYNCED_DATE)))
+                .thenReturn(List.of(legacy), List.of());
+        when(massiveService.isConfigured()).thenReturn(true);
+        when(massiveService.getShortInterestFrom(LocalDate.of(2026, 8, 25))).thenReturn(List.of(
+                new MassiveService.MassiveShortInterestRow("AAPL", LocalDate.of(2026, 10, 30), 1000L, 500L, BigDecimal.TWO)));
+        Stock aapl = new Stock();
+        aapl.setFigi("F_AAPL");
+        aapl.setSymbol("AAPL");
+        aapl.setActiveStatus(ActiveStatus.ACTIVE);
+        when(stockRepository.findAll()).thenReturn(List.of(aapl));
+        when(transactionTemplate.execute(any())).thenAnswer(inv -> {
+            org.springframework.transaction.support.TransactionCallback<?> cb = inv.getArgument(0);
+            return cb.doInTransaction(new org.springframework.transaction.support.SimpleTransactionStatus());
+        });
+
+        ShortInterestService.ShortSyncResult result = service.syncMarketBatch();
+
+        assertThat(result.savedRows()).isEqualTo(1);
+        org.mockito.Mockito.verify(jobConfigRepo).updateWatermarkDate(
+                com.ykm.stock.analytics.constant.TaskCode.SHORT_INTEREST_SYNC, LocalDate.of(2026, 9, 15));
+        org.mockito.Mockito.verify(sysConfigRepo).deleteAll(List.of(legacy));
+        org.mockito.Mockito.verify(jobConfigRepo).updateWatermarkDate(
+                com.ykm.stock.analytics.constant.TaskCode.SHORT_INTEREST_SYNC, LocalDate.of(2026, 10, 30));
     }
 }

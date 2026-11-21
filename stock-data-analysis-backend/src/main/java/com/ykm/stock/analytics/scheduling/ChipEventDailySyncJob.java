@@ -15,6 +15,7 @@ import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
@@ -85,6 +86,8 @@ public class ChipEventDailySyncJob implements Job {
     private final EnhancementAiGateway aiGateway;
     private final MarketStatusService calendar;
     private final DateTimeService dateTimeService;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
     @Autowired(required = false)
     private PortfolioSysConfigRepository sysConfigRepository;
 
@@ -341,26 +344,26 @@ public class ChipEventDailySyncJob implements Job {
     }
 
     private LocalDate readSyncedWatermark() {
-        if (sysConfigRepository == null) {
-            return null;
+        if (jobConfigRepository != null) {
+            LocalDate watermark = jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.CHIP_EVENT_DAILY_SYNC).orElse(null);
+            if (watermark != null) {
+                return watermark;
+            }
+            return PortfolioSysConfigRepository.migrateLegacyWatermark(
+                    sysConfigRepository, jobConfigRepository, CONFIG_KEY_SYNCED_TRADE_DATE, TaskCode.CHIP_EVENT_DAILY_SYNC);
         }
-        List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_SYNCED_TRADE_DATE));
-        if (matches == null || matches.isEmpty()) {
-            return null;
-        }
-        String raw = matches.getFirst().getConfigValue();
-        if (raw == null || raw.isBlank()) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(raw.trim());
-        } catch (RuntimeException ex) {
-            return null;
-        }
+        return PortfolioSysConfigRepository.resolveDateConfig(sysConfigRepository, CONFIG_KEY_SYNCED_TRADE_DATE, null);
     }
 
     private void advanceSyncedWatermark(LocalDate tradeDate) {
-        if (sysConfigRepository == null || tradeDate == null) {
+        if (tradeDate == null) {
+            return;
+        }
+        if (jobConfigRepository != null) {
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.CHIP_EVENT_DAILY_SYNC, tradeDate);
+            return;
+        }
+        if (sysConfigRepository == null) {
             return;
         }
         List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_SYNCED_TRADE_DATE));
@@ -374,13 +377,7 @@ public class ChipEventDailySyncJob implements Job {
             return;
         }
         SysConfig primary = matches.getFirst();
-        LocalDate existing = null;
-        if (primary.getConfigValue() != null && !primary.getConfigValue().isBlank()) {
-            try {
-                existing = LocalDate.parse(primary.getConfigValue().trim());
-            } catch (RuntimeException ignored) {
-            }
-        }
+        LocalDate existing = PortfolioSysConfigRepository.resolveDateConfig(sysConfigRepository, CONFIG_KEY_SYNCED_TRADE_DATE, null);
         if (existing == null || tradeDate.isAfter(existing)) {
             primary.setConfigValue(tradeDate.toString());
             primary.setEnabled(true);

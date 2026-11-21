@@ -11,6 +11,7 @@ import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
 import com.ykm.stock.analytics.repository.jpa.InAppNotificationRepository;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
@@ -95,6 +96,8 @@ public class StockValuationDailyTask implements Job {
     private InAppNotificationRepository notificationRepository;
     @Autowired(required = false)
     private Scheduler scheduler;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -132,8 +135,10 @@ public class StockValuationDailyTask implements Job {
         //    - 訊號結算獨立執行（不因當日雷達延後而漏結算）
         //    - 估值與拆股就緒時串接板塊資金流、每日機會雷達（已凍結同日雷達則跳過避免覆寫）、收盤簡報與非同步籌碼同步
         //    - 上游未齊延後時寫入冪等站內警告 EOD_PIPELINE_DEFERRED，後續補跑成功自動標為已讀
+        boolean fullPipelinePublished = true;
         if (requestedDate == null && marketWideRun
                 && sectorMoneyFlowService != null && dailyOpportunityRadarService != null && signalTrackingService != null) {
+            fullPipelinePublished = false;
             List<ActiveStockWithStatus> coverageBase = targets.stream()
                     .filter(row -> row.stock() != null && SecurityTypePolicy.isOperatingCompanyType(row.stock().getStockType()))
                     .toList();
@@ -208,6 +213,7 @@ public class StockValuationDailyTask implements Job {
                     }
                     // 4c. 僅於收盤簡報亦完成發布時才將既有延後警告自動標為已讀，避免簡報失敗卻靜默消掉告警；雷達發布後正常異步觸發籌碼同步
                     if (closingPublished) {
+                        fullPipelinePublished = true;
                         markDeferredNotificationReadSafely(targetDate);
                     }
                     triggerChipEventSyncSafely(snapshotDate);
@@ -228,9 +234,12 @@ public class StockValuationDailyTask implements Job {
             }
         }
 
-        // 5. 保存可算估值後回報股數快照連線異常
+        // 5. 保存可算估值後回報股數快照連線異常；全市場日常估值與下游皆就緒且無股數失敗時推進排程水位
         if (shareFailure != null) {
             throw new IllegalStateException("SHARE_OBSERVATION_SYNC_FAILED", shareFailure);
+        }
+        if (requestedDate == null && marketWideRun && fullPipelinePublished) {
+            JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.STOCK_VALUATION_DAILY, targetDate);
         }
     }
 

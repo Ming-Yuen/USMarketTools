@@ -4,14 +4,16 @@ import com.google.common.collect.Lists;
 import com.ykm.stock.analytics.client.FredVixClient;
 import com.ykm.stock.analytics.client.FredVixClient.VixPoint;
 import com.ykm.stock.analytics.client.YahooVixClient;
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.dto.thirdparty.response.YahooVixChartResponse;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
+import com.ykm.stock.analytics.repository.jpa.JobConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.MarketSentimentDailyRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.service.market.MarketSentimentService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -27,20 +29,24 @@ import java.util.Set;
 @Slf4j
 public class VixObservationSyncService {
     private static final int BACKFILL_SAVE_BATCH_SIZE = 500;
-    private static final int HISTORICAL_GAP_TOLERANCE_DAYS = 15;
+    private static final long INCREMENTAL_OVERLAP_DAYS = 45L;
+    private static final int FULL_HISTORY_MAX_ALLOWED_GAPS = 5;
 
     private final YahooVixClient client;
     private final MarketSentimentService sentiment;
     private final MarketStatusService marketStatusService;
     private final FredVixClient fredVixClient;
     private final MarketSentimentDailyRepository repository;
-    private final LocalDate historyStartDate;
+    @Autowired(required = false)
+    private PortfolioSysConfigRepository sysConfigRepository;
+    @Autowired(required = false)
+    private JobConfigRepository jobConfigRepository;
 
     public VixObservationSyncService(
             YahooVixClient client,
             MarketSentimentService sentiment,
             MarketStatusService marketStatusService) {
-        this(client, sentiment, marketStatusService, null, null, LocalDate.of(2016, 1, 1));
+        this(client, sentiment, marketStatusService, null, null);
     }
 
     @Autowired
@@ -49,40 +55,84 @@ public class VixObservationSyncService {
             MarketSentimentService sentiment,
             MarketStatusService marketStatusService,
             FredVixClient fredVixClient,
-            MarketSentimentDailyRepository repository,
-            @Value("${market-history.start-date:2016-01-01}") LocalDate historyStartDate) {
+            MarketSentimentDailyRepository repository) {
         this.client = client;
         this.sentiment = sentiment;
         this.marketStatusService = marketStatusService;
         this.fredVixClient = fredVixClient;
         this.repository = repository;
-        this.historyStartDate = historyStartDate == null ? LocalDate.of(2016, 1, 1) : historyStartDate;
     }
 
-    /** 當本地 VIX 歷史自 market-history.start-date 起存在缺口時，透過官方 FRED VIXCLS 一次補齊缺失交易日（不覆寫既有觀測）。 */
+    /**
+     * 依 job_config.watermark_date 與 sys_config(sync_history_start_date) 補齊 FRED VIXCLS 缺口（不覆寫既有觀測）：
+     * - 無水位時：自 sync_history_start_date 全量檢查並補齊至最新已收市交易日；
+     * - 有水位 W 時：檢查並補齊 [W - 45d, 最新已收市日] 內缺失交易日。
+     */
     public int backfillHistoricalIfNeeded(Instant observedAt) {
         if (fredVixClient == null || !fredVixClient.isConfigured() || repository == null) {
             return 0;
         }
+        LocalDate historyStart = PortfolioSysConfigRepository.resolveSyncHistoryStartDate(sysConfigRepository);
         LocalDate through = marketStatusService.getLastClosedTradingDay();
-        if (through == null || !through.isAfter(historyStartDate)) {
+        if (through == null || !through.isAfter(historyStart)) {
             return 0;
         }
-        Set<LocalDate> existingDates = new HashSet<>(repository.findDatesWithVixBetween(historyStartDate, through));
+        LocalDate watermark = jobConfigRepository == null
+                ? null
+                : jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.MARKET_SENTIMENT_DAILY).orElse(null);
+        LocalDate from = resolveCheckStart(historyStart, watermark);
+        if (!through.isAfter(from)) {
+            return 0;
+        }
+        Set<LocalDate> existingDates = new HashSet<>(repository.findDatesWithVixBetween(from, through));
+        int missingSessions = countMissingSessions(from, through, existingDates);
+        if (missingSessions == 0) {
+            return 0;
+        }
+        return backfillFromFred(from, through, observedAt, existingDates);
+    }
+
+    /** 實查目標區間內本地 VIX 缺口是否已補齊，避免未設 FRED key 或部分回傳時誤推 MARKET_SENTIMENT_DAILY 水位。 */
+    public boolean isHistoryReadyForWatermark() {
+        if (jobConfigRepository == null || repository == null) {
+            return true;
+        }
+        LocalDate historyStart = PortfolioSysConfigRepository.resolveSyncHistoryStartDate(sysConfigRepository);
+        LocalDate through = marketStatusService.getLastClosedTradingDay();
+        if (through == null || !through.isAfter(historyStart)) {
+            return true;
+        }
+        LocalDate watermark = jobConfigRepository.findWatermarkDateByTaskCode(TaskCode.MARKET_SENTIMENT_DAILY).orElse(null);
+        LocalDate from = resolveCheckStart(historyStart, watermark);
+        if (!through.isAfter(from)) {
+            return true;
+        }
+        Set<LocalDate> existingDates = new HashSet<>(repository.findDatesWithVixBetween(from, through));
+        int missingSessions = countMissingSessions(from, through, existingDates);
+        int maxAllowedGaps = watermark == null ? FULL_HISTORY_MAX_ALLOWED_GAPS : 0;
+        return missingSessions <= maxAllowedGaps;
+    }
+
+    private LocalDate resolveCheckStart(LocalDate historyStart, LocalDate watermark) {
+        if (watermark == null) {
+            return historyStart;
+        }
+        LocalDate overlapFrom = watermark.minusDays(INCREMENTAL_OVERLAP_DAYS);
+        return overlapFrom.isBefore(historyStart) ? historyStart : overlapFrom;
+    }
+
+    private int countMissingSessions(LocalDate from, LocalDate through, Set<LocalDate> existingDates) {
         LocalDate checkEnd = marketStatusService.getPreviousTradingDay(through);
-        List<LocalDate> expectedSessions = checkEnd.isBefore(historyStartDate)
-                ? List.of()
-                : marketStatusService.getTradingDays(historyStartDate, checkEnd);
+        if (checkEnd == null || checkEnd.isBefore(from)) {
+            return 0;
+        }
         int missingSessions = 0;
-        for (LocalDate session : expectedSessions) {
+        for (LocalDate session : marketStatusService.getTradingDays(from, checkEnd)) {
             if (!existingDates.contains(session)) {
                 missingSessions++;
             }
         }
-        if (missingSessions <= HISTORICAL_GAP_TOLERANCE_DAYS) {
-            return 0;
-        }
-        return backfillFromFred(historyStartDate, through, observedAt, existingDates);
+        return missingSessions;
     }
 
     /** 依指定區間向 FRED 下載 VIXCLS 並僅寫入本地尚無 vix_close 之市場日期；保留未知公開時間為 NULL。 */

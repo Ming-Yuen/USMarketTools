@@ -32,4 +32,18 @@ class TreasuryDirectClientTests {
 
         http.verify();
     }
+
+    @Test
+    void requestsAnnualYieldCurveWithYearQueryParam() {
+        DateTimeService clock = mock(DateTimeService.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer http = MockRestServiceServer.bindTo(builder).build();
+        http.expect(requestTo("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+                        + "?data=daily_treasury_yield_curve&field_tdr_date_value=2016"))
+                .andRespond(withNoContent());
+
+        new TreasuryDirectClient(builder.build(), clock).getYieldCurveForYear(2016);
+
+        http.verify();
+    }
 }

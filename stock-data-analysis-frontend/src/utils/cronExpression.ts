@@ -86,6 +86,9 @@ function formatWeekdays(value: string, t: TFunction): string | null {
 }
 
 export function formatQuartzCronExpression(value: unknown, t: TFunction): string {
+  if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) {
+    return t("jobSchedule.manualOnly", { defaultValue: "Manual only" });
+  }
   if (typeof value !== "string") return "-";
 
   const expression = value.trim();

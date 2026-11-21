@@ -152,8 +152,9 @@
 | `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日營運股行情／估值覆蓋 `>= 95%`、有行情且無拆股對帳差異標記之估值股拆股覆蓋 `>= 95%` 及大盤基準（`SPY`/`QQQ`）拆股就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含板塊廣度崩壞警示與財報跳空止損風險）及站內收盤簡報／提醒寫入，並於雷達正式發布後非同步觸發 `CHIP_EVENT_DAILY_SYNC`；上游未齊延後時寫入冪等 `EOD_PIPELINE_DEFERRED` 警告並於收盤簡報亦恢復發布後自動標為已讀 |
 | `CHIP_EVENT_DAILY_SYNC` | 週二至六 11:00（兜底；主路徑由雷達發布後異步觸發） | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗；完成含正式雷達之無錯誤同步後推進 `job_config.watermark_date` 避免兜底重抓，可傳 `force=true` 強制重跑） |
 | `INSTITUTIONAL_13F_SYNC` | 每週日 09:00 | 旗艦機構（約 15 家）SEC 13F-HR 季度持倉同步與 OpenFIGI／Massive CUSIP→FIGI 解析 |
+| `SIGNAL_REPLAY_AUDIT` | 僅手動觸發（無預設 Cron） | 2019 至今全系統歷史信號回放與準確度審計（重用正式大盤體制、嚴格 PIT 財報估值、支撐破位與 TradePlan，全程唯讀不寫入正式業務表），完成後匯出獨立未壓縮事件明細與量化總結 `.csv` 供 `/jobConfig` 直接下載（可於 `jobParams` 自訂 `startDate`／`endDate`／`symbols`） |
 
-全部 14 支排程均於整輪成功後透過 `job_config.watermark_date` 單向局部更新最新業務資料日期（不覆蓋 Cron／啟停設定）；歷史回補起點統一由 `sys_config` 的 `sync_history_start_date`（預設 `2016-01-01`）與 `fx_sync_start_date`（預設 `2014-01-01`）管理並於啟動時冪等初始化。
+全部 15 支排程均於整輪成功後透過 `job_config.watermark_date` 單向局部更新最新業務資料日期（不覆蓋 Cron／啟停設定；`SIGNAL_REPLAY_AUDIT` 僅於預設 26 檔全量池完整跑通時推進）；歷史回補起點統一由 `sys_config` 的 `sync_history_start_date`（預設 `2016-01-01`）與 `fx_sync_start_date`（預設 `2014-01-01`）管理並於啟動時冪等初始化。
 
 ### 舊版資料庫清理與枚舉約束說明
 

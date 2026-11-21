@@ -24,7 +24,6 @@ public class UpdateJobRequest {
     private TaskGroup taskGroup;
     @NotBlank
     private String jobClassPath;
-    @NotBlank
     private String cronExpression;
     private Map<String, Object> jobParams;
     @NotNull

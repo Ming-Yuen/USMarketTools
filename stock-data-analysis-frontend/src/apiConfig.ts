@@ -3,7 +3,7 @@ export interface ApiEndpoint {
   url: string;
 }
 
-type ApiKey = "getMenu" | "updateSearchCriteriaConfig" | "getSearchCriteriaConfig" | "getJobList" | "launchJobList" | "getStockScreen" | "getStockClassifications" | "overview_dashboard" | "analysisReport";
+type ApiKey = "getMenu" | "updateSearchCriteriaConfig" | "getSearchCriteriaConfig" | "getJobList" | "launchJobList" | "getSignalReplayStatus" | "getStockScreen" | "getStockClassifications" | "overview_dashboard" | "analysisReport";
 
 // Step 2：编写配置并用 satisfies 验证
 export const apiConfig = {
@@ -26,6 +26,10 @@ export const apiConfig = {
   launchJobList: {
     method: "post",
     url: process.env.REACT_APP_JOB_LAUNCH!,
+  },
+  getSignalReplayStatus: {
+    method: "get",
+    url: "job/signal-replay/status",
   },
   getStockScreen: { method: "get", url: "stock/screen" },
   getStockClassifications:{

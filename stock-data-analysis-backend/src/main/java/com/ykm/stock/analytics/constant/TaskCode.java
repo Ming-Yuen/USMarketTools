@@ -25,6 +25,7 @@ public final class TaskCode {
     public static final String SHORT_INTEREST_SYNC = "SHORT_INTEREST_SYNC";
     public static final String CHIP_EVENT_DAILY_SYNC = "CHIP_EVENT_DAILY_SYNC";
     public static final String INSTITUTIONAL_13F_SYNC = "INSTITUTIONAL_13F_SYNC";
+    public static final String SIGNAL_REPLAY_AUDIT = "SIGNAL_REPLAY_AUDIT";
 
     /** 已合併或淘汰之舊排程代碼；啟動 reconcile 前須先自 job_config 與 Quartz 退役清理。 */
     public static final List<String> RETIRED_SCHEDULE_CODES = List.of(

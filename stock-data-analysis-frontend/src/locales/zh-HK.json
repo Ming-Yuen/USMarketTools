@@ -702,6 +702,7 @@
       "taskCodeFormat": "只可使用大寫英文字母、數字及底線（例如 SEC_FINANCIAL_FACT_DAILY）"
     },
     "frequency": {
+      "manual": "僅手動觸發",
       "daily": "每日",
       "weekly": "每週",
       "monthly": "每月"
@@ -727,10 +728,31 @@
       "SEC_FINANCIAL_FACT_DAILY": "同步 SEC 公司財務事實數據並計算基本面快照。",
       "STOCK_VALUATION_SNAPSHOT_DAILY": "使用最新行情及基本面數據計算每日股票估值快照。",
       "STOCK_INDUSTRY_CLASSIFICATION_EXPORT": "匯出所有已啟用股票，AI 覆核產業分類",
-      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "匯入 AI 完成的產業分類，更新股票產業分類資料"
+      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "匯入 AI 完成的產業分類，更新股票產業分類資料",
+      "SIGNAL_REPLAY_AUDIT": "手動執行 2019 至今全系統歷史信號回放（涵蓋大盤體制、PIT 個股估值、支撐破位、TradePlan 與機會雷達，全程唯讀不改正式表），完成後匯出獨立未壓縮 CSV。"
+    },
+    "signalReplay": {
+      "title": "全系統歷史信號回放審計（獨立 CSV）",
+      "runAction": "執行歷史回放",
+      "runningAction": "回放計算中…",
+      "refresh": "重新整理回放狀態",
+      "downloadFailed": "下載 CSV 檔案失敗，請稍後重試。",
+      "progressDetail": "進度 {{pct}}%（已處理 {{processedDays}}/{{totalDays}} 個交易日，目前日期 {{currentDate}}，累計事件 {{events}} 筆）",
+      "completedDetail": "已完成 {{symbols}} 檔標的 × {{days}} 個交易日回放（產出 {{events}} 筆事件，批次 {{runId}}），可直接點擊下方按鈕下載未壓縮獨立 .csv。",
+      "status": {
+        "IDLE": "尚未執行",
+        "RUNNING": "執行中",
+        "COMPLETED": "已完成",
+        "FAILED": "失敗"
+      },
+      "download": {
+        "events": "下載事件明細 CSV",
+        "summary": "下載量化總結 CSV"
+      }
     }
   },
   "jobSchedule": {
+    "manualOnly": "僅手動觸發",
     "dayOfMonth": "每月執行日期",
     "dayOfMonthRequired": "請輸入每月執行日期",
     "dayOfMonthRange": "請輸入 1 至 31",

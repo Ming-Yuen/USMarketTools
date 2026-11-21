@@ -251,6 +251,7 @@
       "taskCodeFormat": "Use uppercase letters, numbers and underscores only (for example, SEC_FINANCIAL_FACT_DAILY)"
     },
     "frequency": {
+      "manual": "Manual only",
       "daily": "Daily",
       "weekly": "Weekly",
       "monthly": "Monthly"
@@ -276,10 +277,31 @@
       "SEC_FINANCIAL_FACT_DAILY": "Synchronizes SEC company facts and calculates fundamental snapshots.",
       "STOCK_VALUATION_SNAPSHOT_DAILY": "Calculates daily stock valuation snapshots using the latest quote and fundamental data.",
       "STOCK_INDUSTRY_CLASSIFICATION_EXPORT": "Exports all active stocks for AI industry classification review.",
-      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "Imports AI-completed industry classifications and updates stock industry profiles."
+      "STOCK_INDUSTRY_CLASSIFICATION_IMPORT": "Imports AI-completed industry classifications and updates stock industry profiles.",
+      "SIGNAL_REPLAY_AUDIT": "Manually replays 2019–present market regime, PIT stock valuation, support breakdown, TradePlan, and radar signals (read-only) and exports uncompressed CSV reports."
+    },
+    "signalReplay": {
+      "title": "Historical Signal Replay Audit (CSV)",
+      "runAction": "Run Replay Audit",
+      "runningAction": "Replaying...",
+      "refresh": "Refresh replay status",
+      "downloadFailed": "Failed to download CSV file. Please try again.",
+      "progressDetail": "{{pct}}% ({{processedDays}}/{{totalDays}} trading days, current {{currentDate}}, {{events}} events)",
+      "completedDetail": "Completed {{symbols}} symbols across {{days}} trading days ({{events}} events, run {{runId}}). Click below to download uncompressed CSV files directly.",
+      "status": {
+        "IDLE": "Idle",
+        "RUNNING": "Running",
+        "COMPLETED": "Completed",
+        "FAILED": "Failed"
+      },
+      "download": {
+        "events": "Download Events CSV",
+        "summary": "Download Summary CSV"
+      }
     }
   },
   "jobSchedule": {
+    "manualOnly": "Manual only",
     "dayOfMonth": "Day of month",
     "dayOfMonthRequired": "Please enter a day of month",
     "dayOfMonthRange": "Enter a day from 1 to 31",

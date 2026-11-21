@@ -227,6 +227,8 @@ public class DataInitializer implements CommandLineRunner {
         // 預設由 StockValuationDailyTask 發布雷達後非同步觸發；11:00 作為兜底 Cron，不與 10:00 估值搶跑。
         initializeScheduledJob(TaskCode.CHIP_EVENT_DAILY_SYNC, ChipEventDailySyncJob.class, "0 0 11 ? * TUE-SAT");
         initializeScheduledJob(TaskCode.INSTITUTIONAL_13F_SYNC, Institutional13fSyncJob.class, "0 0 9 ? * SUN");
+        // Ad-hoc 手動觸發之全系統歷史信號回放審計工作（預設不掛定時 Cron，由 /jobConfig 手動執行並下載獨立 CSV）。
+        initializeScheduledJob(TaskCode.SIGNAL_REPLAY_AUDIT, SignalReplayAuditJob.class, null);
     }
 
     private void initializeScheduledJob(String taskCode, Class<?> jobClass, String cronExpression) {

@@ -120,7 +120,9 @@ public class JobService {
         candidate.setTaskCode(request.getTaskCode());
         candidate.setTaskGroup(request.getTaskGroup());
         candidate.setJobClassName(request.getJobClassPath());
-        candidate.setCronExpression(request.getCronExpression());
+        String normalizedCron = request.getCronExpression() == null || request.getCronExpression().isBlank()
+                ? null : request.getCronExpression().trim();
+        candidate.setCronExpression(normalizedCron);
         candidate.setConfig(request.getJobParams());
         candidate.setActiveStatus(request.getActiveStatus());
         candidate.setStartTime(request.getStartTime());
@@ -155,7 +157,7 @@ public class JobService {
         copy.setJobClassName(source.getJobClassName());
         copy.setCronExpression(source.getCronExpression());
         copy.setTriggerType(source.getTriggerType());
-        copy.setConfig(source.getConfig() == null ? null : Map.copyOf(source.getConfig()));
+        copy.setConfig(source.getConfig() == null ? null : new java.util.LinkedHashMap<>(source.getConfig()));
         copy.setActiveStatus(source.getActiveStatus());
         copy.setStartTime(source.getStartTime());
         copy.setEndTime(source.getEndTime());

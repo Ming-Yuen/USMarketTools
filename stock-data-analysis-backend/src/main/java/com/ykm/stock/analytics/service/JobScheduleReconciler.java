@@ -29,7 +29,8 @@ public class JobScheduleReconciler {
             throw new IllegalArgumentException("Only Quartz SCHEDULE tasks are supported: " + config.getTaskGroup());
         if (config.getTriggerType() != JobConfig.TriggerType.CRON)
             throw new IllegalArgumentException("Unsupported triggerType: " + config.getTriggerType());
-        if (config.getCronExpression() == null || !CronExpression.isValidExpression(config.getCronExpression()))
+        if (config.getCronExpression() != null && !config.getCronExpression().isBlank()
+                && !CronExpression.isValidExpression(config.getCronExpression()))
             throw new IllegalArgumentException("Invalid cron expression: " + config.getCronExpression());
         if (config.getStartTime() != null && config.getEndTime() != null
                 && config.getStartTime().isAfter(config.getEndTime()))
@@ -58,6 +59,14 @@ public class JobScheduleReconciler {
             Map<String,Object> cfg = config.getConfig();
             if (cfg != null) data.putAll(cfg);
             JobDetail detail = JobBuilder.newJob(jobClass).withIdentity(jobKey).storeDurably().usingJobData(data).build();
+            // 空白 Cron 代表手動觸發型 Ad-hoc 排程：只註冊 durable JobDetail，不掛任何定時 Trigger。
+            if (config.getCronExpression() == null || config.getCronExpression().isBlank()) {
+                scheduler.addJob(detail, true);
+                if (scheduler.checkExists(triggerKey)) {
+                    scheduler.unscheduleJob(triggerKey);
+                }
+                return;
+            }
             CronScheduleBuilder schedule = CronScheduleBuilder.cronSchedule(config.getCronExpression())
                     .inTimeZone(TimeZone.getTimeZone(SCHEDULE_TIMEZONE))
                     .withMisfireHandlingInstructionIgnoreMisfires();

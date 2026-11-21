@@ -23,7 +23,7 @@ interface CronSchedule {
   dayOfMonth: string;
   scheduleTime: string;
   startDate: string;
-  frequency: "daily" | "weekly" | "monthly";
+  frequency: "manual" | "daily" | "weekly" | "monthly";
   endDate?: string;
 }
 
@@ -54,7 +54,18 @@ const FormField = ({ label, required = false, error, children }: { label: string
 );
 
 const scheduleFromJob = (job?: Job): CronSchedule => {
-  const parts = job?.cronExpression?.trim().split(/\s+/) ?? [];
+  const rawCron = job?.cronExpression?.trim() ?? "";
+  if (job && rawCron === "") {
+    return {
+      selectedDays: [],
+      dayOfMonth: "1",
+      scheduleTime: "12:00",
+      startDate: job.startTime?.slice(0, 10) ?? hongKongDateInputValue(new Date()),
+      frequency: "manual",
+      endDate: job.endTime?.slice(0, 10) ?? "",
+    };
+  }
+  const parts = rawCron ? rawCron.split(/\s+/) : [];
   const dayOfMonth = parts[3];
   const dayOfWeek = parts[5];
   const frequency: CronSchedule["frequency"] =
@@ -115,7 +126,8 @@ export function JobCreatePage({ menuTree, job, onClose }: JobCreatePageProps) {
     { label: "REPORT", value: "REPORT" },
   ];
 
-  const generateCronExpression = (schedule: CronSchedule): string => {
+  const generateCronExpression = (schedule: CronSchedule): string | null => {
+    if (schedule.frequency === "manual") return null;
     if (!schedule.scheduleTime) return "";
     const [hours, minutes] = schedule.scheduleTime.split(":").map(Number);
     if (schedule.frequency === "daily") return `0 ${minutes} ${hours} * * ?`;
@@ -296,8 +308,9 @@ export function JobCreatePage({ menuTree, job, onClose }: JobCreatePageProps) {
                       onChange={(event, newValue) => {
                         field.onChange(newValue || "daily");
                       }}
-                      options={["daily", "weekly", "monthly"]}
+                      options={["manual", "daily", "weekly", "monthly"]}
                       getOptionLabel={(option) => {
+                        if (option === "manual") return t("job.frequency.manual");
                         if (option === "daily") return t("job.frequency.daily");
                         if (option === "weekly") return t("job.frequency.weekly");
                         if (option === "monthly") return t("job.frequency.monthly");
@@ -371,11 +384,13 @@ export function JobCreatePage({ menuTree, job, onClose }: JobCreatePageProps) {
             )}
 
             {/* Schedule Time */}
-            <Grid size={{ xs: 12, md: 4 }}>
-              <FormField label={t("job.form.scheduleTime")} required error={errors.cronSchedule?.scheduleTime?.message}>
-                <Controller name="cronSchedule.scheduleTime" control={control} rules={{ required: t("job.validation.scheduleTimeRequired") }} render={({ field }) => <TextField {...field} type="time" slotProps={{ inputLabel: { shrink: true } }} size="small" fullWidth error={!!errors.cronSchedule?.scheduleTime} />} />
-              </FormField>
-            </Grid>
+            {frequency !== "manual" && (
+              <Grid size={{ xs: 12, md: 4 }}>
+                <FormField label={t("job.form.scheduleTime")} required error={errors.cronSchedule?.scheduleTime?.message}>
+                  <Controller name="cronSchedule.scheduleTime" control={control} rules={{ required: t("job.validation.scheduleTimeRequired") }} render={({ field }) => <TextField {...field} type="time" slotProps={{ inputLabel: { shrink: true } }} size="small" fullWidth error={!!errors.cronSchedule?.scheduleTime} />} />
+                </FormField>
+              </Grid>
+            )}
 
             {/* Start and end dates */}
             <Grid size={12}>

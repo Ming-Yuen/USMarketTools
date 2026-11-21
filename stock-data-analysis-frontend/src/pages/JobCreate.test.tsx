@@ -41,3 +41,19 @@ test("keeps the saved start date when editing an existing job", () => {
 
   expect(startDate(container)).toBe("2026-10-26");
 });
+
+test("keeps manual-only frequency without schedule time when editing a null-cron job", () => {
+  const job: Job = {
+    id: 2,
+    taskCode: "SIGNAL_REPLAY_AUDIT",
+    taskGroup: "SCHEDULE",
+    jobParams: {},
+    jobClassPath: "com.ykm.stock.analytics.scheduling.SignalReplayAuditJob",
+    cronExpression: null,
+    startTime: "2026-11-01T00:00:00",
+    activeStatus: ActiveStatus.ACTIVE,
+  };
+  const { container } = render(<JobCreatePage menuTree={menu} job={job} />);
+
+  expect(container.querySelector('input[type="time"]')).toBeNull();
+});

@@ -44,6 +44,7 @@ export const PositionSizingBlock: React.FC<PositionSizingBlockProps> = ({ sizing
     if (tag === "SECTOR_CONCENTRATION_WARNING" || tag === "MARKET_REGIME_PAUSE_NEW_ENTRY") return "error";
     if (
       tag === "MACRO_HEADWIND_HALF_SIZE"
+      || tag === "SECTOR_BREADTH_HEADWIND_HALF_SIZE"
       || tag === "EXISTING_HOLDING_CAPPED"
       || tag === "PARTIAL_PORTFOLIO_COVERAGE"
       || tag === "STALE_QUOTE_DATE_FALLBACK"

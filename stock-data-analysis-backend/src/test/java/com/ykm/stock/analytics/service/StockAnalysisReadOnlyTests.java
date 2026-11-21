@@ -11,11 +11,14 @@ import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FinancialsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.FutuObservationsDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.LevelZoneDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketContextDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketRegime;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MarketSnapshotDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricResult;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.MetricStatus;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedBarDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.NormalizedPriceSeriesDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PlanConstraintDto;
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PositionSizingDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceAdjustment;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceBasisDescriptor;
 import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PriceRelation;
@@ -61,7 +64,9 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -373,6 +378,84 @@ class StockAnalysisReadOnlyTests {
         assertThat(report.valuation().price()).isEqualByComparingTo("218.40");
         assertThat(report.dcf().currentPrice()).isEqualByComparingTo("218.40");
         assertThat(report.summary().status()).isEqualTo(MetricStatus.INSUFFICIENT_DATA);
+    }
+
+    /** Scenario：預設最新日查詢因行情尚未入庫回退至前一交易日 D-1 時，必須以 D-1 收市截點重查所屬產業並依 D-1 板塊廣度崩壞觸發半倉。 */
+    @Test
+    void fallbackResolvedReportDateRequeriesIndustryAndAppliesSameDaySectorBreadthHalfSize() {
+        LocalDate fallbackDay = DAY.minusDays(1);
+        Instant fallbackClose = CLOSE.minusSeconds(86400);
+        when(calendar.getSessionCloseAt(fallbackDay)).thenReturn(fallbackClose);
+
+        com.ykm.stock.analytics.model.entity.StockIndustry indDay = new com.ykm.stock.analytics.model.entity.StockIndustry();
+        indDay.setCode("OLD_IND");
+        com.ykm.stock.analytics.model.entity.StockIndustryHistory histDay = new com.ykm.stock.analytics.model.entity.StockIndustryHistory();
+        histDay.setIndustry(indDay);
+        com.ykm.stock.analytics.model.entity.StockIndustry indFallback = new com.ykm.stock.analytics.model.entity.StockIndustry();
+        indFallback.setCode("I41");
+        com.ykm.stock.analytics.model.entity.StockIndustryHistory histFallback = new com.ykm.stock.analytics.model.entity.StockIndustryHistory();
+        histFallback.setIndustry(indFallback);
+
+        when(industries.findAt("TEST_FIGI", CLOSE)).thenReturn(Optional.of(histDay));
+        when(industries.findAt("TEST_FIGI", fallbackClose)).thenReturn(Optional.of(histFallback));
+        when(sectorMoneyFlowService.isIndustryBreadthBreakdown("I41", fallbackDay)).thenReturn(true);
+
+        ValuationResultDto fallbackVal = new ValuationResultDto(
+                "TEST_FIGI", fallbackDay, fallbackClose, "FINANCIAL_REPORT_AS_OBSERVED", null, "AVAILABLE", null,
+                new ValuationResultDto.Metrics(
+                        ValuationResultDto.value(new BigDecimal("20"), null),
+                        ValuationResultDto.value(null, "NA"), ValuationResultDto.value(null, "NA"),
+                        ValuationResultDto.value(null, "NA"), ValuationResultDto.value(null, "NA")),
+                new BigDecimal("98"), "USD", fallbackClose, null, null, null, null);
+        when(stockValuations.evaluateForReport(any(), eq(DAY), eq(CLOSE), eq(FIXED_READ_AT), eq("OLD_IND")))
+                .thenReturn(new ReportValuationBundle(fallbackVal, null, List.of()));
+
+        com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto cfg =
+                new com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.PortfolioRiskConfigDto(
+                        new BigDecimal("100000"), new BigDecimal("0.01"), new BigDecimal("0.15"), new BigDecimal("0.30"), "USD");
+        when(portfolioManagementService.loadExposureSnapshot(eq(fallbackDay), eq(FIXED_READ_AT)))
+                .thenReturn(new com.ykm.stock.analytics.service.portfolio.PortfolioManagementService.PortfolioExposureSnapshot(
+                        cfg, Map.of(), Map.of(), Set.of(), 0, List.of()));
+
+        Instant confirmedAt = fallbackClose.minusSeconds(86400);
+        when(calendar.getNextTradingDay(fallbackDay.minusDays(1))).thenReturn(fallbackDay);
+        NormalizedBarDto bar = new NormalizedBarDto(fallbackDay, new BigDecimal("98"), new BigDecimal("99"), new BigDecimal("97"), new BigDecimal("98"),
+                MetricResult.available(BigDecimal.ONE), fallbackClose.minusSeconds(23400), fallbackClose, fallbackClose, fallbackClose, null, "BASIS");
+        PriceBasisDescriptor basis = new PriceBasisDescriptor("BASIS", "STORED_QUOTES", PriceAdjustment.SPLIT_ADJUSTED, fallbackDay,
+                null, ShareUnit.LISTED_SHARE, SessionScope.REGULAR, "USD", true, null);
+        NormalizedPriceSeriesDto price = new NormalizedPriceSeriesDto("TEST_FIGI", "DAILY", List.of(bar), basis, null, MetricStatus.AVAILABLE, List.of(), null);
+        MetricResult<StructureTrendDto> trend = MetricResult.available(new StructureTrendDto(TrendState.UPTREND, confirmedAt, PriceRelation.HH, PriceRelation.HL, List.of(), confirmedAt));
+        AtrPointDto atr = new AtrPointDto(fallbackDay, 14, new BigDecimal("5"), null, fallbackDay.minusYears(1), 14, 100);
+        TimeframeStructureDto frame = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar), MetricResult.available(atr), List.of(), List.of(),
+                MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL), trend, trend, List.of(), List.of());
+        PriceStructureDto structure = new PriceStructureDto("TEST_FIGI", null, fallbackDay, List.of(frame), List.of(), List.of());
+        SupportResistanceDto zones = new SupportResistanceDto(List.of(zone("S", "95", "100", ZoneRole.SUPPORT, confirmedAt)),
+                List.of(zone("R", "130", "135", ZoneRole.RESISTANCE, confirmedAt)), List.of(), List.of(), List.of(), List.of());
+        MarketSnapshotDto riskOnSnap = new MarketSnapshotDto(MarketRegime.RISK_ON, null, null, null, fallbackDay, fallbackClose, List.of(), List.of());
+        MarketContextDto background = new MarketContextDto(null, null, MetricResult.available(riskOnSnap), List.of(),
+                new PlanConstraintDto(EntryPermission.ALLOW, List.of(), List.of()), List.of(), List.of());
+
+        when(prices.normalize(any(), any(), eq(fallbackDay))).thenReturn(MetricResult.available(price));
+        when(structures.analyze(any(), same(price))).thenReturn(MetricResult.available(structure));
+        when(marketEvents.findVisiblePastEarnings(eq("TEST_FIGI"), eq(fallbackDay), any())).thenReturn(List.of());
+        when(market.evaluate(any(), same(price), same(structure), any())).thenReturn(MetricResult.available(background));
+        when(levels.analyze(any(), same(price), same(structure), same(background))).thenReturn(MetricResult.available(zones));
+
+        ExecutionCostCalculator costs = new ExecutionCostCalculator();
+        TradePlanService realPlans = new TradePlanService(new TradePlanCalculator(costs), costs, calendar);
+        StockAnalysisService reportService = new StockAnalysisService(
+                stocks, industries, marketEvents, calendar, clock, prices, structures, levels, realPlans, market,
+                stockObservations, stockValuations, sectorMoneyFlowService, portfolioManagementService, positionSizingCalculator);
+
+        StockAnalysisReportDto report = reportService.analyze(new AnalysisReportRequest("TEST_FIGI", null, AnalysisHorizon.SWING));
+        assertThat(report.valuationDate()).isEqualTo(fallbackDay);
+        verify(industries).findAt("TEST_FIGI", fallbackClose);
+        verify(sectorMoneyFlowService).isIndustryBreadthBreakdown("I41", fallbackDay);
+        TradePlanDto plan = report.tradePlans().value().plans().getFirst();
+        assertThat(plan.positionSizing().scaleLabel()).isEqualTo("1/2");
+        assertThat(plan.positionSizing().sizingTags()).contains(
+                PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE,
+                PositionSizingDto.TAG_STALE_QUOTE_DATE_FALLBACK);
     }
 
     private StockAnalysisReportDto assembledReport(boolean hasValuation, boolean hasResistance) {

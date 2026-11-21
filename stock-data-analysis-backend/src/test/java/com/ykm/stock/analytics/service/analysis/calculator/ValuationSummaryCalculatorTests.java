@@ -825,6 +825,45 @@ class ValuationSummaryCalculatorTests {
         assertThat(ValuationSummaryCalculator.isCurrentTrailingLoss(adrFinancials, true, true)).isTrue();
     }
 
+    /** Scenario：大盤友善且無宏觀警戒，但所屬板塊廣度崩壞時，趨勢回踩試單仍自動由 1/3 縮為 1/6 並附帶 SECTOR_BREADTH_BREAKDOWN 風險旗標。 */
+    @Test
+    void sectorBreadthBreakdownScalesTrendPullbackStarterToOneSixthAndEmitsRiskFlag() {
+        ValuationReferenceDto hist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("18"), new BigDecimal("22"), new BigDecimal("26"),
+                new BigDecimal("150"), new BigDecimal("200"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("28"), new BigDecimal("85"), new BigDecimal("175"));
+        ValuationResultDto modOver = new ValuationResultDto(
+                "FIGI", DAY, CLOSE, "FUTU", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("210"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                hist, null, null);
+        FundamentalSnapshotDto strongHighGrowth = fundamentals(false, "0.28", "0.35", "0.30", "1.10", "0.26", "0.22", "-0.30", "0.04", "0.045");
+        MetricResult<BigDecimal> na = MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, AnalysisReasonDto.of("NA", "TEST", "NA"));
+        ForwardMetrics peg150 = new ForwardMetrics(DAY, "2027", DAY, "USD",
+                MetricResult.available(new BigDecimal("28")), na, MetricResult.available(new BigDecimal("1.50")), "FORWARD_FY1_VS_TTM",
+                MetricResult.available(new BigDecimal("0.25")), null, null, null, null, null, na, na, na, na);
+        FutuObservationsDto obs = new FutuObservationsDto(null, List.of(), peg150);
+        MetricResult<PriceStructureDto> ps = pullbackDailyStructure(TrendState.UPTREND, "220", "211", "209", "212", "208", "210");
+        MetricResult<MarketContextDto> mc = richMarketContext(MarketRegime.RISK_ON, "4.10", null,
+                MetricResult.available(new BigDecimal("16")), "185", "208", "207", "206", "5", "0.85",
+                EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false);
+
+        InvestmentSummaryDto normal = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, obs, ps, null, null, mc, false).value();
+        assertThat(normal.stance()).isEqualTo("TREND_PULLBACK_STARTER");
+        assertThat(normal.trendPullbackStarter().positionFraction()).isEqualTo("1/3");
+        assertThat(normal.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .doesNotContain("SECTOR_BREADTH_BREAKDOWN");
+
+        InvestmentSummaryDto broken = calculator.calculate(
+                AnalysisHorizon.SWING, modOver, null, strongHighGrowth, obs, ps, null, null, mc, true).value();
+        assertThat(broken.stance()).isEqualTo("TREND_PULLBACK_STARTER");
+        assertThat(broken.macroCaution().active()).isFalse();
+        assertThat(broken.trendPullbackStarter().positionFraction()).isEqualTo("1/6");
+        assertThat(broken.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("SECTOR_BREADTH_BREAKDOWN");
+    }
+
     private MetricResult<PriceStructureDto> pullbackDailyStructure(
             TrendState weeklyState, String highRecent, String prevClose, String open, String high, String low, String close) {
         NormalizedBarDto bar1 = new NormalizedBarDto(DAY.minusDays(3), new BigDecimal(highRecent), new BigDecimal(highRecent),

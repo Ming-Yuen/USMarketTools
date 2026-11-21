@@ -279,6 +279,58 @@ class SectorMoneyFlowServiceTests {
         assertThat(rows.getFirst().getReturn20dMedian()).isEqualByComparingTo("0.100000");
     }
 
+    @Test
+    void evaluateBreadthBreakdownEnforcesSampleSizeCoverageThresholdsAndSameDayConsistency() {
+        // 1) 標準達標：10 檔、三項有效分母 >= 8 且 >= 70%、SMA50 <= 20% & SMA200 <= 35% & 20D <= -5%，即使 flowState=NEUTRAL 仍觸發
+        SectorMoneyFlowDaily broken = sectorSnap(TRADE_DATE, "I41", 10, 9, 8, 9,
+                "0.200000", "0.350000", "-0.050000", SectorMoneyFlowDaily.FLOW_NEUTRAL);
+        SectorMoneyFlowService.SectorBreadthStatus brokenStatus = SectorMoneyFlowService.evaluateBreadthBreakdown(broken);
+        assertThat(brokenStatus.eligible()).isTrue();
+        assertThat(brokenStatus.breakdown()).isTrue();
+        assertThat(SectorMoneyFlowService.isSameDayBreadthBreakdown(broken, TRADE_DATE)).isTrue();
+        // 跨日回退快照絕不觸發風控縮倉
+        assertThat(SectorMoneyFlowService.isSameDayBreadthBreakdown(broken, TRADE_DATE.plusDays(1))).isFalse();
+
+        // 2) I125 類型邊界：stockCount=9、sma200Total=7（覆蓋率 77.8% >= 70%，但 7 < 8）-> 不具資格（INSUFFICIENT）
+        SectorMoneyFlowDaily i125 = sectorSnap(TRADE_DATE, "I125", 9, 9, 7, 9,
+                "0.111111", "0.142857", "-0.120000", SectorMoneyFlowDaily.FLOW_OUTFLOW);
+        assertThat(SectorMoneyFlowService.evaluateBreadthBreakdown(i125).eligible()).isFalse();
+        assertThat(SectorMoneyFlowService.evaluateBreadthBreakdown(i125).breakdown()).isFalse();
+
+        // 3) 覆蓋率門檻：stockCount=12、sma200Total=8（8 >= 8 但 8/12 = 66.7% < 70%）-> INSUFFICIENT；9/12=75% -> ELIGIBLE
+        SectorMoneyFlowDaily lowCoverage = sectorSnap(TRADE_DATE, "I99", 12, 10, 8, 10,
+                "0.100000", "0.250000", "-0.080000", SectorMoneyFlowDaily.FLOW_OUTFLOW);
+        assertThat(SectorMoneyFlowService.evaluateBreadthBreakdown(lowCoverage).eligible()).isFalse();
+        SectorMoneyFlowDaily passCoverage = sectorSnap(TRADE_DATE, "I99", 12, 10, 9, 10,
+                "0.100000", "0.250000", "-0.080000", SectorMoneyFlowDaily.FLOW_OUTFLOW);
+        assertThat(SectorMoneyFlowService.evaluateBreadthBreakdown(passCoverage).breakdown()).isTrue();
+
+        // 4) 任一指標未達門檻（如 20D 中位報酬 -4.9%）-> eligible=true 且 breakdown=false（計為健康／確認修復）
+        SectorMoneyFlowDaily healthy = sectorSnap(TRADE_DATE, "I41", 10, 10, 10, 10,
+                "0.200000", "0.350000", "-0.049000", SectorMoneyFlowDaily.FLOW_OUTFLOW);
+        SectorMoneyFlowService.SectorBreadthStatus healthyStatus = SectorMoneyFlowService.evaluateBreadthBreakdown(healthy);
+        assertThat(healthyStatus.eligible()).isTrue();
+        assertThat(healthyStatus.breakdown()).isFalse();
+    }
+
+    private SectorMoneyFlowDaily sectorSnap(LocalDate date, String code, int stockCount,
+                                            int sma50Total, int sma200Total, int ret20Count,
+                                            String sma50Pct, String sma200Pct, String ret20Median, String flowState) {
+        SectorMoneyFlowDaily row = new SectorMoneyFlowDaily();
+        row.setTradeDate(date);
+        row.setIndustryCode(code);
+        row.setIndustryName("Industry-" + code);
+        row.setStockCount(stockCount);
+        row.setBreadthSma50Total(sma50Total);
+        row.setBreadthSma200Total(sma200Total);
+        row.setReturn20dCount(ret20Count);
+        row.setBreadthAboveSma50Pct(new BigDecimal(sma50Pct));
+        row.setBreadthAboveSma200Pct(new BigDecimal(sma200Pct));
+        row.setReturn20dMedian(new BigDecimal(ret20Median));
+        row.setFlowState(flowState);
+        return row;
+    }
+
     private ActiveStockWithStatus stockWithStatus(String figi, String symbol, String currency, LocalDate splitFrom, LocalDate splitDate) {
         Stock stock = new Stock();
         stock.setFigi(figi);

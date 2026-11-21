@@ -484,6 +484,11 @@ public class DailyOpportunityRadarService {
                 radarDate, obsCutoff, maxAnnualObsDate, s.getCurrency(), evalPrice, v.getMarketCap(),
                 epsAtDay, peReason, stockSplits, splitError, stockForecasts, knownReports, stockPeriods);
 
+        String indCode = v.getIndustryCode();
+        String indName = indCode == null ? null : industryNames.getOrDefault(indCode, indCode);
+        SectorMoneyFlowDaily sectorFlow = indCode == null ? null : sectorFlowMap.get(indCode);
+        boolean sectorBreadthBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(sectorFlow, radarDate);
+
         RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                 AnalysisHorizon.POSITION,
                 evalPrice,
@@ -495,14 +500,12 @@ public class DailyOpportunityRadarService {
                 structure,
                 support,
                 tradePlans,
-                marketResult
+                marketResult,
+                sectorBreadthBreakdown
         );
 
         Integer daysToNextEarnings = nextEarningsDate == null ? null
                 : (int) ChronoUnit.DAYS.between(radarDate, nextEarningsDate);
-        String indCode = v.getIndustryCode();
-        String indName = indCode == null ? null : industryNames.getOrDefault(indCode, indCode);
-        SectorMoneyFlowDaily sectorFlow = indCode == null ? null : sectorFlowMap.get(indCode);
         List<TradePlanDto> planList = tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
                 ? tradePlans.value().plans() : List.of();
         boolean macroCautionActive = eval.macroCaution() != null && eval.macroCaution().active();

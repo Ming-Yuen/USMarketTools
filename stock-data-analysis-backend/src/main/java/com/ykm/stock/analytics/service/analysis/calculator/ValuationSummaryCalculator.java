@@ -396,6 +396,21 @@ public class ValuationSummaryCalculator {
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
             MetricResult<MarketContextDto> marketContext) {
+        return calculate(horizon, valuation, financials, fundamentals, futuObservations,
+                priceStructure, supportResistance, tradePlans, marketContext, false);
+    }
+
+    public MetricResult<InvestmentSummaryDto> calculate(
+            AnalysisHorizon horizon,
+            ValuationResultDto valuation,
+            FinancialsDto financials,
+            FundamentalSnapshotDto fundamentals,
+            FutuObservationsDto futuObservations,
+            MetricResult<PriceStructureDto> priceStructure,
+            MetricResult<SupportResistanceDto> supportResistance,
+            MetricResult<TradePlanResultDto> tradePlans,
+            MetricResult<MarketContextDto> marketContext,
+            boolean sectorBreadthBreakdown) {
         if (valuation == null) {
             return MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA,
                     AnalysisReasonDto.of("VALUATION_NOT_CALCULATED", "SUMMARY", "尚無估值結果，無法產生綜合估值觀察摘要。"));
@@ -488,7 +503,8 @@ public class ValuationSummaryCalculator {
         TrendPullbackStarterDto trendPullbackStarter = evaluateTrendPullbackStarter(
                 effectiveHorizon, verdict, fundamentalBacking, fundamentals, futuObservations, forwardTrap,
                 weeklyTrend, aboveSma200, marketRegime, permission, eventGateBlocked,
-                stopBreachedOrReclaim || anyHighRiskBreakdown, priceStructure, marketContext, macroCaution);
+                stopBreachedOrReclaim || anyHighRiskBreakdown, priceStructure, marketContext, macroCaution,
+                sectorBreadthBreakdown);
 
         String stance = resolveStance(
                 verdict, fundamentalBacking, forwardTrap.anyTrap(), weeklyTrend, aboveSma200,
@@ -497,7 +513,8 @@ public class ValuationSummaryCalculator {
 
         List<SummaryFlagDto> risks = buildRiskFlags(
                 verdict, fundamentals, currentLoss, forwardTrap, band, weeklyTrend, aboveSma200,
-                eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim, macroCaution, primaryDiagnosis);
+                eventGateBlocked, nextBlockingEventDate, stopBreachedOrReclaim, macroCaution, primaryDiagnosis,
+                sectorBreadthBreakdown);
         List<WatchItemDto> watchItems = buildWatchItems(
                 verdict, stance, fundamentalBacking, forwardTrap.anyTrap(), band, supportZone,
                 nextBlockingEventDate, stopBreachedOrReclaim, marketRegime, rightSideConfirmationBasis, trendPullbackStarter);
@@ -551,7 +568,8 @@ public class ValuationSummaryCalculator {
             MetricResult<PriceStructureDto> priceStructure,
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
-            MetricResult<MarketContextDto> marketContext) {
+            MetricResult<MarketContextDto> marketContext,
+            boolean sectorBreadthBreakdown) {
         String effectiveVerdict = verdict == null || verdict.isBlank() ? "INSUFFICIENT_EVIDENCE" : verdict;
         String effectiveBacking = fundamentalBacking == null || fundamentalBacking.isBlank()
                 ? "INSUFFICIENT_DATA" : fundamentalBacking;
@@ -612,7 +630,8 @@ public class ValuationSummaryCalculator {
         TrendPullbackStarterDto trendPullbackStarter = evaluateTrendPullbackStarter(
                 effectiveHorizon, effectiveVerdict, effectiveBacking, fundamentals, futuObservations, forwardTrap,
                 weeklyTrend, aboveSma200, marketRegime, permission, eventGateBlocked,
-                stopBreachedOrReclaim || anyHighRiskBreakdown, priceStructure, marketContext, macroCaution);
+                stopBreachedOrReclaim || anyHighRiskBreakdown, priceStructure, marketContext, macroCaution,
+                sectorBreadthBreakdown);
 
         String stance = resolveStance(
                 effectiveVerdict, effectiveBacking, forwardTrap.anyTrap(), weeklyTrend, aboveSma200,
@@ -1364,7 +1383,8 @@ public class ValuationSummaryCalculator {
             boolean blockedByBreachOrStop,
             MetricResult<PriceStructureDto> priceStructure,
             MetricResult<MarketContextDto> marketContext,
-            MacroCautionDto macroCaution) {
+            MacroCautionDto macroCaution,
+            boolean sectorBreadthBreakdown) {
         if ((!"FAIR_UPPER".equals(verdict) && !"MODERATELY_OVERVALUED".equals(verdict))
                 || !"STRONG".equals(fundamentalBacking)
                 || !"UPTREND".equals(weeklyTrend)) {
@@ -1468,7 +1488,8 @@ public class ValuationSummaryCalculator {
                     "TREND_PULLBACK_STOP_INVALID", "計算得出的試單止損價無效，暫不輸出試單建議。");
         }
 
-        String positionFraction = macroCaution != null && macroCaution.active() ? "1/6" : "1/3";
+        boolean halfCut = (macroCaution != null && macroCaution.active()) || sectorBreadthBreakdown;
+        String positionFraction = halfCut ? "1/6" : "1/3";
         return new TrendPullbackStarterDto(
                 true,
                 matchedAnchor.name(),
@@ -1579,7 +1600,8 @@ public class ValuationSummaryCalculator {
             LocalDate nextBlockingEventDate,
             boolean stopBreachedOrReclaim,
             MacroCautionDto macroCaution,
-            BreakoutDiagnosisDto primaryDiagnosis) {
+            BreakoutDiagnosisDto primaryDiagnosis,
+            boolean sectorBreadthBreakdown) {
         List<SummaryFlagDto> candidates = new ArrayList<>();
 
         if (eventGateBlocked) {
@@ -1588,6 +1610,9 @@ public class ValuationSummaryCalculator {
                 params.put("eventDate", nextBlockingEventDate.toString());
             }
             candidates.add(new SummaryFlagDto("EARNINGS_IMMINENT_BLOCK", "HIGH", params));
+        }
+        if (sectorBreadthBreakdown) {
+            candidates.add(new SummaryFlagDto("SECTOR_BREADTH_BREAKDOWN", "MEDIUM", Map.of()));
         }
         if (macroCaution != null && macroCaution.marketRegime() != null
                 && (macroCaution.marketRegime() == MarketRegime.PANIC

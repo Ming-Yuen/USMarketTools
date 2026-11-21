@@ -105,6 +105,41 @@ class DataInitializerTests {
         verify(jobs, never()).saveAndFlush(any());
     }
 
+    @Test
+    void upgradesExactPreviousDefaultCronsForTreasuryAndChipEventWithoutTouchingCustomCrons() {
+        JobConfigRepository jobs = mock(JobConfigRepository.class);
+        JobConfig treasuryOld = new JobConfig();
+        treasuryOld.setTaskCode(TaskCode.TREASURY_DAILY_SYNC);
+        treasuryOld.setCronExpression("0 0 5 * * ?");
+
+        JobConfig chipOld = new JobConfig();
+        chipOld.setTaskCode(TaskCode.CHIP_EVENT_DAILY_SYNC);
+        chipOld.setCronExpression("0 25 10 ? * TUE-SAT");
+
+        Map<String, JobConfig> existing = new LinkedHashMap<>();
+        for (String taskCode : CURRENT_JOBS) {
+            if (TaskCode.TREASURY_DAILY_SYNC.equals(taskCode)) {
+                existing.put(taskCode, treasuryOld);
+            } else if (TaskCode.CHIP_EVENT_DAILY_SYNC.equals(taskCode)) {
+                existing.put(taskCode, chipOld);
+            } else {
+                JobConfig custom = new JobConfig();
+                custom.setTaskCode(taskCode);
+                custom.setCronExpression("0 0 12 * * ?");
+                existing.put(taskCode, custom);
+            }
+        }
+        when(jobs.findByTaskCode(anyString())).thenAnswer(invocation -> existing.get(invocation.getArgument(0)));
+
+        new DataInitializer(mock(MenuRepository.class), jobs).initializeJobConfigData();
+
+        assertThat(treasuryOld.getCronExpression()).isEqualTo("0 15 7 * * ?");
+        assertThat(chipOld.getCronExpression()).isEqualTo("0 0 11 ? * TUE-SAT");
+        verify(jobs).save(same(treasuryOld));
+        verify(jobs).save(same(chipOld));
+        verify(jobs, times(2)).save(any());
+    }
+
     @ParameterizedTest
     @CsvSource({
             "FUTU_CLASSIFICATION_DAILY_SYNC, STOCK_CLASSIFICATION_DAILY_SYNC, StockClassificationDailySyncJob",

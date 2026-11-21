@@ -342,6 +342,67 @@ class StockFundamentalDailySyncJobTests {
         assertThat(disconnectedStatus.getFundamentalSyncDate()).isNull();
     }
 
+    /**
+     * Scenario：週六凌晨已同步過基本面（fundamentalSyncDate == SATURDAY_HK，但 splitDate 停在週四 11-19），
+     * 到週六 06:30（美股週五 11-20 已收市）重跑時：
+     * - 必須走 splitOnlyCatchup 增量補推，預載 Massive 拆股且絕不開啟 Futu rehab 全量巡檢；
+     * - 無拆股股走快速通道推進 splitDate 至 11-20；
+     * - 真有週五新拆股的個股仍正常落庫、重建財季分母並刷新最新估值；
+     * - 帶有 SPLIT_STORED_EVENT_NOT_RETURNED 差異標記者不參與補推且保留差異訊息。
+     */
+    @Test
+    void saturdaySplitOnlyCatchupPreloadsMassiveWithoutFutuRehabAndRebuildsSplitChangedStock() {
+        LocalDate fridayClosed = LocalDate.of(2026, 11, 20);
+        when(dateTimeService.now()).thenReturn(SATURDAY_HK_MORNING);
+        when(marketStatusService.getLastClosedTradingDay()).thenReturn(fridayClosed);
+
+        Stock quietStock = stock("F_NVDA", "NVDA", "Common Stock", "0001045810");
+        Stock splitStock = stock("F_SPLT", "SPLT", "Common Stock", "0000999999");
+        Stock discStock = stock("F_DISC", "DISC", "Common Stock", null);
+
+        StockStatus quietStatus = status("F_NVDA", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        StockStatus splitStatus = status("F_SPLT", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        StockStatus discStatus = status("F_DISC", LocalDate.of(2025, 5, 31), null, null, SATURDAY_HK);
+        discStatus.setSplitMessage("ERROR:SPLIT_STORED_EVENT_NOT_RETURNED:2025-06-01:dates=1");
+
+        MassiveSplit fridaySplit = new MassiveSplit();
+        fridaySplit.setId("MS-1");
+        fridaySplit.setTicker("SPLT");
+        fridaySplit.setExecutionDate(fridayClosed);
+        fridaySplit.setSplitFrom(BigDecimal.ONE);
+        fridaySplit.setSplitTo(new BigDecimal("2"));
+
+        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(quietStock, splitStock, discStock));
+        when(stocks.findFinancialReportSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
+                new ActiveStockWithStatus(quietStock, quietStatus),
+                new ActiveStockWithStatus(splitStock, splitStatus)));
+        when(stocks.findSecFinancialFactsSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
+                new ActiveStockWithStatus(quietStock, quietStatus),
+                new ActiveStockWithStatus(splitStock, splitStatus)));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(quietStatus, splitStatus, discStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_NVDA"))).thenReturn(List.of(quietStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_SPLT"))).thenReturn(List.of(splitStatus));
+        when(massiveService.getSplitsFrom(LocalDate.of(2026, 11, 12))).thenReturn(List.of(fridaySplit));
+        when(splitRepository.findByFigiAndExecutionDateBetween(eq("F_SPLT"), any(), any())).thenReturn(List.of());
+
+        job.execute(null);
+
+        // 週六 splitOnlyCatchup 強制非 fullPatrol：預載 Massive、絕不開 Futu、絕不重跑 SEC/財報
+        verify(massiveService).getSplitsFrom(LocalDate.of(2026, 11, 12));
+        verifyNoInteractions(futu, companyFactsArchive, submissionsArchive);
+
+        // 無拆股股走快速通道推進 splitDate 至 11-20
+        assertThat(quietStatus.getSplitDate()).isEqualTo(fridayClosed);
+        // 真有拆股的 SPLT 落庫新拆股、重建財季分母並刷新最新估值
+        assertThat(splitStatus.getSplitDate()).isEqualTo(fridayClosed);
+        verify(splitRepository).saveAll(anyCollection());
+        verify(stockValuationService).rebuildFinancialPeriodsInCurrentTx(List.of("F_SPLT"));
+        verify(stockValuationService).refreshLatestValuations(Set.of("F_SPLT"), null);
+        // 既有拆股對帳差異股完全不受影響
+        assertThat(discStatus.getSplitDate()).isEqualTo(LocalDate.of(2025, 5, 31));
+        assertThat(discStatus.getSplitMessage()).contains("SPLIT_STORED_EVENT_NOT_RETURNED");
+    }
+
     private Stock stock(String figi, String symbol, String type, String cik) {
         Stock stock = new Stock();
         stock.setFigi(figi);

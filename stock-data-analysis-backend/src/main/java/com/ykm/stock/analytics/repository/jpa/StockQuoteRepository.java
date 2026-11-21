@@ -17,6 +17,9 @@ public interface StockQuoteRepository extends JpaRepository<StockQuote, StockQuo
 
     long countByQuoteDateAndFigiIn(LocalDate quoteDate, Collection<String> figis);
 
+    @Query("select q.figi from StockQuote q where q.quoteDate = :date and q.figi in :figis")
+    List<String> findQuotedFigisByDate(@Param("date") LocalDate date, @Param("figis") Collection<String> figis);
+
     @Query("select q from StockQuote q where q.figi in :figis and q.quoteDate between :from and :through")
     List<StockQuote> findStoredQuotes(@Param("figis") Collection<String> figis, @Param("from") LocalDate from,
                                     @Param("through") LocalDate through);

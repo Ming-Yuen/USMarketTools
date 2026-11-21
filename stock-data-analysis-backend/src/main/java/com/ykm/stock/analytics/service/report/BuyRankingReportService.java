@@ -954,14 +954,18 @@ public class BuyRankingReportService {
         StockStatus status = data.statusByFigi().get(figi);
         StockValuationLatest valuation = data.valuationByFigi().get(figi);
         StockIndustryHistory indHist = data.industryByFigi().get(figi);
-        String indCode = indHist != null && indHist.getIndustry() != null
+        boolean officialIndustry = indHist != null && indHist.getIndustry() != null;
+        String indCode = officialIndustry
                 ? indHist.getIndustry().getCode()
                 : (valuation != null ? valuation.getIndustryCode() : null);
-        String indName = indHist != null && indHist.getIndustry() != null
+        String indName = officialIndustry
                 ? indHist.getIndustry().getIndustry()
                 : (indCode != null && data.industriesByCode().containsKey(indCode)
                         ? data.industriesByCode().get(indCode).getIndustry() : indCode);
         SectorMoneyFlowDaily sectorFlow = indCode == null ? null : data.sectorFlowMap().get(indCode);
+        boolean sectorBreadthBreakdown = officialIndustry
+                && asOfDate.equals(data.sectorFlowDate())
+                && SectorMoneyFlowService.isSameDayBreadthBreakdown(sectorFlow, asOfDate);
 
         // 1. 財報事件（含 Day 0 美東日曆日；ETF 跳過）；若啟用 excludeEarningsWithinDays 則優先移除
         List<MarketEvent> stockEarnings = isEtf ? List.of() : data.earningsByFigi().getOrDefault(figi, List.of());
@@ -1054,7 +1058,7 @@ public class BuyRankingReportService {
         }
         return buildEquityItem(
                 entry, params, asOfDate, obsCutoff, maxAnnualObsDate, data, marketBg, globalRegime,
-                indCode, indName, sectorFlow, status, valuation, nextEarningsDate, daysToEarnings,
+                indCode, indName, sectorFlow, sectorBreadthBreakdown, status, valuation, nextEarningsDate, daysToEarnings,
                 hasTargetDayQuote, evalPrice, price, structure, support, tradePlans, marketResult, planList);
     }
 
@@ -1172,7 +1176,7 @@ public class BuyRankingReportService {
         boolean macroCautionActive = etfSummary.macroCaution() != null && etfSummary.macroCaution().active();
         PositionSizingDto sizing = computePositionSizing(
                 figi, stock.getCurrency(), indCode, evalPrice, zoneEx, tc.tier(),
-                false, globalRegime, macroCautionActive, data.staleDateFallback(), data.exposure());
+                false, globalRegime, macroCautionActive, false, data.staleDateFallback(), data.exposure());
 
         return assembleItem(
                 entry, params.resolvedLocale(), indCode, indName, sectorFlow,
@@ -1194,6 +1198,7 @@ public class BuyRankingReportService {
             String indCode,
             String indName,
             SectorMoneyFlowDaily sectorFlow,
+            boolean sectorBreadthBreakdown,
             StockStatus status,
             StockValuationLatest v,
             LocalDate nextEarningsDate,
@@ -1319,7 +1324,7 @@ public class BuyRankingReportService {
         BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
         RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                 params.horizon(), effectivePrice, verdict, bandLow, backing,
-                fundamentalsDto, futuObs, structure, support, tradePlans, marketResult);
+                fundamentalsDto, futuObs, structure, support, tradePlans, marketResult, sectorBreadthBreakdown);
 
         TrendPullbackStarterDto starter = eval.trendPullbackStarter();
         boolean starterActive = "TREND_PULLBACK_STARTER".equals(eval.stance())
@@ -1348,7 +1353,7 @@ public class BuyRankingReportService {
         boolean macroCautionActive = eval.macroCaution() != null && eval.macroCaution().active();
         PositionSizingDto sizing = computePositionSizing(
                 figi, stock.getCurrency(), indCode, effectivePrice, zoneEx, tc.tier(),
-                starterActive, globalRegime, macroCautionActive, data.staleDateFallback(), data.exposure());
+                starterActive, globalRegime, macroCautionActive, sectorBreadthBreakdown, data.staleDateFallback(), data.exposure());
 
         return assembleItem(
                 entry, params.resolvedLocale(), indCode, indName, sectorFlow,
@@ -1680,6 +1685,7 @@ public class BuyRankingReportService {
             boolean starterSetup,
             MarketRegime regime,
             boolean macroCautionActive,
+            boolean sectorBreadthBreakdown,
             boolean staleDateFallback,
             PortfolioExposureSnapshot exposure) {
         if (BuyRankingDtos.TIER_4.equals(tier)) {
@@ -1724,6 +1730,7 @@ public class BuyRankingReportService {
                 starterSetup,
                 regime,
                 macroCautionActive,
+                sectorBreadthBreakdown,
                 exposure.config(),
                 existingHoldingMv,
                 currentSectorMv,

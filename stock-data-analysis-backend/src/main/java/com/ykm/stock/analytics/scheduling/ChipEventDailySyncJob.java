@@ -8,11 +8,13 @@ import com.ykm.stock.analytics.model.entity.PortfolioItem;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockEventAiSummary;
 import com.ykm.stock.analytics.model.entity.StockQuote;
+import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.model.entity.StockSplit;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
 import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
+import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEventAiSummaryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
@@ -29,7 +31,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
+import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +59,7 @@ import java.util.stream.Collectors;
 @DisallowConcurrentExecution
 @Component(TaskCode.CHIP_EVENT_DAILY_SYNC)
 public class ChipEventDailySyncJob implements Job {
+    public static final String CONFIG_KEY_SYNCED_TRADE_DATE = "chip_event_synced_trade_date";
     private static final int TARGET_CAP = 60;
     private static final int AI_SUMMARY_DAILY_CAP = 10;
     private static final BigDecimal PRICE_SHOCK_THRESHOLD = new BigDecimal("0.05");
@@ -74,16 +79,35 @@ public class ChipEventDailySyncJob implements Job {
     private final EnhancementAiGateway aiGateway;
     private final MarketStatusService calendar;
     private final DateTimeService dateTimeService;
+    @Autowired(required = false)
+    private PortfolioSysConfigRepository sysConfigRepository;
 
     @Override
     public void execute(JobExecutionContext context) {
         Instant now = dateTimeService.now();
-        LocalDate tradeDate = calendar.getLastClosedTradingDay(now);
+        JobDataMap params = context == null ? null : context.getMergedJobDataMap();
+        LocalDate tradeDate = resolveTradeDate(params, now);
+        boolean forceRun = parseBooleanParam(params, "force");
 
-        // 1. 按優先序組裝精準目標集（HOLDING -> WATCHLIST -> 最新已發布雷達）
-        List<String> targetFigis = selectPrioritizedTargets(tradeDate);
+        // 0. 同交易日已完成含當日正式雷達之同步時直接略過（讓 11:00 兜底 Cron 零額外 API 呼叫；手動 force=true 可覆蓋重跑）
+        LocalDate syncedDate = readSyncedWatermark();
+        if (!forceRun && syncedDate != null && !syncedDate.isBefore(tradeDate)) {
+            log.info("Chip & event daily sync skipped | reason=ALREADY_SYNCED_FOR_TRADE_DATE tradeDate={} watermark={}",
+                    tradeDate, syncedDate);
+            return;
+        }
+
+        // 1. 確認當日雷達是否已正式發布（含零入選日），並按優先序組裝精準目標集（HOLDING -> WATCHLIST -> 當日雷達）
+        Optional<DailyOpportunityRadarRun> latestRun = radarRunRepository.findTopByOrderByRadarDateDesc();
+        boolean radarPublished = (latestRun != null && latestRun.isPresent() && tradeDate.equals(latestRun.get().getRadarDate()))
+                || radarRunRepository.existsById(tradeDate);
+        List<String> targetFigis = selectPrioritizedTargets(tradeDate, radarPublished);
         if (targetFigis.isEmpty()) {
-            log.info("Chip & event daily sync skipped | reason=NO_TARGET_STOCKS tradeDate={}", tradeDate);
+            if (radarPublished) {
+                advanceSyncedWatermark(tradeDate);
+            }
+            log.info("Chip & event daily sync skipped | reason=NO_TARGET_STOCKS tradeDate={} radarPublished={} watermarkAdvanced={}",
+                    tradeDate, radarPublished, radarPublished);
             return;
         }
         Map<String, Stock> stockMap = stockRepository.findAllById(targetFigis).stream()
@@ -92,8 +116,11 @@ public class ChipEventDailySyncJob implements Job {
                 tradeDate.minusDays(3), tradeDate.plusDays(3));
 
         int optionsOk = 0;
+        int optionsFailed = 0;
         int form4Ok = 0;
+        int form4Failed = 0;
         int newsTriggered = 0;
+        int newsFailed = 0;
         int aiSummarized = (int) summaryRepository.countByTriggerDateAndAiProviderNot(
                 tradeDate, StockEventAiSummary.PROVIDER_MANUAL_IMPORT);
         Set<String> scannedForm4Ciks = new LinkedHashSet<>();
@@ -107,6 +134,7 @@ public class ChipEventDailySyncJob implements Job {
                 optionsService.refreshStock(stock);
                 optionsOk++;
             } catch (RuntimeException ex) {
+                optionsFailed++;
                 log.debug("Options sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
             }
 
@@ -118,6 +146,7 @@ public class ChipEventDailySyncJob implements Job {
                     insider13fService.syncForm4ForStock(stock);
                     form4Ok++;
                 } catch (RuntimeException ex) {
+                    form4Failed++;
                     log.debug("Form 4 sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
                 }
             }
@@ -135,15 +164,52 @@ public class ChipEventDailySyncJob implements Job {
                         eventSummaryService.summarizeAutomated(stock, triggerReason);
                     }
                 } catch (RuntimeException ex) {
+                    newsFailed++;
                     log.debug("Event news/summary skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
                 }
             }
         }
-        log.info("Chip & event daily sync completed | tradeDate={} targets={} optionsOk={} form4Ciks={} newsTriggered={} aiSummarized={}",
-                tradeDate, targetFigis.size(), optionsOk, form4Ok, newsTriggered, aiSummarized);
+
+        // 5. 僅當本輪已涵蓋當日正式雷達且無外部同步失敗時才推進完成水位，避免來源中斷或 11:00 搶跑擋掉重跑補抓
+        boolean hadSyncFailure = optionsFailed > 0 || form4Failed > 0 || newsFailed > 0;
+        boolean watermarkAdvanced = radarPublished && !hadSyncFailure;
+        if (watermarkAdvanced) {
+            advanceSyncedWatermark(tradeDate);
+        }
+        log.info("Chip & event daily sync completed | tradeDate={} radarPublished={} watermarkAdvanced={} targets={} optionsOk={} optionsFailed={} form4Ciks={} form4Failed={} newsTriggered={} newsFailed={} aiSummarized={}",
+                tradeDate, radarPublished, watermarkAdvanced, targetFigis.size(),
+                optionsOk, optionsFailed, form4Ok, form4Failed, newsTriggered, newsFailed, aiSummarized);
     }
 
-    private List<String> selectPrioritizedTargets(LocalDate tradeDate) {
+    private LocalDate resolveTradeDate(JobDataMap params, Instant now) {
+        if (params != null && params.containsKey("tradeDate")) {
+            Object raw = params.get("tradeDate");
+            if (raw != null) {
+                String text = String.valueOf(raw).trim();
+                if (!text.isEmpty()) {
+                    try {
+                        return LocalDate.parse(text);
+                    } catch (RuntimeException ex) {
+                        log.warn("Invalid tradeDate job param ignored | raw={}", text);
+                    }
+                }
+            }
+        }
+        return calendar.getLastClosedTradingDay(now);
+    }
+
+    private boolean parseBooleanParam(JobDataMap params, String key) {
+        if (params == null || !params.containsKey(key)) {
+            return false;
+        }
+        Object raw = params.get(key);
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        return raw != null && Boolean.parseBoolean(String.valueOf(raw).trim());
+    }
+
+    private List<String> selectPrioritizedTargets(LocalDate tradeDate, boolean radarPublished) {
         LinkedHashSet<String> ordered = new LinkedHashSet<>();
         List<PortfolioItem> portfolioItems = portfolioItemRepository.findAll();
         // 先納全部 HOLDING（永不截斷持倉），再納 WATCHLIST
@@ -159,8 +225,7 @@ public class ChipEventDailySyncJob implements Job {
             }
         }
         // 再納入最新已發布當日雷達（區分正式零入選與尚未發布）
-        Optional<DailyOpportunityRadarRun> latestRun = radarRunRepository.findTopByOrderByRadarDateDesc();
-        if (latestRun.isPresent() && latestRun.get().getRadarDate().equals(tradeDate)) {
+        if (radarPublished) {
             List<DailyOpportunityRadar> radarRows = radarRepository.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(tradeDate);
             int deferred = 0;
             for (DailyOpportunityRadar row : radarRows) {
@@ -175,6 +240,54 @@ public class ChipEventDailySyncJob implements Job {
             }
         }
         return new ArrayList<>(ordered);
+    }
+
+    private LocalDate readSyncedWatermark() {
+        if (sysConfigRepository == null) {
+            return null;
+        }
+        List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_SYNCED_TRADE_DATE));
+        if (matches == null || matches.isEmpty()) {
+            return null;
+        }
+        String raw = matches.getFirst().getConfigValue();
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(raw.trim());
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private void advanceSyncedWatermark(LocalDate tradeDate) {
+        if (sysConfigRepository == null || tradeDate == null) {
+            return;
+        }
+        List<SysConfig> matches = sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(CONFIG_KEY_SYNCED_TRADE_DATE));
+        if (matches == null || matches.isEmpty()) {
+            SysConfig created = new SysConfig();
+            created.setConfigKey(CONFIG_KEY_SYNCED_TRADE_DATE);
+            created.setConfigValue(tradeDate.toString());
+            created.setDescription("籌碼與異動事件同步已涵蓋當日正式雷達之最新美東交易日水位");
+            created.setEnabled(true);
+            sysConfigRepository.save(created);
+            return;
+        }
+        SysConfig primary = matches.getFirst();
+        LocalDate existing = null;
+        if (primary.getConfigValue() != null && !primary.getConfigValue().isBlank()) {
+            try {
+                existing = LocalDate.parse(primary.getConfigValue().trim());
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (existing == null || tradeDate.isAfter(existing)) {
+            primary.setConfigValue(tradeDate.toString());
+            primary.setEnabled(true);
+            sysConfigRepository.save(primary);
+        }
     }
 
     private String resolveEventTriggerReason(String figi, LocalDate tradeDate, Set<String> earningsWindowFigis) {

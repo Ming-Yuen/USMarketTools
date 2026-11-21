@@ -55,6 +55,7 @@ import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos.BuyR
 import com.ykm.stock.analytics.model.entity.AdrShareRatio;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
+import com.ykm.stock.analytics.model.entity.SectorMoneyFlowDaily;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
@@ -356,6 +357,77 @@ class BuyRankingReportServiceTests {
                 null, BuyRankingDtos.GRADE_ALL, null, 14, null, "POSITION", "zh-HK", 1, 300);
         BuyRankingResponse respDrop = service.generateReport(dropEarnings, "zh-HK");
         assertThat(respDrop.items()).isEmpty();
+    }
+
+    @Test
+    void sectorBreadthBreakdownHalvesSharesOnlyWhenSameDayAndOfficialIndustryWhileStaleSectorFlowDoesNotHalve() {
+        Stock s = stock("FIGI_NVDA", "NVDA", "NVIDIA", "Common Stock", "USD", true);
+        StockValuationLatest v = valuation("FIGI_NVDA", "I41", new BigDecimal("100.00"),
+                new BigDecimal("110.00"), new BigDecimal("130.00"), new BigDecimal("150.00"),
+                "DEEP_UNDERVALUED", "STRONG");
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), eq(List.of("NVDA"))))
+                .thenReturn(List.of(s));
+        when(latestValuations.findByFigiIn(anyCollection())).thenReturn(List.of(v));
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE)))
+                .thenReturn(List.of(industryHistory("FIGI_NVDA", "I41", "Semiconductors")));
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(quoteRow("FIGI_NVDA", new BigDecimal("100.00"))));
+        stubTechnicalStack("FIGI_NVDA", new BigDecimal("100.00"), new BigDecimal("98.00"), new BigDecimal("100.00"),
+                new BigDecimal("95.00"), new BigDecimal("125.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+
+        SectorMoneyFlowDaily brokenSameDay = new SectorMoneyFlowDaily();
+        brokenSameDay.setTradeDate(AS_OF);
+        brokenSameDay.setIndustryCode("I41");
+        brokenSameDay.setIndustryName("Semiconductors");
+        brokenSameDay.setStockCount(45);
+        brokenSameDay.setBreadthSma50Total(45);
+        brokenSameDay.setBreadthSma200Total(44);
+        brokenSameDay.setReturn20dCount(45);
+        brokenSameDay.setBreadthAboveSma50Pct(new BigDecimal("0.15"));
+        brokenSameDay.setBreadthAboveSma200Pct(new BigDecimal("0.30"));
+        brokenSameDay.setReturn20dMedian(new BigDecimal("-0.08"));
+        brokenSameDay.setFlowState(SectorMoneyFlowDaily.FLOW_OUTFLOW);
+        when(sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(AS_OF))
+                .thenReturn(List.of(brokenSameDay));
+
+        BuyRankingRequest req = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("NVDA"),
+                List.of(BuyRankingDtos.ASSET_COMMON_STOCK), true,
+                null, BuyRankingDtos.GRADE_ALL, null, null, null, "POSITION", "en", 1, 300);
+        BuyRankingResponse sameDayResp = service.generateReport(req, "en");
+        assertThat(sameDayResp.items()).hasSize(1);
+        BuyRankingItemDto sameDayItem = sameDayResp.items().getFirst();
+        assertThat(sameDayItem.tier()).isEqualTo(BuyRankingDtos.TIER_1);
+        assertThat(sameDayItem.positionScaleTag()).isEqualTo("1/2");
+        assertThat(sameDayItem.positionSizingTags()).contains("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
+        assertThat(BuyRankingReasonFormatter.scaleTagLabel(sameDayItem.positionScaleTag(), sameDayItem.positionSizingTags(), "en"))
+                .isEqualTo("1/2 Sector Cut");
+
+        // 跨日回退之舊板塊快照僅供顯示，絕不觸發縮倉
+        LocalDate priorDay = AS_OF.minusDays(1);
+        SectorMoneyFlowDaily brokenStale = new SectorMoneyFlowDaily();
+        brokenStale.setTradeDate(priorDay);
+        brokenStale.setIndustryCode("I41");
+        brokenStale.setIndustryName("Semiconductors");
+        brokenStale.setStockCount(45);
+        brokenStale.setBreadthSma50Total(45);
+        brokenStale.setBreadthSma200Total(44);
+        brokenStale.setReturn20dCount(45);
+        brokenStale.setBreadthAboveSma50Pct(new BigDecimal("0.15"));
+        brokenStale.setBreadthAboveSma200Pct(new BigDecimal("0.30"));
+        brokenStale.setReturn20dMedian(new BigDecimal("-0.08"));
+        when(sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(AS_OF))
+                .thenReturn(List.of());
+        when(sectorMoneyFlowRepository.findLatestTradeDateAtOrBefore(AS_OF)).thenReturn(Optional.of(priorDay));
+        when(sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(priorDay))
+                .thenReturn(List.of(brokenStale));
+
+        BuyRankingResponse staleResp = service.generateReport(req, "en");
+        BuyRankingItemDto staleItem = staleResp.items().getFirst();
+        assertThat(staleItem.positionScaleTag()).isEqualTo("FULL");
+        assertThat(staleItem.positionSizingTags()).doesNotContain("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
+        assertThat(staleItem.suggestedShares()).isEqualTo(sameDayItem.suggestedShares() * 2L);
     }
 
     @Test

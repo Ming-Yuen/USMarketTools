@@ -22,6 +22,9 @@ public interface SectorMoneyFlowDailyRepository extends JpaRepository<SectorMone
 
     Optional<SectorMoneyFlowDaily> findByTradeDateAndIndustryCode(LocalDate tradeDate, String industryCode);
 
+    List<SectorMoneyFlowDaily> findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(
+            String industryCode, LocalDate afterDate, LocalDate beforeDate);
+
     @Modifying
     @Query("delete from SectorMoneyFlowDaily s where s.tradeDate = :tradeDate")
     void deleteByTradeDate(@Param("tradeDate") LocalDate tradeDate);

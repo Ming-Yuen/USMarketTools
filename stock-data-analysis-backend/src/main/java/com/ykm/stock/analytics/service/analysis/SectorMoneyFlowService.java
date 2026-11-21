@@ -71,6 +71,19 @@ public class SectorMoneyFlowService {
     private static final BigDecimal RELATIVE_THRESHOLD = new BigDecimal("0.01");
     private static final BigDecimal OUTPERFORM_THRESHOLD = new BigDecimal("0.02");
 
+    /** 板塊廣度崩壞統一門檻（僅由同日有效產業樣本觸發，與 CMF / flow_state 脫鉤）。 */
+    public static final int BREADTH_BREAKDOWN_MIN_SAMPLE = 8;
+    public static final BigDecimal BREADTH_BREAKDOWN_MAX_SMA50_PCT = new BigDecimal("0.20");
+    public static final BigDecimal BREADTH_BREAKDOWN_MAX_SMA200_PCT = new BigDecimal("0.35");
+    public static final BigDecimal BREADTH_BREAKDOWN_MAX_RET20_MEDIAN = new BigDecimal("-0.05");
+
+    /** 單一產業單日廣度崩壞評估結果；eligible=false 代表樣本不足或有效覆蓋率低於 70%（不觸發崩壞，亦不計為確認修復）。 */
+    public record SectorBreadthStatus(boolean eligible, boolean breakdown) {
+        public static final SectorBreadthStatus INSUFFICIENT = new SectorBreadthStatus(false, false);
+        public static final SectorBreadthStatus HEALTHY = new SectorBreadthStatus(true, false);
+        public static final SectorBreadthStatus BREAKDOWN = new SectorBreadthStatus(true, true);
+    }
+
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
     private final StockQuoteRepository quotes;
@@ -134,6 +147,60 @@ public class SectorMoneyFlowService {
             return SectorMoneyFlowDaily.FLOW_OUTFLOW;
         }
         return SectorMoneyFlowDaily.FLOW_NEUTRAL;
+    }
+
+    /**
+     * 全系統單一入口：判定產業單日快照是否通過樣本覆蓋門檻並觸發板塊廣度崩壞。
+     * 資格門檻：stockCount >= 8，且 SMA50 / SMA200 / 20D 報酬有效分母皆 >= 8 且 >= 70% stockCount（整數精確判定 denom * 10 >= stockCount * 7）。
+     * 觸發條件：breadthAboveSma50Pct <= 0.20 且 breadthAboveSma200Pct <= 0.35 且 return20dMedian <= -0.05。
+     */
+    public static SectorBreadthStatus evaluateBreadthBreakdown(SectorMoneyFlowDaily snapshot) {
+        if (snapshot == null) {
+            return SectorBreadthStatus.INSUFFICIENT;
+        }
+        int stockCount = snapshot.getStockCount();
+        int sma50Total = snapshot.getBreadthSma50Total();
+        int sma200Total = snapshot.getBreadthSma200Total();
+        int ret20Count = snapshot.getReturn20dCount();
+        if (stockCount < BREADTH_BREAKDOWN_MIN_SAMPLE
+                || sma50Total < BREADTH_BREAKDOWN_MIN_SAMPLE
+                || sma200Total < BREADTH_BREAKDOWN_MIN_SAMPLE
+                || ret20Count < BREADTH_BREAKDOWN_MIN_SAMPLE) {
+            return SectorBreadthStatus.INSUFFICIENT;
+        }
+        long minCoveredTimesTen = stockCount * 7L;
+        if (sma50Total * 10L < minCoveredTimesTen
+                || sma200Total * 10L < minCoveredTimesTen
+                || ret20Count * 10L < minCoveredTimesTen) {
+            return SectorBreadthStatus.INSUFFICIENT;
+        }
+        if (snapshot.getBreadthAboveSma50Pct() == null
+                || snapshot.getBreadthAboveSma200Pct() == null
+                || snapshot.getReturn20dMedian() == null) {
+            return SectorBreadthStatus.INSUFFICIENT;
+        }
+        boolean breakdown = snapshot.getBreadthAboveSma50Pct().compareTo(BREADTH_BREAKDOWN_MAX_SMA50_PCT) <= 0
+                && snapshot.getBreadthAboveSma200Pct().compareTo(BREADTH_BREAKDOWN_MAX_SMA200_PCT) <= 0
+                && snapshot.getReturn20dMedian().compareTo(BREADTH_BREAKDOWN_MAX_RET20_MEDIAN) <= 0;
+        return breakdown ? SectorBreadthStatus.BREAKDOWN : SectorBreadthStatus.HEALTHY;
+    }
+
+    /** 嚴格驗證快照與評估日同日一致後再判定廣度崩壞；跨日回退快照僅供展示，絕不觸發風控縮倉。 */
+    public static boolean isSameDayBreadthBreakdown(SectorMoneyFlowDaily snapshot, LocalDate expectedTradeDate) {
+        if (snapshot == null || expectedTradeDate == null || !expectedTradeDate.equals(snapshot.getTradeDate())) {
+            return false;
+        }
+        return evaluateBreadthBreakdown(snapshot).breakdown();
+    }
+
+    /** 供單股即時分析查詢所屬產業於評估日是否處於板塊廣度崩壞狀態（純唯讀，嚴格同日）。 */
+    @Transactional(readOnly = true)
+    public boolean isIndustryBreadthBreakdown(String industryCode, LocalDate tradeDate) {
+        if (industryCode == null || industryCode.isBlank() || tradeDate == null) {
+            return false;
+        }
+        Optional<SectorMoneyFlowDaily> snapshot = sectorMoneyFlows.findByTradeDateAndIndustryCode(tradeDate, industryCode);
+        return snapshot.isPresent() && isSameDayBreadthBreakdown(snapshot.get(), tradeDate);
     }
 
     /** 依個股、同業中位數與 SPY 報酬對照分類相對強弱標籤。 */
@@ -251,7 +318,11 @@ public class SectorMoneyFlowService {
                     continue;
                 }
                 List<StockIndustryHistory> stockIndHistory = historyByFigi.getOrDefault(figi, List.of());
-                StockIndustry todayInd = resolveIndustryAt(stockIndHistory, cutoff);
+                Instant tradeDateCutoff = sessionCloseCache.getOrDefault(tradeDate, cutoff);
+                if (tradeDateCutoff.isAfter(cutoff)) {
+                    tradeDateCutoff = cutoff;
+                }
+                StockIndustry todayInd = resolveIndustryAt(stockIndHistory, tradeDateCutoff);
                 boolean hasValidTradeDateBar = false;
                 BigDecimal latestClose = null;
 

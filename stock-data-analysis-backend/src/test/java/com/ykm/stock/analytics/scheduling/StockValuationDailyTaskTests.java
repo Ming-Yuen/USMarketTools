@@ -85,6 +85,7 @@ class StockValuationDailyTaskTests {
 
     private final Map<String, List<StockFinancialPeriod>> storedPeriods = new LinkedHashMap<>();
     private final Map<String, StockValuationLatest> storedLatest = new LinkedHashMap<>();
+    private final Map<String, StockStatus> storedStatuses = new LinkedHashMap<>();
     private final List<FinancialReport> currentReports = new ArrayList<>();
 
     private StockValuationService valuationService;
@@ -114,6 +115,40 @@ class StockValuationDailyTaskTests {
         when(calendar.getLastClosedTradingDay(any())).thenReturn(DAY_NOV_12);
         when(calendar.getSessionCloseAt(any())).thenReturn(CLOSE_NOV_12);
         when(calendar.getSessionOpenAt(any())).thenReturn(CLOSE_NOV_12.minusSeconds(6 * 3600));
+
+        // 預設大盤基準股 SPY 與 QQQ 主檔與當日拆股狀態均就緒，個別測試可覆寫模擬基準未到齊
+        Stock defaultSpy = new Stock();
+        defaultSpy.setFigi("DEFAULT_SPY");
+        defaultSpy.setSymbol("SPY");
+        defaultSpy.setStockType("ETF");
+        defaultSpy.setActiveStatus(ActiveStatus.ACTIVE);
+        Stock defaultQqq = new Stock();
+        defaultQqq.setFigi("DEFAULT_QQQ");
+        defaultQqq.setSymbol("QQQ");
+        defaultQqq.setStockType("ETF");
+        defaultQqq.setActiveStatus(ActiveStatus.ACTIVE);
+        StockStatus defaultSpyStatus = new StockStatus();
+        defaultSpyStatus.setFigi("DEFAULT_SPY");
+        defaultSpyStatus.setSplitFromDate(LocalDate.of(2014, 1, 1));
+        defaultSpyStatus.setSplitDate(DAY_NOV_12);
+        StockStatus defaultQqqStatus = new StockStatus();
+        defaultQqqStatus.setFigi("DEFAULT_QQQ");
+        defaultQqqStatus.setSplitFromDate(LocalDate.of(2014, 1, 1));
+        defaultQqqStatus.setSplitDate(DAY_NOV_12);
+        storedStatuses.clear();
+        storedStatuses.put("DEFAULT_SPY", defaultSpyStatus);
+        storedStatuses.put("DEFAULT_QQQ", defaultQqqStatus);
+        when(stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ")))
+                .thenReturn(List.of(defaultSpy, defaultQqq));
+        when(statuses.findAllById(anyCollection())).thenAnswer(inv -> {
+            Collection<String> ids = inv.getArgument(0);
+            List<StockStatus> out = new ArrayList<>();
+            for (String id : ids) {
+                StockStatus st = storedStatuses.get(id);
+                if (st != null) out.add(st);
+            }
+            return out;
+        });
 
         doAnswer(invocation -> {
             Object arg = invocation.getArgument(0);
@@ -535,7 +570,8 @@ class StockValuationDailyTaskTests {
 
         when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(batch1, batch2));
         when(stocks.findAllById(anyCollection())).thenReturn(List.of(batch1.stock(), batch2.stock()));
-        when(statuses.findAllById(anyCollection())).thenReturn(List.of(batch1.status(), batch2.status()));
+        storedStatuses.put("F_B1", batch1.status());
+        storedStatuses.put("F_B2", batch2.status());
         when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(batch1.status(), batch2.status()));
         when(latestRepo.findMaxValuationDateAtOrBefore(DAY_NOV_12)).thenReturn(Optional.of(DAY_NOV_12));
         FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
@@ -615,6 +651,110 @@ class StockValuationDailyTaskTests {
         org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
     }
 
+    /**
+     * Scenario：拆股覆蓋未達 95%（含 ADR）、基準缺 QQQ 或 SPY/QQQ 拆股未到齊時，延後下游並寫入冪等 EOD_PIPELINE_DEFERRED 警告；
+     * 發布前重讀最新 StockStatus 避免過期快照誤判；待補齊後重跑，自動發布下游、將當日及先前未讀延後警告標為已讀，
+     * 並安全以 TaskGroup.SCHEDULE 帶 tradeDate 觸發 CHIP_EVENT_DAILY_SYNC；
+     * 排程已停用（無 trigger）或排程器未啟動時安全略過觸發且不拋例外。
+     */
+    @Test
+    void splitReadinessGuardEmitsDeferredWarningAutoMarksReadAndTriggersChipSyncSafely() throws Exception {
+        ActiveStockWithStatus op1 = stockWithStatus("F_OP1", "OPONE");
+        op1.status().setSplitDate(DAY_NOV_12.minusDays(1));
+        StockStatus freshOp1 = new StockStatus();
+        freshOp1.setFigi("F_OP1");
+        freshOp1.setSplitFromDate(LocalDate.of(2014, 1, 1));
+        freshOp1.setSplitDate(DAY_NOV_12.minusDays(1));
+        freshOp1.setQuoteDate(DAY_NOV_12);
+
+        Stock spy = new Stock();
+        spy.setFigi("F_SPY");
+        spy.setSymbol("SPY");
+        spy.setStockType("ETF");
+        spy.setActiveStatus(ActiveStatus.ACTIVE);
+        Stock qqq = new Stock();
+        qqq.setFigi("F_QQQ");
+        qqq.setSymbol("QQQ");
+        qqq.setStockType("ETF");
+        qqq.setActiveStatus(ActiveStatus.ACTIVE);
+        StockStatus spyStatus = new StockStatus();
+        spyStatus.setFigi("F_SPY");
+        spyStatus.setSplitFromDate(LocalDate.of(2014, 1, 1));
+        spyStatus.setSplitDate(DAY_NOV_12);
+        StockStatus qqqStatus = new StockStatus();
+        qqqStatus.setFigi("F_QQQ");
+        qqqStatus.setSplitFromDate(LocalDate.of(2014, 1, 1));
+        qqqStatus.setSplitDate(DAY_NOV_12);
+
+        when(stocks.findValuationStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(op1));
+        when(stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ"))).thenReturn(List.of(spy, qqq));
+        when(stocks.findAllById(anyCollection())).thenReturn(List.of(op1.stock()));
+        when(statuses.findAllById(anyCollection())).thenAnswer(inv -> {
+            Collection<String> ids = inv.getArgument(0);
+            List<StockStatus> out = new ArrayList<>();
+            if (ids.contains("F_SPY")) out.add(spyStatus);
+            if (ids.contains("F_QQQ")) out.add(qqqStatus);
+            if (ids.contains("F_OP1")) out.add(freshOp1);
+            return out;
+        });
+        when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(op1.status()));
+        when(latestRepo.findMaxValuationDateAtOrBefore(DAY_NOV_12)).thenReturn(Optional.of(DAY_NOV_12));
+        FutuService.ObservationSession session = mock(FutuService.ObservationSession.class);
+        when(futu.openObservationSession()).thenReturn(session);
+        when(session.supportedUsStocks()).thenReturn(java.util.Set.of());
+
+        com.ykm.stock.analytics.repository.jpa.InAppNotificationRepository notifRepo =
+                mock(com.ykm.stock.analytics.repository.jpa.InAppNotificationRepository.class);
+        org.quartz.Scheduler scheduler = mock(org.quartz.Scheduler.class);
+        org.quartz.Trigger activeTrigger = mock(org.quartz.Trigger.class);
+        org.quartz.JobKey chipKey = org.quartz.JobKey.jobKey(
+                com.ykm.stock.analytics.constant.TaskCode.CHIP_EVENT_DAILY_SYNC,
+                com.ykm.stock.analytics.enums.TaskGroup.SCHEDULE.name());
+        when(scheduler.isStarted()).thenReturn(true);
+        when(scheduler.checkExists(chipKey)).thenReturn(true);
+        org.mockito.Mockito.doReturn(List.of(activeTrigger)).when(scheduler).getTriggersOfJob(chipKey);
+        org.springframework.test.util.ReflectionTestUtils.setField(task, "notificationRepository", notifRepo);
+        org.springframework.test.util.ReflectionTestUtils.setField(task, "scheduler", scheduler);
+
+        // 1) 營運股 split_date 停在 D-1 -> 延後下游並發 EOD_PIPELINE_DEFERRED
+        when(notifRepo.existsByDedupKey("EOD_DEFERRED:" + DAY_NOV_12)).thenReturn(false);
+        task.execute(null);
+        org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService, portfolioClosingService);
+        org.mockito.ArgumentCaptor<com.ykm.stock.analytics.model.entity.InAppNotification> notifCaptor =
+                org.mockito.ArgumentCaptor.forClass(com.ykm.stock.analytics.model.entity.InAppNotification.class);
+        org.mockito.Mockito.verify(notifRepo).save(notifCaptor.capture());
+        assertThat(notifCaptor.getValue().getAlertCode()).isEqualTo(StockValuationDailyTask.ALERT_EOD_PIPELINE_DEFERRED);
+        assertThat(notifCaptor.getValue().getPayload().get("reason")).isEqualTo("SPLITS_NOT_READY");
+        org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.never()).triggerJob(any(), any());
+
+        // 2) 營運股最新 DB 狀態已補齊（即使入口快照 op1.status 仍是 D-1），但基準缺 QQQ -> 仍延後（BENCHMARK_SPLITS_NOT_READY）
+        freshOp1.setSplitDate(DAY_NOV_12);
+        when(stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ"))).thenReturn(List.of(spy));
+        when(notifRepo.existsByDedupKey("EOD_DEFERRED:" + DAY_NOV_12)).thenReturn(true);
+        task.execute(null);
+        org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService);
+        org.mockito.Mockito.verify(notifRepo, org.mockito.Mockito.times(1)).save(any());
+
+        // 3) SPY 與 QQQ 皆存在且就緒 -> 即使入口快照 op1.status 仍停在 D-1，重讀最新狀態仍正確放行、自動標記已讀並帶 tradeDate 觸發籌碼同步
+        when(stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ"))).thenReturn(List.of(spy, qqq));
+        task.execute(null);
+        org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(notifRepo).markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(
+                eq(StockValuationDailyTask.ALERT_EOD_PIPELINE_DEFERRED), eq(DAY_NOV_12), eq(NOW));
+        org.mockito.ArgumentCaptor<JobDataMap> triggerDataCaptor = org.mockito.ArgumentCaptor.forClass(JobDataMap.class);
+        org.mockito.Mockito.verify(scheduler).triggerJob(eq(chipKey), triggerDataCaptor.capture());
+        assertThat(triggerDataCaptor.getValue().getString("tradeDate")).isEqualTo(DAY_NOV_12.toString());
+
+        // 4) 籌碼排程停用（無 active trigger）或 app.schedules.enabled=false 時，重跑安全略過觸發且不拋例外
+        org.mockito.Mockito.doReturn(List.of()).when(scheduler).getTriggersOfJob(chipKey);
+        task.execute(null);
+        when(scheduler.isStarted()).thenReturn(false);
+        task.execute(null);
+        org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.times(1)).triggerJob(eq(chipKey), any(JobDataMap.class));
+    }
+
     private StockShareObservation persistedObsFrom(FutuService.ShareSnapshot snap, long shares) {
         StockShareObservation obs = new StockShareObservation();
         obs.setFigi("F_OBS");
@@ -650,10 +790,10 @@ class StockValuationDailyTaskTests {
 
     private void stubStock(ActiveStockWithStatus item, String price, long shares) {
         String figi = item.stock().getFigi();
+        storedStatuses.put(figi, item.status());
         when(stocks.findById(figi)).thenReturn(Optional.of(item.stock()));
         when(stocks.findAllById(anyCollection())).thenReturn(List.of(item.stock()));
         when(statuses.findById(figi)).thenReturn(Optional.of(item.status()));
-        when(statuses.findAllById(anyCollection())).thenReturn(List.of(item.status()));
         when(statuses.findAllByIdForUpdate(anyCollection())).thenReturn(List.of(item.status()));
 
         StockQuote q = new StockQuote();

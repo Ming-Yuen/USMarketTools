@@ -3,9 +3,14 @@ package com.ykm.stock.analytics.scheduling;
 import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.enums.ActiveStatus;
+import com.ykm.stock.analytics.enums.TaskGroup;
+import com.ykm.stock.analytics.model.entity.InAppNotification;
+import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockShareObservation;
+import com.ykm.stock.analytics.model.entity.StockStatus;
 import com.ykm.stock.analytics.model.projection.ActiveStockWithStatus;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
+import com.ykm.stock.analytics.repository.jpa.InAppNotificationRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockShareObservationRepository;
@@ -13,6 +18,7 @@ import com.ykm.stock.analytics.repository.jpa.StockStatusRepository;
 import com.ykm.stock.analytics.repository.jpa.StockValuationLatestRepository;
 import com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService;
 import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService;
+import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.SignalTrackingService;
 import com.ykm.stock.analytics.service.futu.FutuService;
 import com.ykm.stock.analytics.service.market.MarketStatusService;
@@ -25,15 +31,24 @@ import org.quartz.DisallowConcurrentExecution;
 import org.quartz.Job;
 import org.quartz.JobDataMap;
 import org.quartz.JobExecutionContext;
+import org.quartz.JobKey;
+import org.quartz.Scheduler;
+import org.quartz.SchedulerException;
+import org.quartz.Trigger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -47,9 +62,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Slf4j
 public class StockValuationDailyTask implements Job {
+    public static final String ALERT_EOD_PIPELINE_DEFERRED = "EOD_PIPELINE_DEFERRED";
+
     private static final int SHARE_SNAPSHOT_BATCH_SIZE = 400;
     /** 日常全市場發布下游板塊資金流與機會雷達前，目標營運股收齊當日行情的最低覆蓋百分比（容許極少數停牌／缺棒，擋住行情分批同步未完成時提前凍結）。 */
     private static final int MIN_MARKET_QUOTE_COVERAGE_PCT = 95;
+    private static final int MIN_MARKET_SPLIT_COVERAGE_PCT = 95;
+    private static final List<String> REQUIRED_BENCHMARK_SYMBOLS = List.of("SPY", "QQQ");
+    private static final String SPLIT_MISSING_MARKER = "SPLIT_STORED_EVENT_NOT_RETURNED";
 
     private final StockRepository stocks;
     private final StockStatusRepository statuses;
@@ -69,6 +89,10 @@ public class StockValuationDailyTask implements Job {
     private StockQuoteRepository quoteRepository;
     @Autowired(required = false)
     private DailyOpportunityRadarRunRepository radarRunRepository;
+    @Autowired(required = false)
+    private InAppNotificationRepository notificationRepository;
+    @Autowired(required = false)
+    private Scheduler scheduler;
 
     @Override
     public void execute(JobExecutionContext context) {
@@ -76,7 +100,7 @@ public class StockValuationDailyTask implements Job {
         JobDataMap params = context == null ? new JobDataMap() : context.getMergedJobDataMap();
         LocalDate requestedDate = requestedValuationDate(params.getString("valuationDate"), startedAt);
         LocalDate targetDate = requestedDate != null ? requestedDate : calendar.getLastClosedTradingDay(startedAt);
-        boolean forceRebuildPeriods = Boolean.parseBoolean(params.getString("rebuildPeriods"));
+        boolean forceRebuildPeriods = parseBooleanParam(params, "rebuildPeriods");
         String configuredFigis = params.getString("figis");
         boolean marketWideRun = configuredFigis == null || configuredFigis.isBlank();
 
@@ -102,23 +126,33 @@ public class StockValuationDailyTask implements Job {
         log.info("Daily valuation refresh completed | valuationDate={} targets={} rebuiltPeriods={}",
                 targetDate, targetFigis.size(), toRebuild.size());
 
-        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標普通營運股當日行情批次已達覆蓋門檻（>= 95%）時：
+        // 4. 僅於日常全市場執行（非指定歷史日、非局部 figis）、目標普通營運股當日行情／估值／拆股與大盤基準（SPY/QQQ）皆達標時：
         //    - 訊號結算獨立執行（不因當日雷達延後而漏結算）
-        //    - 估值覆蓋達標時串接板塊資金流、每日機會雷達（已凍結同日雷達則跳過避免覆寫）與收盤簡報
+        //    - 估值與拆股就緒時串接板塊資金流、每日機會雷達（已凍結同日雷達則跳過避免覆寫）、收盤簡報與非同步籌碼同步
+        //    - 上游未齊延後時寫入冪等站內警告 EOD_PIPELINE_DEFERRED，後續補跑成功自動標為已讀
         if (requestedDate == null && marketWideRun
                 && sectorMoneyFlowService != null && dailyOpportunityRadarService != null && signalTrackingService != null) {
             List<ActiveStockWithStatus> coverageBase = targets.stream()
-                    .filter(row -> row.stock() != null && com.ykm.stock.analytics.service.analysis.SecurityTypePolicy.isOperatingCompanyType(row.stock().getStockType()))
+                    .filter(row -> row.stock() != null && SecurityTypePolicy.isOperatingCompanyType(row.stock().getStockType()))
                     .toList();
             if (coverageBase.isEmpty()) {
                 coverageBase = targets;
             }
+            List<ActiveStockWithStatus> splitCandidates = targets.stream()
+                    .filter(row -> row.stock() != null && SecurityTypePolicy.supportsValuation(row.stock().getStockType()))
+                    .toList();
+            if (splitCandidates.isEmpty()) {
+                splitCandidates = targets;
+            }
             List<String> coverageFigis = coverageBase.stream().map(row -> row.stock().getFigi()).toList();
-            long readyQuotes = quoteRepository != null
-                    ? quoteRepository.countByQuoteDateAndFigiIn(targetDate, coverageFigis)
-                    : coverageBase.stream()
+            List<String> splitCandidateFigis = splitCandidates.stream().map(row -> row.stock().getFigi()).toList();
+            Set<String> splitQuotedFigis = quoteRepository != null
+                    ? new HashSet<>(quoteRepository.findQuotedFigisByDate(targetDate, splitCandidateFigis))
+                    : splitCandidates.stream()
                             .filter(row -> row.status() != null && targetDate.equals(row.status().getQuoteDate()))
-                            .count();
+                            .map(row -> row.stock().getFigi())
+                            .collect(Collectors.toSet());
+            long readyQuotes = coverageFigis.stream().filter(splitQuotedFigis::contains).count();
             boolean quotesBatchReady = readyQuotes * 100L >= (long) coverageBase.size() * MIN_MARKET_QUOTE_COVERAGE_PCT;
             if (quotesBatchReady) {
                 int settled = signalTrackingService.settlePendingSignals(targetDate);
@@ -129,7 +163,25 @@ public class StockValuationDailyTask implements Job {
                     && (quoteRepository == null || latestValuations == null
                     || latestValuations.countByValuationDateAndFigiIn(targetDate, coverageFigis) * 100L
                             >= (long) coverageBase.size() * MIN_MARKET_QUOTE_COVERAGE_PCT);
-            if (quotesBatchReady && valuationsReady) {
+
+            // 發布前重讀最新 StockStatus，避免股數與估值刷新期間基本面 Job 已補齊拆股卻仍用入口過期快照誤判
+            Map<String, StockStatus> freshStatusMap = splitQuotedFigis.isEmpty() ? Map.of()
+                    : statuses.findAllById(splitQuotedFigis).stream()
+                            .collect(Collectors.toMap(StockStatus::getFigi, s -> s, (a, b) -> a));
+            List<StockStatus> splitBase = splitCandidates.stream()
+                    .filter(row -> splitQuotedFigis.contains(row.stock().getFigi()))
+                    .map(row -> freshStatusMap.getOrDefault(row.stock().getFigi(), row.status()))
+                    .filter(st -> !hasSplitDiscrepancyMessage(st))
+                    .toList();
+            long readySplits = splitBase.stream()
+                    .filter(st -> hasValidSplitCoverageThrough(st, targetDate))
+                    .count();
+            boolean operatingSplitsReady = !splitBase.isEmpty()
+                    && readySplits * 100L >= (long) splitBase.size() * MIN_MARKET_SPLIT_COVERAGE_PCT;
+            boolean benchmarksSplitReady = areBenchmarkSplitsReady(targetDate);
+            boolean splitsReady = operatingSplitsReady && benchmarksSplitReady;
+
+            if (quotesBatchReady && valuationsReady && splitsReady) {
                 boolean radarAlreadyFrozen = radarRunRepository != null && radarRunRepository.existsById(snapshotDate);
                 if (!radarAlreadyFrozen) {
                     sectorMoneyFlowService.refreshDaily(snapshotDate, startedAt);
@@ -137,18 +189,34 @@ public class StockValuationDailyTask implements Job {
                 } else {
                     log.info("Daily radar already frozen; skipping sector flow & radar refresh | tradeDate={}", snapshotDate);
                 }
-                // 4b. 獨立容錯隔離執行持倉自動體檢與站內收盤簡報／提醒寫入：異常僅記警告日誌，絕不回滾上游估值、板塊資金流、雷達與訊號結算
-                if (portfolioClosingService != null) {
-                    try {
-                        portfolioClosingService.publishDailyClosing(snapshotDate, startedAt);
-                    } catch (RuntimeException ex) {
-                        log.warn("Portfolio closing health check & briefing failed (isolated; upstream committed) | tradeDate={}",
-                                snapshotDate, ex);
+                boolean radarPublished = radarRunRepository == null || radarRunRepository.existsById(snapshotDate);
+                if (radarPublished) {
+                    // 4b. 獨立容錯隔離執行持倉自動體檢與站內收盤簡報／提醒寫入：異常僅記警告日誌，絕不回滾上游估值、板塊資金流、雷達與訊號結算
+                    if (portfolioClosingService != null) {
+                        try {
+                            portfolioClosingService.publishDailyClosing(snapshotDate, startedAt);
+                        } catch (RuntimeException ex) {
+                            log.warn("Portfolio closing health check & briefing failed (isolated; upstream committed) | tradeDate={}",
+                                    snapshotDate, ex);
+                        }
                     }
+                    // 4c. 既有同日延後警告自動標為已讀，並於雷達正式發布後非同步觸發籌碼與異動事件同步
+                    markDeferredNotificationReadSafely(targetDate);
+                    triggerChipEventSyncSafely(snapshotDate);
+                } else {
+                    log.warn("Batch 03 downstream deferred: radar not published after refresh | targetDate={}", targetDate);
+                    emitDeferredNotificationSafely(targetDate, "RADAR_DEFERRED_MARKET_CONTEXT_NOT_READY",
+                            readyQuotes, coverageBase.size(), readySplits, splitBase.size(), benchmarksSplitReady);
                 }
             } else {
-                log.warn("Batch 03 downstream deferred: targetDate={} readyQuotes={}/{} snapshotDate={} valuationsReady={}",
-                        targetDate, readyQuotes, coverageBase.size(), snapshotDate, valuationsReady);
+                String deferReason = !quotesBatchReady ? "QUOTES_NOT_READY"
+                        : (!valuationsReady ? "VALUATIONS_NOT_READY"
+                        : (!benchmarksSplitReady ? "BENCHMARK_SPLITS_NOT_READY" : "SPLITS_NOT_READY"));
+                log.warn("Batch 03 downstream deferred: targetDate={} reason={} readyQuotes={}/{} snapshotDate={} valuationsReady={} readySplits={}/{} benchmarksSplitReady={}",
+                        targetDate, deferReason, readyQuotes, coverageBase.size(), snapshotDate,
+                        valuationsReady, readySplits, splitBase.size(), benchmarksSplitReady);
+                emitDeferredNotificationSafely(targetDate, deferReason,
+                        readyQuotes, coverageBase.size(), readySplits, splitBase.size(), benchmarksSplitReady);
             }
         }
 
@@ -278,5 +346,147 @@ public class StockValuationDailyTask implements Job {
         if (stored == null) return false;
         return (stored.getPeTtmRate() == null && incoming.peTtmRate() != null)
                 || (stored.getPbRate() == null && incoming.pbRate() != null);
+    }
+
+    private boolean parseBooleanParam(JobDataMap params, String key) {
+        if (params == null || !params.containsKey(key)) {
+            return false;
+        }
+        Object raw = params.get(key);
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        return raw != null && Boolean.parseBoolean(String.valueOf(raw).trim());
+    }
+
+    private boolean areBenchmarkSplitsReady(LocalDate targetDate) {
+        List<Stock> benchmarks = stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, REQUIRED_BENCHMARK_SYMBOLS);
+        if (benchmarks == null || benchmarks.isEmpty()) {
+            return false;
+        }
+        Set<String> presentSymbols = benchmarks.stream()
+                .filter(s -> s != null && s.getSymbol() != null)
+                .map(s -> s.getSymbol().toUpperCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+        for (String required : REQUIRED_BENCHMARK_SYMBOLS) {
+            if (!presentSymbols.contains(required)) {
+                return false;
+            }
+        }
+        List<String> figis = benchmarks.stream().map(Stock::getFigi).distinct().toList();
+        Map<String, StockStatus> statusMap = statuses.findAllById(figis).stream()
+                .collect(Collectors.toMap(StockStatus::getFigi, s -> s, (a, b) -> a));
+        for (Stock benchmark : benchmarks) {
+            if (!hasValidSplitCoverageThrough(statusMap.get(benchmark.getFigi()), targetDate)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean hasValidSplitCoverageThrough(StockStatus status, LocalDate targetDate) {
+        if (status == null || status.getSplitFromDate() == null || status.getSplitDate() == null) {
+            return false;
+        }
+        if (status.getSplitDate().isBefore(targetDate)) {
+            return false;
+        }
+        String msg = status.getSplitMessage();
+        return msg == null || msg.isBlank() || msg.toUpperCase(Locale.ROOT).startsWith("WARNING:");
+    }
+
+    private boolean hasSplitDiscrepancyMessage(StockStatus status) {
+        return status != null && status.getSplitMessage() != null && status.getSplitMessage().contains(SPLIT_MISSING_MARKER);
+    }
+
+    private String deferredDedupKey(LocalDate targetDate) {
+        return "EOD_DEFERRED:" + targetDate;
+    }
+
+    private void emitDeferredNotificationSafely(LocalDate targetDate,
+                                                String reason,
+                                                long readyQuotes,
+                                                int totalTargets,
+                                                long readySplits,
+                                                int splitTargets,
+                                                boolean benchmarksSplitReady) {
+        if (notificationRepository == null || targetDate == null) {
+            return;
+        }
+        String dedupKey = deferredDedupKey(targetDate);
+        try {
+            TransactionTemplate requiresNewTx = new TransactionTemplate(transactions.getTransactionManager());
+            requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            requiresNewTx.executeWithoutResult(tx -> {
+                if (notificationRepository.existsByDedupKey(dedupKey)) {
+                    return;
+                }
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("tradeDate", targetDate.toString());
+                payload.put("reason", reason);
+                payload.put("readyQuotes", readyQuotes);
+                payload.put("totalTargets", totalTargets);
+                payload.put("readySplits", readySplits);
+                payload.put("splitTargets", splitTargets);
+                payload.put("benchmarksSplitReady", benchmarksSplitReady);
+
+                InAppNotification notif = new InAppNotification();
+                notif.setDedupKey(dedupKey);
+                notif.setTradeDate(targetDate);
+                notif.setSeverity(InAppNotification.SEVERITY_WARNING);
+                notif.setCategory(InAppNotification.CATEGORY_CLOSING_BRIEFING);
+                notif.setAlertCode(ALERT_EOD_PIPELINE_DEFERRED);
+                notif.setPayload(payload);
+                notif.setRead(false);
+                notif.setReadAt(null);
+                notif.setCreatedAt(dateTimeService.now());
+                notificationRepository.save(notif);
+            });
+        } catch (DataIntegrityViolationException ex) {
+            log.debug("Deferred EOD notification already persisted concurrently | tradeDate={}", targetDate);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to emit EOD_PIPELINE_DEFERRED notification (isolated) | tradeDate={}", targetDate, ex);
+        }
+    }
+
+    private void markDeferredNotificationReadSafely(LocalDate targetDate) {
+        if (notificationRepository == null || targetDate == null) {
+            return;
+        }
+        try {
+            TransactionTemplate requiresNewTx = new TransactionTemplate(transactions.getTransactionManager());
+            requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            requiresNewTx.executeWithoutResult(tx ->
+                    notificationRepository.markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(
+                            ALERT_EOD_PIPELINE_DEFERRED, targetDate, dateTimeService.now()));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to auto-mark EOD_PIPELINE_DEFERRED read (isolated) | tradeDate={}", targetDate, ex);
+        }
+    }
+
+    private void triggerChipEventSyncSafely(LocalDate tradeDate) {
+        if (scheduler == null) {
+            return;
+        }
+        JobKey jobKey = JobKey.jobKey(TaskCode.CHIP_EVENT_DAILY_SYNC, TaskGroup.SCHEDULE.name());
+        try {
+            if (!scheduler.isStarted() || !scheduler.checkExists(jobKey)) {
+                log.info("Skip post-radar chip event trigger: scheduler not started or job absent | tradeDate={}", tradeDate);
+                return;
+            }
+            List<? extends Trigger> triggers = scheduler.getTriggersOfJob(jobKey);
+            if (triggers == null || triggers.isEmpty()) {
+                log.info("Skip post-radar chip event trigger: schedule disabled or expired | tradeDate={}", tradeDate);
+                return;
+            }
+            JobDataMap triggerData = new JobDataMap();
+            if (tradeDate != null) {
+                triggerData.put("tradeDate", tradeDate.toString());
+            }
+            scheduler.triggerJob(jobKey, triggerData);
+            log.info("Triggered post-radar chip event sync asynchronously | tradeDate={}", tradeDate);
+        } catch (SchedulerException | RuntimeException ex) {
+            log.warn("Post-radar chip event trigger failed (fallback cron will catch up) | tradeDate={}", tradeDate, ex);
+        }
     }
 }

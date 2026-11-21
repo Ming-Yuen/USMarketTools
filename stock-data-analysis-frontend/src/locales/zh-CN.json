@@ -1525,6 +1525,11 @@
     "notSelectedAsPreferred": "此计划尚未被选为首选计划。",
     "executiveSummary": {
       "title": "综合估值与观察结论",
+      "starterOneSixth": {
+        "both": "（原 1/3 底仓因宏观警戒与所属板块广度崩坏再减半）",
+        "sector": "（原 1/3 底仓因所属板块广度崩坏再减半）",
+        "macro": "（原 1/3 底仓因宏观警戒再减半）"
+      },
       "disclaimer": "以自身历史与同行市场实际成交分位合成参考价带；仅反映市场相对估值位置，不等同内在价值、价格预测或买卖指令。",
       "verdicts": {
         "DEEP_UNDERVALUED": "显著低于市场参考带（严重偏低）",
@@ -1575,6 +1580,7 @@
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "财报或重大事件临近（{{eventDate}}），新入场条件受限",
         "EARNINGS_IMMINENT_BLOCK_NO_DATE": "财报或重大事件临近，新入场条件受限",
+        "SECTOR_BREADTH_BREAKDOWN": "所属产业板块均线广度与动能同步恶化（板块广度崩坏），新开仓已采半仓控管",
         "MARKET_REGIME_HEADWIND": "大盘市况处于逆风状态（{{regime}}），左侧接刀风险偏高",
         "MACRO_VOLATILITY_OR_RATE_STRESS": "市场波动率（VIX）或 10Y 美债近 20 期变动处于警戒水位，宜预留额外安全边际并缩减仓位",
         "SUPPORT_HIGH_RISK_BREAKDOWN": "关键支撑已触发高概率真破位诊断，须严格执行止损纪律",
@@ -1908,6 +1914,7 @@
       "tags": {
         "TREND_PULLBACK_STARTER_ONE_THIRD": "1/3 底仓试单",
         "MACRO_HEADWIND_HALF_SIZE": "大盘逆风／高波动半仓控管",
+        "SECTOR_BREADTH_HEADWIND_HALF_SIZE": "所属板块广度崩坏半仓控管",
         "MARKET_REGIME_PAUSE_NEW_ENTRY": "大盘逆风暂缓开仓",
         "SECTOR_CONCENTRATION_WARNING": "行业集中度超标警告（超过上限）",
         "EXISTING_HOLDING_CAPPED": "已扣减既有持仓剩余单档额度",
@@ -1934,13 +1941,13 @@
       "sourceLive": "按目前持仓实时重算",
       "tradeDate": "体检交易日：{{date}}",
       "recalculateLive": "实时重算",
-      "structureHealthy": "持仓结构正常：目前全部持仓无破位、财报逼近、基本面恶化或板块超标警示。",
+      "structureHealthy": "持仓结构正常：目前全部持仓无破位、财报逼近、基本面恶化或板块风险警示。",
       "noItems": "尚未建立个人持仓或重点自选股。点击右侧“持仓／自选管理”或在个股页一键加入。",
       "coverageWarning": "部分持仓数据缺口或非 USD 未计入整体敞口（{{count}} 项），请留意个别项目状态。",
       "dataGapNote": "当日部分检查数据不完整（{{count}} 项缺口），请检查行情、估值或拆股同步状态。",
       "holdingsAlertsTitle": "持仓异常与防守／止盈提醒",
       "watchlistEntriesTitle": "自选股触发有效买点",
-      "sectorAlertsTitle": "行业板块集中度超标提醒",
+      "sectorAlertsTitle": "行业板块风险警示",
       "criticalCount": "严重 {{count}}",
       "warningCount": "警告 {{count}}",
       "infoCount": "提示 {{count}}",
@@ -2012,6 +2019,8 @@
       "HOLDING_TARGET_REACHED": "{{symbol}} 收盘达标上方目标 {{targetLevel}}（{{targetPrice}}，收盘 {{closePrice}}，可评估分批减仓）",
       "HOLDING_AT_RESISTANCE_ZONE": "{{symbol}} 进入上方主要阻力区（{{resistanceLower}}–{{resistanceUpper}}），留意获利回吐压力",
       "HOLDING_SECTOR_CONCENTRATION": "行业“{{industryName}}”持仓集中度达 {{exposurePct}}，超过上限 {{maxPct}}",
+      "HOLDING_SECTOR_BREADTH_BREAKDOWN": "行业“{{industryName}}”板块广度崩坏（站上 SMA50 {{breadthAboveSma50Pct}} · 站上 SMA200 {{breadthAboveSma200Pct}} · 20D 中位回报 {{return20dMedian}}），影响持仓 {{affectedSymbols}}，新仓已启用半仓控管",
+      "EOD_PIPELINE_DEFERRED": "{{tradeDate}} 日终下游发布已延后（原因：{{deferReason}}，行情 {{readyQuotes}}/{{totalTargets}} · 拆股 {{readySplits}}/{{splitTargets}}），请检查上游同步后重跑估值任务",
       "WATCHLIST_ACCUMULATE_SUPPORT": "自选股 {{symbol}} 进入低估支撑有效买入区（收盘 {{closePrice}}，止损 {{protectiveStop}}，建议 {{suggestedShares}} 股）",
       "WATCHLIST_TREND_PULLBACK_STARTER": "自选股 {{symbol}} 触发强势趋势回踩试单（收盘 {{closePrice}}，止损 {{protectiveStop}}，建议 {{suggestedShares}} 股）",
       "RADAR_TOP_OPPORTUNITY": "雷达精选 {{symbol}}（{{trackType}} · 收盘 {{closePrice}}）",
@@ -2019,6 +2028,13 @@
       "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盘简报已就绪：严重 {{criticalCount}} · 警告 {{warningCount}} · 雷达精选 {{radarTop5Count}} 档",
       "HY_OAS_CREDIT_STRESS": "债市信用利差异常扩大：美国高收益债 OAS 报 {{oasPct}}%（较前 20 期均值 {{deltaBps}} bps，观测日 {{observationDate}}），已启动宏观防御提示。",
       "HOLDING_EARNINGS_GAP_EXCEEDS_STOP": "{{symbol}} 财报前（{{eventDate}}，尚余 {{daysToEarnings}} 天）期权隐含波动 ±{{impliedMovePct}} 已高于保护止损距离 {{stopDistancePct}}，须留意财报跳空打穿止损风险。"
+    },
+    "deferReasons": {
+      "QUOTES_NOT_READY": "当日收市行情未齐",
+      "VALUATIONS_NOT_READY": "当日估值快照未齐",
+      "SPLITS_NOT_READY": "当日拆股覆盖未达 95%",
+      "BENCHMARK_SPLITS_NOT_READY": "SPY/QQQ 基准拆股未就绪",
+      "RADAR_DEFERRED_MARKET_CONTEXT_NOT_READY": "大盘市况数据未就绪"
     }
   },
   "stockScreener": {
@@ -2484,7 +2500,9 @@
         "scaleTags": {
           "FULL": "标准仓位",
           "1/3": "1/3 试单",
-          "1/2": "1/2 缩仓",
+          "1/2": "1/2 逆风缩仓",
+          "1/2_SECTOR": "1/2 板块缩仓",
+          "1/2_MACRO_SECTOR": "1/2 宏观／板块缩仓",
           "1/6": "1/6 叠加缩仓",
           "PAUSED": "暂缓新仓",
           "NOT_RECOMMENDED": "不建议新增",

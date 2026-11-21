@@ -1,9 +1,11 @@
 package com.ykm.stock.analytics.service.report;
 
+import com.ykm.stock.analytics.model.dto.stockInsight.analysis.PositionSizingDto;
 import com.ykm.stock.analytics.model.dto.stockInsight.report.BuyRankingDtos;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -88,11 +90,22 @@ public final class BuyRankingReasonFormatter {
         return assetType == null ? "" : assetType;
     }
 
-    public static String scaleTagLabel(String scaleTag, String locale) {
+    public static String scaleTagLabel(String scaleTag, List<String> sizingTags, String locale) {
         if (scaleTag == null || scaleTag.isBlank()) {
             return "";
         }
         String loc = normalizeLocale(locale, null);
+        if ("1/2".equals(scaleTag)) {
+            boolean hasMacro = sizingTags != null && sizingTags.contains(PositionSizingDto.TAG_MACRO_HEADWIND_HALF_SIZE);
+            boolean hasSector = sizingTags != null && sizingTags.contains(PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE);
+            if (hasSector && !hasMacro) {
+                return pick(loc, "1/2 板塊逆風縮倉", "1/2 板块逆风缩仓", "1/2 Sector Cut");
+            }
+            if (hasSector && hasMacro) {
+                return pick(loc, "1/2 宏觀／板塊逆風縮倉", "1/2 宏观／板块逆风缩仓", "1/2 Macro/Sector Cut");
+            }
+            return pick(loc, "1/2 逆風縮倉", "1/2 逆风缩仓", "1/2 Headwind Cut");
+        }
         return switch (scaleTag) {
             case "FULL" -> switch (loc) {
                 case LOCALE_ZH_CN -> "标准仓位";
@@ -103,11 +116,6 @@ public final class BuyRankingReasonFormatter {
                 case LOCALE_ZH_CN -> "1/3 试单缩仓";
                 case LOCALE_EN -> "1/3 Starter";
                 default -> "1/3 試單縮倉";
-            };
-            case "1/2" -> switch (loc) {
-                case LOCALE_ZH_CN -> "1/2 逆风缩仓";
-                case LOCALE_EN -> "1/2 Macro Cut";
-                default -> "1/2 逆風縮倉";
             };
             case "1/6" -> switch (loc) {
                 case LOCALE_ZH_CN -> "1/6 叠加缩仓";
@@ -349,6 +357,12 @@ public final class BuyRankingReasonFormatter {
             parts.add(pick(loc, "⚠ 產業曝險超過設定上限（股數未自動裁減）",
                     "⚠ 行业敞口超过设定上限（股数未自动裁减）",
                     "⚠ Sector Exposure Exceeds Configured Cap (Shares Not Auto-Trimmed)"));
+        }
+        if (item.positionSizingTags() != null
+                && item.positionSizingTags().contains(PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE)) {
+            parts.add(pick(loc, "⚠ 所屬板塊廣度崩壞（新倉半倉控管）",
+                    "⚠ 所属板块广度崩坏（新仓半仓控管）",
+                    "⚠ Sector Breadth Breakdown (Half Size)"));
         }
         boolean hasStaleTag = staleDateFallback
                 || (item.positionSizingTags() != null && item.positionSizingTags().contains("STALE_QUOTE_DATE_FALLBACK"));

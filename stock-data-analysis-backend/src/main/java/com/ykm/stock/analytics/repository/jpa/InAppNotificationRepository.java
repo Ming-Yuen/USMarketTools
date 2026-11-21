@@ -8,14 +8,19 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 public interface InAppNotificationRepository extends JpaRepository<InAppNotification, Long> {
     boolean existsByDedupKey(String dedupKey);
 
     @Query("select n.dedupKey from InAppNotification n where n.dedupKey in :dedupKeys")
     List<String> findExistingDedupKeys(@Param("dedupKeys") Collection<String> dedupKeys);
+
+    Optional<InAppNotification> findTopByAlertCodeAndTradeDateLessThanAndDedupKeyEndingWithOrderByTradeDateDescIdDesc(
+            String alertCode, LocalDate tradeDate, String dedupKeySuffix);
 
     long countByReadFalse();
 
@@ -34,6 +39,12 @@ public interface InAppNotificationRepository extends JpaRepository<InAppNotifica
     @Modifying
     @Query("update InAppNotification n set n.read = true, n.readAt = :readAt where n.id = :id and n.read = false")
     int markReadIfUnread(@Param("id") Long id, @Param("readAt") Instant readAt);
+
+    @Modifying
+    @Query("update InAppNotification n set n.read = true, n.readAt = :readAt where n.alertCode = :alertCode and n.tradeDate <= :tradeDate and n.read = false")
+    int markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(@Param("alertCode") String alertCode,
+                                                             @Param("tradeDate") LocalDate tradeDate,
+                                                             @Param("readAt") Instant readAt);
 
     @Modifying
     @Query("update InAppNotification n set n.read = true, n.readAt = :readAt where n.read = false")

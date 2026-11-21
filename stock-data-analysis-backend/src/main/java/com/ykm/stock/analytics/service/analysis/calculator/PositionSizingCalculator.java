@@ -31,31 +31,12 @@ public class PositionSizingCalculator {
             boolean starterSetup,
             MarketRegime marketRegime,
             boolean macroCautionActive,
+            boolean sectorBreadthBreakdown,
             PortfolioRiskConfigDto config,
             BigDecimal existingHoldingMarketValueUsd,
             BigDecimal currentSectorMarketValueUsd,
             int excludedHoldingsCount
-    ) {
-        public SizingInputs(
-                String currency,
-                String industryCode,
-                BigDecimal entryUpperOrAnchor,
-                BigDecimal currentPrice,
-                BigDecimal protectiveStopPrice,
-                boolean planActionable,
-                boolean starterSetup,
-                MarketRegime marketRegime,
-                boolean macroCautionActive,
-                PortfolioRiskConfigDto config,
-                BigDecimal existingHoldingMarketValueUsd,
-                BigDecimal currentSectorMarketValueUsd,
-                int excludedHoldingsCount
-        ) {
-            this(currency, industryCode, entryUpperOrAnchor, currentPrice, protectiveStopPrice,
-                    planActionable, false, starterSetup, marketRegime, macroCautionActive,
-                    config, existingHoldingMarketValueUsd, currentSectorMarketValueUsd, excludedHoldingsCount);
-        }
-    }
+    ) {}
 
     public PositionSizingDto calculate(SizingInputs inputs) {
         if (inputs == null || inputs.config() == null) {
@@ -147,7 +128,7 @@ public class PositionSizingCalculator {
             );
         }
 
-        // 縮倉疊加係數：以整數分母最後參與除法，避免先四捨五入造成整股偏差
+        // 縮倉疊加係數：大盤逆風／宏觀警戒與所屬板塊廣度崩壞合併於同一環境 1/2 縮倉層，不疊乘為 1/4（試單 1/3 疊加後為 1/6）
         List<String> tags = new ArrayList<>();
         int scaleDenominator = 1;
         if (inputs.starterSetup()) {
@@ -155,9 +136,15 @@ public class PositionSizingCalculator {
             tags.add(PositionSizingDto.TAG_TREND_PULLBACK_STARTER_ONE_THIRD);
         }
         boolean macroHalf = inputs.marketRegime() == MarketRegime.CORRECTION || inputs.macroCautionActive();
+        boolean sectorHalf = inputs.sectorBreadthBreakdown();
         if (macroHalf) {
-            scaleDenominator *= 2;
             tags.add(PositionSizingDto.TAG_MACRO_HEADWIND_HALF_SIZE);
+        }
+        if (sectorHalf) {
+            tags.add(PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE);
+        }
+        if (macroHalf || sectorHalf) {
+            scaleDenominator *= 2;
         }
         String scaleLabel = scaleDenominator == 1 ? "FULL" : ("1/" + scaleDenominator);
         BigDecimal denomBd = BigDecimal.valueOf(scaleDenominator);

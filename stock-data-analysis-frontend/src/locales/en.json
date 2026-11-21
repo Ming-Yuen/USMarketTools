@@ -1074,6 +1074,11 @@
     "notSelectedAsPreferred": "This plan has not been selected as the preferred plan.",
     "executiveSummary": {
       "title": "Valuation Position & Observation Summary",
+      "starterOneSixth": {
+        "both": " (base 1/3 halved due to macro caution and sector breadth breakdown)",
+        "sector": " (base 1/3 halved due to sector breadth breakdown)",
+        "macro": " (base 1/3 halved due to macro caution)"
+      },
       "disclaimer": "Synthesizes objective own-history and peer market multiple quantiles into a reference band. Reflects relative market valuation position only — not intrinsic value, price forecasts, or buy/sell instructions.",
       "verdicts": {
         "DEEP_UNDERVALUED": "Significantly Below Market Band (Deep Discount)",
@@ -1124,6 +1129,7 @@
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "Upcoming earnings or event ({{eventDate}}) restricts new entries",
         "EARNINGS_IMMINENT_BLOCK_NO_DATE": "Upcoming earnings or event restricts new entries",
+        "SECTOR_BREADTH_BREAKDOWN": "Industry breadth and momentum deteriorating together (sector breadth breakdown); new entries capped at half size",
         "MARKET_REGIME_HEADWIND": "Market regime headwind ({{regime}}); avoid catching falling knives",
         "MACRO_VOLATILITY_OR_RATE_STRESS": "Elevated VIX or 10Y Treasury 20-period surge; add safety buffer and halve sizing",
         "SUPPORT_HIGH_RISK_BREAKDOWN": "High-risk support breakdown diagnosed; enforce stop discipline",
@@ -1457,6 +1463,7 @@
       "tags": {
         "TREND_PULLBACK_STARTER_ONE_THIRD": "1/3 Starter Position",
         "MACRO_HEADWIND_HALF_SIZE": "Half Size (Correction / High Vol)",
+        "SECTOR_BREADTH_HEADWIND_HALF_SIZE": "Half Size (Sector Breadth Breakdown)",
         "MARKET_REGIME_PAUSE_NEW_ENTRY": "New Entries Paused (Bear/Panic)",
         "SECTOR_CONCENTRATION_WARNING": "Sector Concentration Warning (Over Cap)",
         "EXISTING_HOLDING_CAPPED": "Capped by Remaining Single-Stock Room",
@@ -1483,13 +1490,13 @@
       "sourceLive": "Live Recalculation",
       "tradeDate": "Check Date: {{date}}",
       "recalculateLive": "Recalculate Now",
-      "structureHealthy": "Portfolio Healthy: no breakdown, imminent earnings, weakening fundamentals, or sector concentration alerts.",
+      "structureHealthy": "Portfolio Healthy: no breakdown, imminent earnings, weakening fundamentals, or sector risk warnings.",
       "noItems": "No holdings or watchlist tickers yet. Click \"Portfolio / Watchlist\" or add from any stock analysis page.",
       "coverageWarning": "Partial data coverage or non-USD holdings excluded ({{count}} item(s)); review individual items below.",
       "dataGapNote": "Partial check data missing for this session ({{count}} gap(s)); review quote, valuation, or split sync status.",
       "holdingsAlertsTitle": "Holdings Defense & Profit-Taking Alerts",
       "watchlistEntriesTitle": "Watchlist Actionable Entry Signals",
-      "sectorAlertsTitle": "Sector Concentration Warnings",
+      "sectorAlertsTitle": "Sector Risk Warnings",
       "criticalCount": "Critical {{count}}",
       "warningCount": "Warning {{count}}",
       "infoCount": "Info {{count}}",
@@ -1561,6 +1568,8 @@
       "HOLDING_TARGET_REACHED": "{{symbol}} closed at/above target {{targetLevel}} ({{targetPrice}}, close {{closePrice}}; consider trimming)",
       "HOLDING_AT_RESISTANCE_ZONE": "{{symbol}} entered major resistance zone ({{resistanceLower}}–{{resistanceUpper}}); monitor supply pressure",
       "HOLDING_SECTOR_CONCENTRATION": "Sector \"{{industryName}}\" exposure reached {{exposurePct}}, exceeding {{maxPct}} cap",
+      "HOLDING_SECTOR_BREADTH_BREAKDOWN": "Sector \"{{industryName}}\" breadth breakdown (above SMA50 {{breadthAboveSma50Pct}} · above SMA200 {{breadthAboveSma200Pct}} · 20D median {{return20dMedian}}); affects {{affectedSymbols}}; new entries halved",
+      "EOD_PIPELINE_DEFERRED": "{{tradeDate}} EOD downstream publishing deferred ({{deferReason}}, quotes {{readyQuotes}}/{{totalTargets}} · splits {{readySplits}}/{{splitTargets}}); check upstream sync and re-run valuation",
       "WATCHLIST_ACCUMULATE_SUPPORT": "Watchlist {{symbol}} entered active support buy zone (close {{closePrice}}, stop {{protectiveStop}}, suggested {{suggestedShares}} sh)",
       "WATCHLIST_TREND_PULLBACK_STARTER": "Watchlist {{symbol}} triggered trend pullback starter (close {{closePrice}}, stop {{protectiveStop}}, suggested {{suggestedShares}} sh)",
       "RADAR_TOP_OPPORTUNITY": "Radar top pick {{symbol}} ({{trackType}} · close {{closePrice}})",
@@ -1568,6 +1577,13 @@
       "DAILY_CLOSING_BRIEFING": "{{tradeDate}} closing briefing ready: {{criticalCount}} critical · {{warningCount}} warning · {{radarTop5Count}} radar picks",
       "HY_OAS_CREDIT_STRESS": "Credit Spread Alert: US High Yield OAS is at {{oasPct}}% ({{deltaBps}} bps vs prior 20-obs mean, as of {{observationDate}}). Macro defensive posture activated.",
       "HOLDING_EARNINGS_GAP_EXCEEDS_STOP": "{{symbol}} pre-earnings ({{eventDate}}, {{daysToEarnings}}d left) options implied move ±{{impliedMovePct}} exceeds protective stop distance {{stopDistancePct}}. Watch for earnings gap-through risk."
+    },
+    "deferReasons": {
+      "QUOTES_NOT_READY": "EOD quotes incomplete",
+      "VALUATIONS_NOT_READY": "EOD valuations incomplete",
+      "SPLITS_NOT_READY": "EOD split coverage below 95%",
+      "BENCHMARK_SPLITS_NOT_READY": "SPY/QQQ benchmark splits not ready",
+      "RADAR_DEFERRED_MARKET_CONTEXT_NOT_READY": "Market context not ready"
     }
   },
   "stockScreener": {
@@ -2033,7 +2049,9 @@
         "scaleTags": {
           "FULL": "Full Size",
           "1/3": "1/3 Starter",
-          "1/2": "1/2 Macro Cut",
+          "1/2": "1/2 Headwind Cut",
+          "1/2_SECTOR": "1/2 Sector Cut",
+          "1/2_MACRO_SECTOR": "1/2 Macro/Sector Cut",
           "1/6": "1/6 Combined Cut",
           "PAUSED": "Paused",
           "NOT_RECOMMENDED": "Not Recommended",

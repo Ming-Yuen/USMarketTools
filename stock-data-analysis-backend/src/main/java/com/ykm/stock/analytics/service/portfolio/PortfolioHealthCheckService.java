@@ -42,6 +42,7 @@ import com.ykm.stock.analytics.model.entity.DailyClosingBriefing;
 import com.ykm.stock.analytics.model.entity.InAppNotification;
 import com.ykm.stock.analytics.model.entity.MarketEvent;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
+import com.ykm.stock.analytics.model.entity.SectorMoneyFlowDaily;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockEarningsForecast;
 import com.ykm.stock.analytics.model.entity.StockFinancialPeriod;
@@ -57,6 +58,7 @@ import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository.FigiKnow
 import com.ykm.stock.analytics.repository.jpa.FinancialReportRepository.KnownReportPeriod;
 import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
+import com.ykm.stock.analytics.repository.jpa.SectorMoneyFlowDailyRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEarningsForecastRepository;
 import com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository;
 import com.ykm.stock.analytics.repository.jpa.StockIndustryHistoryRepository;
@@ -71,6 +73,7 @@ import com.ykm.stock.analytics.service.analysis.MarketContextService;
 import com.ykm.stock.analytics.service.analysis.MarketContextService.PreloadedMarketData;
 import com.ykm.stock.analytics.service.analysis.PriceStructureService;
 import com.ykm.stock.analytics.service.analysis.QuoteNormalizationService;
+import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService;
 import com.ykm.stock.analytics.service.analysis.SecurityTypePolicy;
 import com.ykm.stock.analytics.service.analysis.SupportResistanceService;
 import com.ykm.stock.analytics.service.analysis.TradePlanService;
@@ -138,6 +141,7 @@ public class PortfolioHealthCheckService {
     public static final String ALERT_HOLDING_TARGET_REACHED = "HOLDING_TARGET_REACHED";
     public static final String ALERT_HOLDING_AT_RESISTANCE_ZONE = "HOLDING_AT_RESISTANCE_ZONE";
     public static final String ALERT_HOLDING_SECTOR_CONCENTRATION = "HOLDING_SECTOR_CONCENTRATION";
+    public static final String ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN = "HOLDING_SECTOR_BREADTH_BREAKDOWN";
     public static final String ALERT_WATCHLIST_ACCUMULATE_SUPPORT = "WATCHLIST_ACCUMULATE_SUPPORT";
     public static final String ALERT_WATCHLIST_TREND_PULLBACK_STARTER = "WATCHLIST_TREND_PULLBACK_STARTER";
 
@@ -174,6 +178,8 @@ public class PortfolioHealthCheckService {
     private final AdrShareRatioRepository adrShareRatios;
     @Autowired(required = false)
     private StockOptionsSummaryRepository optionsSummaryRepository;
+    @Autowired(required = false)
+    private SectorMoneyFlowDailyRepository sectorMoneyFlowRepository;
 
     private final ValuationSummaryCalculator summaryCalculator = new ValuationSummaryCalculator();
     private final FundamentalSnapshotCalculator fundamentalCalculator = new FundamentalSnapshotCalculator();
@@ -297,7 +303,8 @@ public class PortfolioHealthCheckService {
             Map<String, List<StockFinancialPeriod>> periodsByFigi,
             Map<String, List<KnownReportPeriod>> knownReportsByFigi,
             FxRateLookup fxLookup,
-            Map<String, AdrShareRatio> adrBySymbol
+            Map<String, AdrShareRatio> adrBySymbol,
+            Map<String, SectorMoneyFlowDaily> sectorFlowsByIndustry
     ) {}
 
     private record PriorHoldingReference(
@@ -437,6 +444,72 @@ public class PortfolioHealthCheckService {
         sectorExposures.sort(Comparator.comparing(SectorExposureDto::exposurePct, Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing(SectorExposureDto::industryCode));
 
+        // 計算持倉所屬產業之同日板塊廣度崩壞警報（涵蓋所有持倉含當日未核實行情／拆股者，確保受影響持倉與 positionIds 完整）
+        Map<String, List<EvaluatedHoldingPrePass>> holdingsByIndustry = new LinkedHashMap<>();
+        for (EvaluatedHoldingPrePass pre : holdingPrePasses) {
+            if (pre.industryCode() != null && !pre.industryCode().isBlank()) {
+                holdingsByIndustry.computeIfAbsent(pre.industryCode(), k -> new ArrayList<>()).add(pre);
+            }
+        }
+        for (Map.Entry<String, List<EvaluatedHoldingPrePass>> entry : holdingsByIndustry.entrySet()) {
+            String indCode = entry.getKey();
+            SectorMoneyFlowDaily snap = loaded.sectorFlowsByIndustry().get(indCode);
+            if (!SectorMoneyFlowService.isSameDayBreadthBreakdown(snap, effectiveDate)) {
+                continue;
+            }
+            List<EvaluatedHoldingPrePass> indHoldings = entry.getValue();
+            String indName = snap.getIndustryName() != null && !snap.getIndustryName().isBlank()
+                    ? snap.getIndustryName()
+                    : (indHoldings.getFirst().industryName() != null ? indHoldings.getFirst().industryName() : indCode);
+            List<String> affectedSymbols = indHoldings.stream()
+                    .map(pre -> pre.stock() != null && pre.stock().getSymbol() != null ? pre.stock().getSymbol() : pre.item().getFigi())
+                    .distinct()
+                    .sorted()
+                    .toList();
+            List<String> positionIds = indHoldings.stream()
+                    .map(pre -> {
+                        String id = pre.item().getPositionId();
+                        return id != null && !id.isBlank() ? id : "LEGACY_FIGI:" + pre.item().getFigi();
+                    })
+                    .distinct()
+                    .sorted()
+                    .toList();
+            SectorExposureAccumulator verifiedAcc = sectorAccMap.get(indCode);
+            BigDecimal verifiedMvUsd = verifiedAcc != null
+                    ? verifiedAcc.marketValueUsd.setScale(2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+            int unverifiedCount = (int) indHoldings.stream()
+                    .filter(pre -> unverifiedHoldingFigis.contains(pre.item().getFigi()))
+                    .count();
+
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("industryCode", indCode);
+            payload.put("industryName", indName);
+            payload.put("holdingCount", indHoldings.size());
+            payload.put("affectedSymbols", affectedSymbols);
+            payload.put("positionIds", positionIds);
+            payload.put("verifiedMarketValueUsd", verifiedMvUsd);
+            payload.put("unverifiedHoldingCount", unverifiedCount);
+            payload.put("breadthAboveSma50Pct", snap.getBreadthAboveSma50Pct());
+            payload.put("breadthAboveSma200Pct", snap.getBreadthAboveSma200Pct());
+            payload.put("return20dMedian", snap.getReturn20dMedian());
+            if (snap.getFlowState() != null) {
+                payload.put("flowState", snap.getFlowState());
+            }
+            payload.put("tradeDate", effectiveDate.toString());
+            sectorAlerts.add(new PortfolioAlertDto(
+                    InAppNotification.SEVERITY_WARNING,
+                    InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                    ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN,
+                    null,
+                    null,
+                    indName,
+                    payload
+            ));
+        }
+        sectorAlerts.sort(Comparator.comparing((PortfolioAlertDto a) -> String.valueOf(a.payload().getOrDefault("industryCode", "")))
+                .thenComparing(PortfolioAlertDto::alertCode));
+
         // 3. 第二輪：逐檔完成 HOLDING 深度體檢（技術破位、財報倒數、基本面惡化、高估與目標觸及），並彙整第二輪新增的資料缺口
         List<HoldingHealthItemDto> holdingResults = new ArrayList<>(holdingPrePasses.size());
         int criticalCount = 0;
@@ -539,7 +612,7 @@ public class PortfolioHealthCheckService {
                 return new LoadedInputs(items, config, priorBriefing,
                         Map.of(), Map.of(), Map.of(), Map.of(),
                         Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
-                        FxRateLookup.EMPTY, Map.of());
+                        FxRateLookup.EMPTY, Map.of(), Map.of());
             }
 
             List<String> allFigis = items.stream().map(PortfolioItem::getFigi).distinct().toList();
@@ -590,11 +663,19 @@ public class PortfolioHealthCheckService {
 
             FxRateLookup fxLookup = preloadFxLookup(periodsByFigi, effectiveDate);
             Map<String, AdrShareRatio> adrBySymbol = preloadAdrRatios(stocksByFigi);
+            Map<String, SectorMoneyFlowDaily> sectorFlowsByIndustry = new LinkedHashMap<>();
+            if (sectorMoneyFlowRepository != null) {
+                for (SectorMoneyFlowDaily row : sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(effectiveDate)) {
+                    if (row != null && row.getIndustryCode() != null) {
+                        sectorFlowsByIndustry.putIfAbsent(row.getIndustryCode(), row);
+                    }
+                }
+            }
             return new LoadedInputs(
                     items, config, priorBriefing,
                     stocksByFigi, statusByFigi, valuationByFigi, industryByFigi,
                     quotesByFigi, splitsByFigi, earningsByFigi, forecastsByFigi, periodsByFigi, knownReportsByFigi,
-                    fxLookup, adrBySymbol
+                    fxLookup, adrBySymbol, sectorFlowsByIndustry
             );
         });
     }
@@ -825,9 +906,12 @@ public class PortfolioHealthCheckService {
                     ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
             BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
 
+            boolean holdingSectorBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(
+                    pre.industryCode() == null ? null : loaded.sectorFlowsByIndustry().get(pre.industryCode()),
+                    targetDate);
             RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                     AnalysisHorizon.POSITION, evalPrice, verdict, bandLow, backing,
-                    fundamentalsDto, futuObs, structure, support, tradePlans, marketResult);
+                    fundamentalsDto, futuObs, structure, support, tradePlans, marketResult, holdingSectorBreakdown);
             resolvedVerdict = eval.verdict();
             resolvedBacking = eval.fundamentalBacking();
             resolvedStance = eval.stance();
@@ -1245,9 +1329,16 @@ public class PortfolioHealthCheckService {
                 ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
         BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
 
+        StockIndustryHistory ih = loaded.industryByFigi().get(figi);
+        String industryCode = ih != null && ih.getIndustry() != null ? ih.getIndustry().getCode() : null;
+        String industryName = ih != null && ih.getIndustry() != null ? ih.getIndustry().getIndustry() : industryCode;
+        boolean sectorBreadthBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(
+                industryCode == null ? null : loaded.sectorFlowsByIndustry().get(industryCode),
+                targetDate);
+
         RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                 AnalysisHorizon.POSITION, evalPrice, verdict, bandLow, backing,
-                fundamentalsDto, futuObs, structure, support, tradePlans, marketResult);
+                fundamentalsDto, futuObs, structure, support, tradePlans, marketResult, sectorBreadthBreakdown);
 
         // 大盤 BEAR / PANIC 或財報封鎖時不發自選買入通知
         if (eval.marketRegime() == MarketRegime.BEAR || eval.marketRegime() == MarketRegime.PANIC
@@ -1255,9 +1346,6 @@ public class PortfolioHealthCheckService {
             return null;
         }
         boolean macroCautionActive = eval.macroCaution() != null && eval.macroCaution().active();
-        StockIndustryHistory ih = loaded.industryByFigi().get(figi);
-        String industryCode = ih != null && ih.getIndustry() != null ? ih.getIndustry().getCode() : null;
-        String industryName = ih != null && ih.getIndustry() != null ? ih.getIndustry().getIndustry() : industryCode;
         BigDecimal existingHoldingMv = holdingMvUsdByFigi.getOrDefault(figi, BigDecimal.ZERO);
         BigDecimal currentSectorMv = industryCode == null ? BigDecimal.ZERO
                 : sectorMvUsdByIndustry.getOrDefault(industryCode, BigDecimal.ZERO);
@@ -1279,8 +1367,10 @@ public class PortfolioHealthCheckService {
                     matchedPlan.stop().protectivePrice(),
                     true,
                     false,
+                    false,
                     eval.marketRegime(),
                     macroCautionActive,
+                    sectorBreadthBreakdown,
                     loaded.config(),
                     existingHoldingMv,
                     currentSectorMv,
@@ -1317,9 +1407,11 @@ public class PortfolioHealthCheckService {
                     evalPrice,
                     starter.suggestedStop(),
                     true,
+                    false,
                     true,
                     eval.marketRegime(),
                     macroCautionActive,
+                    sectorBreadthBreakdown,
                     loaded.config(),
                     existingHoldingMv,
                     currentSectorMv,

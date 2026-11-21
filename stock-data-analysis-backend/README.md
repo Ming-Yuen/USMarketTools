@@ -134,23 +134,23 @@
 
 ## 5. 排程與設定
 
-預設排程時區為 `Asia/Hong_Kong`（既有 `job_config` 設定不會在重啟時被覆蓋）：
+預設排程時區為 `Asia/Hong_Kong`（既有自訂 `job_config` 設定不會在重啟時被覆蓋；僅當仍停留在舊版預設 Cron 時由 `DataInitializer` 自動平滑升級至新版預設值）：
 
 | `taskCode` | 預設時間（香港） | 主要職責 |
 | --- | --- | --- |
-| `TREASURY_DAILY_SYNC` | 每日 05:00 | 美國財政部國債殖利率同步 |
+| `TREASURY_DAILY_SYNC` | 每日 07:15 | 美國財政部國債殖利率同步（近 60 日有效 10Y 不足 25 筆時自動回補前 1–2 個月） |
 | `FX_RATE_DAILY_SYNC` | 每日 05:05 | FRED H.10 16 種主要外幣官方日頻匯率增量同步（寫入 `fx_rate_daily`） |
 | `CREDIT_SPREAD_DAILY_SYNC` | 每日 05:08 | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）增量同步（遇假日沿用最近有效觀測日不中斷估值排程） |
 | `STOCK_DAILY` | 週二至六 05:15 | Massive 股票主檔與 SEC `company_tickers.json` CIK 同步（CIK／SIC／股類異動同交易重建財季分母） |
 | `STOCK_QUOTE_DAILY` | 週二至六 06:15 | Alpaca 日線增量同步（回看最近 5 個交易日補漏） |
-| `STOCK_FUNDAMENTAL_DAILY_SYNC` | 每日 06:30 | 三合一逐公司原子同步拆股（平日 Massive／週六與新股富途復權）、富途三大財報（三表獨立水位、OTC 粉單跳過）與 SEC 財務事實（含已確認自訂標籤，0 AI 消耗），變更時同交易原地重建 `stock_financial_period` 並推進 `fundamental_sync_date` 斷點（取代原 `STOCK_SPLIT_DAILY`、`FINANCIAL_REPORT_DAILY_SYNC`、`SEC_FINANCIAL_FACTS_DAILY_SYNC`） |
+| `STOCK_FUNDAMENTAL_DAILY_SYNC` | 每日 06:30 | 三合一逐公司原子同步拆股（平日 Massive／週六與新股富途復權；當日收盤前已掃過而 `split_date` 落後時自動走輕量拆股補齊）、富途三大財報（三表獨立水位、OTC 粉單跳過）與 SEC 財務事實（含已確認自訂標籤，0 AI 消耗），變更時同交易原地重建 `stock_financial_period` 並推進 `fundamental_sync_date` 斷點（取代原 `STOCK_SPLIT_DAILY`、`FINANCIAL_REPORT_DAILY_SYNC`、`SEC_FINANCIAL_FACTS_DAILY_SYNC`） |
 | `STOCK_CLASSIFICATION_DAILY_SYNC` | 週二至六 07:00 | 富途產業與概念分類同步 |
 | `SHORT_INTEREST_SYNC` | 週二、五 08:20 | FINRA 雙週做空比例增量同步（透過 Massive `/stocks/v1/short-interest` 批量更新） |
 | `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
-| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情覆蓋 `>= 95%`、大盤就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含財報跳空止損風險）及站內收盤簡報／提醒寫入（含高收益債信用利差警戒，異常僅記警告日誌，絕不回滾上游估值、資金流與雷達快照） |
-| `CHIP_EVENT_DAILY_SYNC` | 週二至六 10:25 | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗） |
+| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情／估值／拆股覆蓋 `>= 95%` 及大盤基準（`SPY`/`QQQ`）拆股就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含板塊廣度崩壞警示與財報跳空止損風險）及站內收盤簡報／提醒寫入，並於雷達正式發布後非同步觸發 `CHIP_EVENT_DAILY_SYNC`；上游未齊延後時寫入冪等 `EOD_PIPELINE_DEFERRED` 警告並於恢復後自動標為已讀 |
+| `CHIP_EVENT_DAILY_SYNC` | 週二至六 11:00（兜底；主路徑由雷達發布後異步觸發） | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗；完成含正式雷達之無錯誤同步後寫入 `sys_config` 水位避免兜底重抓，可傳 `force=true` 強制重跑） |
 | `INSTITUTIONAL_13F_SYNC` | 每週日 09:00 | 旗艦機構（約 15 家）SEC 13F-HR 季度持倉同步與 OpenFIGI／Massive CUSIP→FIGI 解析 |
 
 ### 舊版資料庫清理與枚舉約束說明

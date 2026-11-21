@@ -136,6 +136,8 @@ describe("Batch 04 三語詞典對齊與核心介面驗證", () => {
       "HOLDING_TARGET_REACHED",
       "HOLDING_AT_RESISTANCE_ZONE",
       "HOLDING_SECTOR_CONCENTRATION",
+      "HOLDING_SECTOR_BREADTH_BREAKDOWN",
+      "EOD_PIPELINE_DEFERRED",
       "WATCHLIST_ACCUMULATE_SUPPORT",
       "WATCHLIST_TREND_PULLBACK_STARTER",
       "RADAR_TOP_OPPORTUNITY",
@@ -157,8 +159,18 @@ describe("Batch 04 三語詞典對齊與核心介面驗證", () => {
       resistanceLower: 118.0,
       resistanceUpper: 122.0,
       industryName: "Semiconductors",
+      holdingCount: 2,
+      affectedSymbols: ["AMD", "NVDA"],
+      breadthAboveSma50Pct: 0.156,
+      breadthAboveSma200Pct: 0.318,
+      return20dMedian: -0.085,
       exposurePct: 0.34,
       maxSectorExposurePct: 0.3,
+      reason: "SPLITS_NOT_READY",
+      readyQuotes: 4900,
+      totalTargets: 5000,
+      readySplits: 100,
+      splitTargets: 4900,
       suggestedShares: 50,
       trackType: "VALUE_SUPPORT",
       previousRegime: "RISK_ON",
@@ -708,5 +720,84 @@ describe("Batch 04 三語詞典對齊與核心介面驗證", () => {
     expect(singleInput.min).toBe("0.01");
     expect(sectorInput.step).toBe("0.01");
     expect(sectorInput.min).toBe("0.01");
+  });
+
+  test("PositionSizingBlock 顯示板塊廣度崩壞半倉標籤且 PortfolioHealthCard 正確呈現板塊廣度警示", async () => {
+    const sectorHalfSizing: PositionSizing = {
+      status: "AVAILABLE",
+      reasonCode: null,
+      planActionable: true,
+      suggestedShares: 75,
+      entryReferencePrice: 100,
+      protectiveStopPrice: 95,
+      riskPerShare: 5,
+      estimatedPositionAmount: 7500,
+      positionCapitalPct: 0.075,
+      maxEstimatedLossAmount: 375,
+      maxEstimatedLossPct: 0.00375,
+      totalCapital: 100000,
+      riskPerTradePct: 0.01,
+      maxSinglePositionPct: 0.15,
+      maxSectorExposurePct: 0.3,
+      scaleNumerator: 1,
+      scaleDenominator: 2,
+      scaleLabel: "1/2",
+      existingHoldingMarketValue: 0,
+      industryCode: "I41",
+      currentSectorExposurePct: 0.1,
+      projectedSectorExposurePct: 0.175,
+      sectorConcentrationWarning: false,
+      excludedHoldingsCount: 0,
+      sizingTags: ["SECTOR_BREADTH_HEADWIND_HALF_SIZE"],
+    };
+
+    renderWithProviders(<PositionSizingBlock sizing={sectorHalfSizing} />, "zh-HK");
+    expect(screen.getByText("所屬板塊廣度崩壞半倉控管")).toBeInTheDocument();
+    expect(screen.getByTestId("suggested-shares-value")).toHaveTextContent("75 股");
+
+    jest.spyOn(portfolioApi, "fetchPortfolioHealth").mockResolvedValue({
+      tradeDate: "2026-11-19",
+      sourceMode: "CLOSING_SNAPSHOT",
+      marketRegime: "RISK_ON",
+      holdingCount: 1,
+      watchlistCount: 0,
+      alertHoldingCount: 0,
+      criticalCount: 0,
+      warningCount: 1,
+      infoCount: 0,
+      structureHealthy: false,
+      completeCoverage: true,
+      excludedHoldingsCount: 0,
+      coverageWarnings: [],
+      holdings: [],
+      watchlistOpportunities: [],
+      sectorExposures: [],
+      sectorAlerts: [
+        {
+          severity: "WARNING",
+          category: "PORTFOLIO_HOLDING",
+          alertCode: "HOLDING_SECTOR_BREADTH_BREAKDOWN",
+          figi: null,
+          symbol: null,
+          stockName: "Semiconductors",
+          payload: {
+            industryCode: "I41",
+            industryName: "Semiconductors",
+            affectedSymbols: ["NVDA"],
+            breadthAboveSma50Pct: 0.156,
+            breadthAboveSma200Pct: 0.318,
+            return20dMedian: -0.085,
+          },
+        },
+      ],
+    });
+
+    renderWithProviders(<PortfolioHealthCard />, "zh-HK");
+    await waitFor(() => {
+      expect(screen.getByText("產業板塊風險警示")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Semiconductors/)).toBeInTheDocument();
+    expect(screen.getByText(/15\.6%/)).toBeInTheDocument();
+    expect(screen.getByText(/NVDA/)).toBeInTheDocument();
   });
 });

@@ -1207,6 +1207,191 @@ class PortfolioHealthAndClosingServiceTests {
         assertThat(summary.watchlistOpportunities()).isEmpty();
     }
 
+    /**
+     * Scenario：持倉板塊廣度崩壞（含未核實行情持倉仍須納入 positionIds 與 affectedSymbols、且與集中度超標雙重並存不同 dedupKey）
+     * 及無狀態 S_0 通知抑制：
+     * - 首次觸發發送 SECTOR_BREADTH:{D}:{ind}；
+     * - 同波段滾動換倉（Day 1 [P1] -> 換成 [P2]）S_now 與 S_0 無交集時重新發送（防滾動交集鏈永久漏報）；
+     * - 同波段僅缺日或低樣本列（< 8）不視為修復仍維持靜默，唯有 (T_0, D) 出現通過門檻且未崩壞日才重新觸發新波段。
+     */
+    @Test
+    void sectorBreadthBreakdownEmitsHoldingAlertCoexistsWithConcentrationAndHandlesStatelessSuppression() {
+        org.springframework.test.util.ReflectionTestUtils.setField(healthService, "sectorMoneyFlowRepository", sectorFlowRepo);
+
+        StockIndustry semiInd = new StockIndustry();
+        semiInd.setCode("I41");
+        semiInd.setIndustry("Semiconductors");
+
+        PortfolioItem nvdaItem = portfolioItem("F_NVDA", PortfolioItem.TYPE_HOLDING, "400", "90", PRIOR_DAY);
+        nvdaItem.setPositionId("POS-P2");
+        PortfolioItem amdMissingQuote = portfolioItem("F_AMD", PortfolioItem.TYPE_HOLDING, "100", "100", PRIOR_DAY);
+        amdMissingQuote.setPositionId("POS-P3");
+
+        when(itemRepo.findAllByOrderByItemTypeAscUpdatedAtDescFigiAsc()).thenReturn(List.of(nvdaItem, amdMissingQuote));
+        when(stockRepo.findAllById(anyCollection())).thenReturn(List.of(
+                stock("F_NVDA", "NVDA", "USD"),
+                stock("F_AMD", "AMD", "USD")));
+        when(statusRepo.findAllById(anyCollection())).thenReturn(List.of(splitStatus("F_NVDA"), splitStatus("F_AMD")));
+        when(splitRepo.findByFigiInOrderByExecutionDateAsc(anyCollection())).thenReturn(List.of());
+        when(eventRepo.findVisibleEarningsForFigis(anyCollection(), any())).thenReturn(List.of());
+        when(latestValRepo.findByFigiIn(anyCollection())).thenReturn(List.of(
+                valLatest("F_NVDA", "FAIR_LOWER", "STRONG", "100")));
+        // NVDA 有當日行情（市值 40,000 > 30% 上限），AMD 僅有昨日行情（掉入 unverifiedHoldingFigis）
+        when(quoteRepo.findQuoteBarsOrdered(anyCollection(), any(), any())).thenReturn(List.of(
+                barRow("F_NVDA", DAY, "100"),
+                barRow("F_AMD", PRIOR_DAY, "100")));
+
+        StockIndustryHistory hNvda = new StockIndustryHistory();
+        hNvda.setFigi("F_NVDA");
+        hNvda.setIndustry(semiInd);
+        StockIndustryHistory hAmd = new StockIndustryHistory();
+        hAmd.setFigi("F_AMD");
+        hAmd.setIndustry(semiInd);
+        when(industryRepo.findByFigisAt(anyCollection(), any())).thenReturn(List.of(hNvda, hAmd));
+
+        SectorMoneyFlowDaily brokenToday = new SectorMoneyFlowDaily();
+        brokenToday.setTradeDate(DAY);
+        brokenToday.setIndustryCode("I41");
+        brokenToday.setIndustryName("Semiconductors");
+        brokenToday.setStockCount(45);
+        brokenToday.setBreadthSma50Total(45);
+        brokenToday.setBreadthSma200Total(44);
+        brokenToday.setReturn20dCount(45);
+        brokenToday.setBreadthAboveSma50Pct(new BigDecimal("0.155600"));
+        brokenToday.setBreadthAboveSma200Pct(new BigDecimal("0.318200"));
+        brokenToday.setReturn20dMedian(new BigDecimal("-0.085000"));
+        brokenToday.setCmf20d(new BigDecimal("-0.120000"));
+        brokenToday.setFlowState(SectorMoneyFlowDaily.FLOW_NEUTRAL);
+        when(sectorFlowRepo.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(DAY)).thenReturn(List.of(brokenToday));
+
+        MarketSnapshotDto riskOnSnap = new MarketSnapshotDto(MarketRegime.RISK_ON,
+                MetricResult.available(BigDecimal.valueOf(50)),
+                MetricResult.available(BigDecimal.valueOf(50)),
+                MetricResult.available(BigDecimal.valueOf(50)),
+                DAY, NOW, List.of(), List.of());
+        when(marketContextService.preloadMarketData(any(), any())).thenReturn(new PreloadedMarketData(
+                DAY, NOW, MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()),
+                MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()),
+                Map.of(), List.of(), MetricResult.available(riskOnSnap),
+                MetricResult.available(new BigDecimal("16.0")), null));
+        when(quoteNorm.normalizeFromLoaded(any(), any(), any(), any(), any(), any(), any())).thenReturn(
+                MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()));
+
+        // 1) 體檢結果同時包含 CONCENTRATION 與 BREADTH_BREAKDOWN，且缺行情的 AMD 仍在 affectedSymbols 與 positionIds 中
+        PortfolioHealthSummaryDto health = healthService.evaluate(DAY, NOW, PortfolioHealthCheckService.SOURCE_MODE_CLOSING_SNAPSHOT).summary();
+        assertThat(health.sectorAlerts()).extracting(PortfolioAlertDto::alertCode).containsExactlyInAnyOrder(
+                PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_CONCENTRATION,
+                PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN);
+        PortfolioAlertDto breadthAlert = health.sectorAlerts().stream()
+                .filter(a -> PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN.equals(a.alertCode()))
+                .findFirst().orElseThrow();
+        assertThat(breadthAlert.payload().get("affectedSymbols")).isEqualTo(List.of("AMD", "NVDA"));
+        assertThat(breadthAlert.payload().get("positionIds")).isEqualTo(List.of("POS-P2", "POS-P3"));
+        assertThat(breadthAlert.payload().get("unverifiedHoldingCount")).isEqualTo(1);
+
+        // 2) 收盤通知：前一次 T_0 通知僅含 POS-P1（與今日 [POS-P2, POS-P3] 無交集，模擬滾動換倉後原倉已全清），且中間無修復日 -> 仍應重新發送且與集中度並存
+        DailyOpportunityRadarRun run = new DailyOpportunityRadarRun();
+        run.setRadarDate(DAY);
+        run.setMarketRegime("RISK_ON");
+        when(radarRunRepo.findById(DAY)).thenReturn(Optional.of(run));
+        when(briefingRepo.findById(DAY)).thenReturn(Optional.empty());
+        when(briefingRepo.findTopByTradeDateBeforeOrderByTradeDateDesc(DAY)).thenReturn(Optional.empty());
+        when(radarRepo.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(DAY)).thenReturn(List.of());
+        when(notifRepo.findExistingDedupKeys(anyCollection())).thenReturn(List.of());
+
+        InAppNotification priorT0 = new InAppNotification();
+        priorT0.setTradeDate(DAY.minusDays(5));
+        priorT0.setAlertCode(PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN);
+        priorT0.setPayload(Map.of("industryCode", "I41", "positionIds", List.of("POS-P1")));
+        when(notifRepo.findTopByAlertCodeAndTradeDateLessThanAndDedupKeyEndingWithOrderByTradeDateDescIdDesc(
+                PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN, DAY, ":I41"))
+                .thenReturn(Optional.of(priorT0));
+        when(sectorFlowRepo.findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(
+                "I41", DAY.minusDays(5), DAY)).thenReturn(List.of());
+
+        List<InAppNotification> persistedNotifs = new ArrayList<>();
+        doAnswer(inv -> {
+            Object arg = inv.getArgument(0);
+            if (arg instanceof InAppNotification n) persistedNotifs.add(n);
+            return null;
+        }).when(entityManager).persist(any());
+
+        closingService.publishDailyClosing(DAY, NOW);
+        assertThat(persistedNotifs).extracting(InAppNotification::getDedupKey).contains(
+                "SECTOR:" + DAY + ":I41",
+                "SECTOR_BREADTH:" + DAY + ":I41");
+        // 完全換倉命中時應直接放行，無需再查區間板塊修復列
+        org.mockito.Mockito.verify(sectorFlowRepo, org.mockito.Mockito.never())
+                .findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(any(), any(), any());
+
+        // 3) 若 T_0 已包含 POS-P2，且中間僅有樣本不足列（stockCount=5 < 8），則不計為確認修復 -> 靜默不重複推送 SECTOR_BREADTH
+        persistedNotifs.clear();
+        priorT0.setPayload(Map.of("industryCode", "I41", "positionIds", List.of("POS-P2")));
+        SectorMoneyFlowDaily ineligibleMid = new SectorMoneyFlowDaily();
+        ineligibleMid.setTradeDate(DAY.minusDays(2));
+        ineligibleMid.setIndustryCode("I41");
+        ineligibleMid.setStockCount(5);
+        ineligibleMid.setBreadthSma50Total(5);
+        ineligibleMid.setBreadthSma200Total(5);
+        ineligibleMid.setReturn20dCount(5);
+        ineligibleMid.setBreadthAboveSma50Pct(new BigDecimal("0.80"));
+        ineligibleMid.setBreadthAboveSma200Pct(new BigDecimal("0.80"));
+        ineligibleMid.setReturn20dMedian(new BigDecimal("0.05"));
+        when(sectorFlowRepo.findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(
+                "I41", DAY.minusDays(5), DAY)).thenReturn(List.of(ineligibleMid));
+
+        closingService.publishDailyClosing(DAY, NOW);
+        assertThat(persistedNotifs).extracting(InAppNotification::getDedupKey)
+                .contains("SECTOR:" + DAY + ":I41")
+                .doesNotContain("SECTOR_BREADTH:" + DAY + ":I41");
+
+        // 4) 若中間出現通過樣本門檻且未崩壞之確認修復日 -> 新波段重新推送 SECTOR_BREADTH
+        persistedNotifs.clear();
+        SectorMoneyFlowDaily recoveredMid = new SectorMoneyFlowDaily();
+        recoveredMid.setTradeDate(DAY.minusDays(2));
+        recoveredMid.setIndustryCode("I41");
+        recoveredMid.setStockCount(45);
+        recoveredMid.setBreadthSma50Total(45);
+        recoveredMid.setBreadthSma200Total(44);
+        recoveredMid.setReturn20dCount(45);
+        recoveredMid.setBreadthAboveSma50Pct(new BigDecimal("0.42"));
+        recoveredMid.setBreadthAboveSma200Pct(new BigDecimal("0.55"));
+        recoveredMid.setReturn20dMedian(new BigDecimal("0.02"));
+        when(sectorFlowRepo.findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(
+                "I41", DAY.minusDays(5), DAY)).thenReturn(List.of(recoveredMid));
+
+        closingService.publishDailyClosing(DAY, NOW);
+        assertThat(persistedNotifs).extracting(InAppNotification::getDedupKey)
+                .contains("SECTOR_BREADTH:" + DAY + ":I41");
+
+        // 5) 驗證收盤簡報 Top 5 雷達試算使用已載入之同日板塊快照套用 1/2 板塊縮倉（不新增 DB 欄位）
+        DailyOpportunityRadar semiRadar = new DailyOpportunityRadar();
+        semiRadar.setRadarDate(DAY);
+        semiRadar.setTrackType(DailyOpportunityRadar.TRACK_VALUE_SUPPORT);
+        semiRadar.setFigi("F_AVGO");
+        semiRadar.setSymbol("AVGO");
+        semiRadar.setStockName("Broadcom");
+        semiRadar.setCurrency("USD");
+        semiRadar.setIndustryCode("I41");
+        semiRadar.setIndustryName("Semiconductors");
+        semiRadar.setVerdict("DEEP_UNDERVALUED");
+        semiRadar.setStance("ACCUMULATE_AT_SUPPORT");
+        semiRadar.setClosePrice(new BigDecimal("100.00"));
+        semiRadar.setPlanEntryLower(new BigDecimal("98.00"));
+        semiRadar.setPlanEntryUpper(new BigDecimal("100.00"));
+        semiRadar.setProtectiveStop(new BigDecimal("95.00"));
+        semiRadar.setPlanStatus("ACTIVE");
+        semiRadar.setMacroCautionActive(false);
+        when(radarRepo.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(DAY))
+                .thenReturn(List.of(semiRadar));
+
+        DailyClosingBriefingDto briefingWithRadar = closingService.publishDailyClosing(DAY, NOW).orElseThrow();
+        assertThat(briefingWithRadar.radarTop5()).hasSize(1);
+        assertThat(briefingWithRadar.radarTop5().getFirst().suggestedShares()).isEqualTo(75L);
+        assertThat(briefingWithRadar.radarTop5().getFirst().sizingTags())
+                .contains(com.ykm.stock.analytics.model.dto.stockInsight.analysis.PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE);
+    }
+
     private PortfolioItem portfolioItem(String figi, String type, String shares, String avgCost, LocalDate basisDate) {
         PortfolioItem item = new PortfolioItem();
         item.setFigi(figi);

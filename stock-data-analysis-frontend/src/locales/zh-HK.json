@@ -1525,6 +1525,11 @@
     "notSelectedAsPreferred": "此計劃尚未被選為首選計劃。",
     "executiveSummary": {
       "title": "綜合估值與觀察結論",
+      "starterOneSixth": {
+        "both": "（原 1/3 底倉因宏觀警戒與所屬板塊廣度崩壞再減半）",
+        "sector": "（原 1/3 底倉因所屬板塊廣度崩壞再減半）",
+        "macro": "（原 1/3 底倉因宏觀警戒再減半）"
+      },
       "disclaimer": "以自身歷史與同業市場實際成交分位合成參考價帶；僅反映市場相對估值位置，不等同內在價值、價格預測或買賣指令。",
       "verdicts": {
         "DEEP_UNDERVALUED": "顯著低於市場參考帶（嚴重偏低）",
@@ -1575,6 +1580,7 @@
       "risks": {
         "EARNINGS_IMMINENT_BLOCK": "財報或重大事件臨近（{{eventDate}}），新入場條件受限",
         "EARNINGS_IMMINENT_BLOCK_NO_DATE": "財報或重大事件臨近，新入場條件受限",
+        "SECTOR_BREADTH_BREAKDOWN": "所屬產業板塊均線廣度與動能同步惡化（板塊廣度崩壞），新開倉已採半倉控管",
         "MARKET_REGIME_HEADWIND": "大盤市況處於逆風狀態（{{regime}}），左側接刀風險偏高",
         "MACRO_VOLATILITY_OR_RATE_STRESS": "市場波動率（VIX）或 10Y 美債近 20 期變動處於警戒水位，宜預留額外安全邊際並縮減倉位",
         "SUPPORT_HIGH_RISK_BREAKDOWN": "關鍵支撐已觸發高機率真破位診斷，須嚴格執行止損紀律",
@@ -1908,6 +1914,7 @@
       "tags": {
         "TREND_PULLBACK_STARTER_ONE_THIRD": "1/3 底倉試單",
         "MACRO_HEADWIND_HALF_SIZE": "大盤逆風／高波動半倉控管",
+        "SECTOR_BREADTH_HEADWIND_HALF_SIZE": "所屬板塊廣度崩壞半倉控管",
         "MARKET_REGIME_PAUSE_NEW_ENTRY": "大盤逆風暫緩開倉",
         "SECTOR_CONCENTRATION_WARNING": "產業集中度超標警告（超過上限）",
         "EXISTING_HOLDING_CAPPED": "已扣減既有持倉剩餘單檔額度",
@@ -1934,13 +1941,13 @@
       "sourceLive": "按目前持倉即時重算",
       "tradeDate": "體檢交易日：{{date}}",
       "recalculateLive": "即時重算",
-      "structureHealthy": "持倉結構正常：目前全部持倉無破位、財報逼近、基本面惡化或板塊超標警示。",
+      "structureHealthy": "持倉結構正常：目前全部持倉無破位、財報逼近、基本面惡化或板塊風險警示。",
       "noItems": "尚未建立個人持倉或重點自選股。點擊右側「持倉／自選管理」或於個股頁一鍵加入。",
       "coverageWarning": "部分持倉資料缺口或非 USD 未計入整體曝險（{{count}} 項），請留意個別項目狀態。",
       "dataGapNote": "當日部分檢查資料不完整（{{count}} 項缺口），請檢查行情、估值或拆股同步狀態。",
       "holdingsAlertsTitle": "持倉異常與防守／止盈提醒",
       "watchlistEntriesTitle": "自選股觸發有效買點",
-      "sectorAlertsTitle": "產業板塊集中度超標提醒",
+      "sectorAlertsTitle": "產業板塊風險警示",
       "criticalCount": "嚴重 {{count}}",
       "warningCount": "警告 {{count}}",
       "infoCount": "提示 {{count}}",
@@ -2012,6 +2019,8 @@
       "HOLDING_TARGET_REACHED": "{{symbol}} 收盤達標上方目標 {{targetLevel}}（{{targetPrice}}，收盤 {{closePrice}}，可評估分批減倉）",
       "HOLDING_AT_RESISTANCE_ZONE": "{{symbol}} 進入上方主要阻力區（{{resistanceLower}}–{{resistanceUpper}}），留意獲利回吐壓力",
       "HOLDING_SECTOR_CONCENTRATION": "產業「{{industryName}}」持倉集中度達 {{exposurePct}}，超過上限 {{maxPct}}",
+      "HOLDING_SECTOR_BREADTH_BREAKDOWN": "產業「{{industryName}}」板塊廣度崩壞（站上 SMA50 {{breadthAboveSma50Pct}} · 站上 SMA200 {{breadthAboveSma200Pct}} · 20D 中位報酬 {{return20dMedian}}），影響持倉 {{affectedSymbols}}，新倉已啟用半倉控管",
+      "EOD_PIPELINE_DEFERRED": "{{tradeDate}} 日終下游發布已延後（原因：{{deferReason}}，行情 {{readyQuotes}}/{{totalTargets}} · 拆股 {{readySplits}}/{{splitTargets}}），請檢查上游同步後重跑估值任務",
       "WATCHLIST_ACCUMULATE_SUPPORT": "自選股 {{symbol}} 進入低估支撐有效買入區（收盤 {{closePrice}}，止損 {{protectiveStop}}，建議 {{suggestedShares}} 股）",
       "WATCHLIST_TREND_PULLBACK_STARTER": "自選股 {{symbol}} 觸發強勢趨勢回踩試單（收盤 {{closePrice}}，止損 {{protectiveStop}}，建議 {{suggestedShares}} 股）",
       "RADAR_TOP_OPPORTUNITY": "雷達精選 {{symbol}}（{{trackType}} · 收盤 {{closePrice}}）",
@@ -2019,6 +2028,13 @@
       "DAILY_CLOSING_BRIEFING": "{{tradeDate}} 收盤簡報已就緒：嚴重 {{criticalCount}} · 警告 {{warningCount}} · 雷達精選 {{radarTop5Count}} 檔",
       "HY_OAS_CREDIT_STRESS": "債市信用利差異常擴大：美國高收益債 OAS 報 {{oasPct}}%（較前 20 期均值 {{deltaBps}} bps，觀測日 {{observationDate}}），已啟動宏觀防禦提示。",
       "HOLDING_EARNINGS_GAP_EXCEEDS_STOP": "{{symbol}} 財報前（{{eventDate}}，尚餘 {{daysToEarnings}} 天）期權隱含波動 ±{{impliedMovePct}} 已高於保護止損距離 {{stopDistancePct}}，須留意財報跳空打穿止損風險。"
+    },
+    "deferReasons": {
+      "QUOTES_NOT_READY": "當日收市行情未齊",
+      "VALUATIONS_NOT_READY": "當日估值快照未齊",
+      "SPLITS_NOT_READY": "當日拆股覆蓋未達 95%",
+      "BENCHMARK_SPLITS_NOT_READY": "SPY/QQQ 基準拆股未就緒",
+      "RADAR_DEFERRED_MARKET_CONTEXT_NOT_READY": "大盤市況資料未就緒"
     }
   },
   "stockScreener": {
@@ -2484,7 +2500,9 @@
         "scaleTags": {
           "FULL": "標準倉位",
           "1/3": "1/3 試單",
-          "1/2": "1/2 縮倉",
+          "1/2": "1/2 逆風縮倉",
+          "1/2_SECTOR": "1/2 板塊縮倉",
+          "1/2_MACRO_SECTOR": "1/2 宏觀／板塊縮倉",
           "1/6": "1/6 疊加縮倉",
           "PAUSED": "暫緩新倉",
           "NOT_RECOMMENDED": "不建議新增",

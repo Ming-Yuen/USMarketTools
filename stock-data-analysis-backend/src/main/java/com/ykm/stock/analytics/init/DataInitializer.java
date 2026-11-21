@@ -134,9 +134,15 @@ public class DataInitializer implements CommandLineRunner {
         menuRepository.saveAndFlush(menu);
     }
 
+    private static final Map<String, String> PREVIOUS_DEFAULT_CRONS = Map.of(
+            TaskCode.TREASURY_DAILY_SYNC, "0 0 5 * * ?",
+            TaskCode.CHIP_EVENT_DAILY_SYNC, "0 25 10 ? * TUE-SAT"
+    );
+
     void initializeJobConfigData() {
         // 香港時間先準備主檔、價格基準、匯率、信用利差及行情，再同步補充資料與計算估值。
-        initializeScheduledJob(TaskCode.TREASURY_DAILY_SYNC, TreasuryDailySyncJob.class, "0 0 5 * * ?");
+        // 美國財政部殖利率於美東 15:30–18:00 發布，排於香港 07:15 避開冬令 05:00 邊界漏抓。
+        initializeScheduledJob(TaskCode.TREASURY_DAILY_SYNC, TreasuryDailySyncJob.class, "0 15 7 * * ?");
         initializeScheduledJob(TaskCode.FX_RATE_DAILY_SYNC, FxRateDailySyncJob.class, "0 5 5 * * ?");
         initializeScheduledJob(TaskCode.CREDIT_SPREAD_DAILY_SYNC, CreditSpreadDailySyncJob.class, "0 8 5 * * ?");
         initializeScheduledJob(TaskCode.STOCK_DAILY, StockDailyTask.class, "0 15 5 ? * TUE-SAT");
@@ -149,7 +155,8 @@ public class DataInitializer implements CommandLineRunner {
         initializeScheduledJob(TaskCode.MARKET_EVENT_DAILY_SYNC, MarketEventDailySyncJob.class, "0 40 8 * * ?");
         initializeScheduledJob(TaskCode.EARNINGS_FORECAST_DAILY_SYNC, EarningsForecastDailySyncJob.class, "0 50 8 * * ?");
         initializeScheduledJob(TaskCode.STOCK_VALUATION_DAILY, StockValuationDailyTask.class, "0 0 10 * * ?");
-        initializeScheduledJob(TaskCode.CHIP_EVENT_DAILY_SYNC, ChipEventDailySyncJob.class, "0 25 10 ? * TUE-SAT");
+        // 預設由 StockValuationDailyTask 發布雷達後非同步觸發；11:00 作為兜底 Cron，不與 10:00 估值搶跑。
+        initializeScheduledJob(TaskCode.CHIP_EVENT_DAILY_SYNC, ChipEventDailySyncJob.class, "0 0 11 ? * TUE-SAT");
         initializeScheduledJob(TaskCode.INSTITUTIONAL_13F_SYNC, Institutional13fSyncJob.class, "0 0 9 ? * SUN");
     }
 
@@ -184,16 +191,26 @@ public class DataInitializer implements CommandLineRunner {
             jobConfigRepository.save(jobConfig);
             return;
         }
-        if (config == null || config.isEmpty()) return;
-        Map<String, Object> merged = existing.getConfig() == null ? new HashMap<>() : new HashMap<>(existing.getConfig());
         boolean changed = false;
-        for (Map.Entry<String, Object> entry : config.entrySet()) {
-            if (merged.containsKey(entry.getKey())) continue;
-            merged.put(entry.getKey(), entry.getValue());
+        String previousDefaultCron = PREVIOUS_DEFAULT_CRONS.get(taskCode);
+        if (previousDefaultCron != null && previousDefaultCron.equals(existing.getCronExpression())) {
+            existing.setCronExpression(cronExpression);
             changed = true;
         }
+        if (config != null && !config.isEmpty()) {
+            Map<String, Object> merged = existing.getConfig() == null ? new HashMap<>() : new HashMap<>(existing.getConfig());
+            boolean configChanged = false;
+            for (Map.Entry<String, Object> entry : config.entrySet()) {
+                if (merged.containsKey(entry.getKey())) continue;
+                merged.put(entry.getKey(), entry.getValue());
+                configChanged = true;
+            }
+            if (configChanged) {
+                existing.setConfig(merged);
+                changed = true;
+            }
+        }
         if (changed) {
-            existing.setConfig(merged);
             jobConfigRepository.save(existing);
         }
     }

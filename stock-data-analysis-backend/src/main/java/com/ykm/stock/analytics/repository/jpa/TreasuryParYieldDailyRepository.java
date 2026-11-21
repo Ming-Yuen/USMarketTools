@@ -10,4 +10,5 @@ public interface TreasuryParYieldDailyRepository extends JpaRepository<TreasuryP
     TreasuryParYieldDaily findFirstByOrderByObservationDateDesc();
     List<TreasuryParYieldDaily> findTop2ByOrderByObservationDateDesc();
     List<TreasuryParYieldDaily> findByObservationDateBetweenOrderByObservationDateAsc(LocalDate from, LocalDate through);
+    long countByObservationDateGreaterThanEqualAndTenYearIsNotNull(LocalDate from);
 }

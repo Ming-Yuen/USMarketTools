@@ -50,6 +50,7 @@ const ANCHOR_DEFAULTS: Record<string, string> = {
 
 const RISK_DEFAULTS: Record<string, string> = {
   EARNINGS_IMMINENT_BLOCK: "財報或重大事件臨近，新入場條件受限",
+  SECTOR_BREADTH_BREAKDOWN: "所屬產業板塊均線廣度與動能同步惡化（板塊廣度崩壞），新開倉已採半倉控管",
   MARKET_REGIME_HEADWIND: "大盤市況處於逆風狀態，左側接刀風險偏高",
   MACRO_VOLATILITY_OR_RATE_STRESS: "市場波動率（VIX）或 10Y 美債近 20 期變動處於警戒水位，宜預留額外安全邊際並縮減倉位",
   HY_OAS_CREDIT_STRESS: "美國高收益債信用利差（FRED BAMLH0A0HYM2）異常擴大，債市風險定價升溫，宜收緊倉位與安全邊際",
@@ -451,14 +452,30 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
           })}
         </Typography>
 
-        {summary.stance === "TREND_PULLBACK_STARTER" && starter?.eligible && (
+        {summary.stance === "TREND_PULLBACK_STARTER" && starter?.eligible && (() => {
+          const hasMacroCut = Boolean(macroCaution?.active)
+            || Boolean(starterPositionSizing?.sizingTags?.includes("MACRO_HEADWIND_HALF_SIZE"));
+          const hasSectorCut = Boolean(starterPositionSizing?.sizingTags?.includes("SECTOR_BREADTH_HEADWIND_HALF_SIZE"))
+            || summary.risks.some((flag) => flag.code === "SECTOR_BREADTH_BREAKDOWN");
+          const oneSixthSuffix = hasMacroCut && hasSectorCut
+            ? t("analysisReport.executiveSummary.starterOneSixth.both", {
+                defaultValue: "（原 1/3 底倉因宏觀警戒與所屬板塊廣度崩壞再減半）",
+              })
+            : hasSectorCut
+              ? t("analysisReport.executiveSummary.starterOneSixth.sector", {
+                  defaultValue: "（原 1/3 底倉因所屬板塊廣度崩壞再減半）",
+                })
+              : t("analysisReport.executiveSummary.starterOneSixth.macro", {
+                  defaultValue: "（原 1/3 底倉因宏觀警戒再減半）",
+                });
+          return (
           <Alert severity="info" sx={{ mt: 1 }}>
             <b>強勢股趨勢回踩試單指引</b>：回踩 <b>{STARTER_ANCHOR_LABELS[starter.matchedAnchor ?? ""] ?? starter.matchedAnchor}</b>
             （{formatNumber(starter.anchorPrice)} {currency}，距現價 {formatSignedRatioPct(starter.distanceRatio)}）
             {starter.positionFraction && (
               <>
                 ，建議 <b>{starter.positionFraction}</b> 底倉試單
-                {starter.positionFraction === "1/6" ? "（原 1/3 底倉因宏觀警戒再減半）"
+                {starter.positionFraction === "1/6" ? oneSixthSuffix
                   : starter.positionFraction === "1/3" ? "（餘下 2/3 留待深回檔）" : ""}
               </>
             )}
@@ -470,7 +487,8 @@ export function ExecutiveSummaryPanel({ valuation, summaryResult, breakoutDiagno
               : `Forward PEG ${formatNumber(starter.forwardPeg)}${starter.forwardPegBasis ? `（${FORWARD_PEG_BASIS_LABELS[starter.forwardPegBasis] ?? starter.forwardPegBasis}）` : ""}`}。
             <PositionSizingBlock sizing={starterPositionSizing} starterMode />
           </Alert>
-        )}
+          );
+        })()}
 
         {summary.stance === "HOLD_TRAIL_NO_CHASE" && starter && !starter.eligible && (starter.ineligibleReasonCode || starter.ineligibleMessage) && (
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.6 }}>

@@ -112,7 +112,8 @@ public class StockFundamentalDailySyncJob implements Job {
                                   List<SecCustomFinancialFact> customFacts, boolean missingEntry) {}
 
     private record CompanyGroup(String groupKey, String canonicalCik, List<Stock> members,
-                                boolean fullPatrol, boolean hasReportEligible, boolean hasSecEligible) {}
+                                boolean fullPatrol, boolean hasReportEligible, boolean hasSecEligible,
+                                boolean splitOnlyCatchup) {}
 
     private record GroupCommitResult(boolean valuationInputChanged, boolean splitDiscrepancy, boolean splitFailed,
                                      int reportsSaved, int secFactChanges) {}
@@ -232,12 +233,13 @@ public class StockFundamentalDailySyncJob implements Job {
         boolean manualFigisMode = !requestedFigis.isEmpty();
 
         List<CompanyGroup> allGroups = buildCompanyGroups(
-                universeByFigi, initialStatuses, reportEligibleFigis, secEligibleFigis,
-                todayHk, latestSaturdayHk, isSaturdayHk, requestedFigis);
+                universeByFigi, initialStatuses, splitEligibleFigis, splitSymbolCounts,
+                reportEligibleFigis, secEligibleFigis, todayHk, latestSaturdayHk, isSaturdayHk, splitThrough, requestedFigis);
         if (allGroups.isEmpty()) {
-            log.info("Fundamental daily sync skipped | reason=ALL_ALREADY_SYNCED todayHk={}", todayHk);
+            log.info("Fundamental daily sync skipped | reason=ALL_ALREADY_SYNCED todayHk={} splitThrough={}", todayHk, splitThrough);
             return;
         }
+        long splitOnlyCatchupGroups = allGroups.stream().filter(CompanyGroup::splitOnlyCatchup).count();
 
         // 3. 交易外批次準備：Massive 平日拆股、近 14 天財報觸發名單、三表各自最新期末日、SEC 壓縮檔
         Map<String, List<MassiveSplit>> massiveSplitsByTicker = preloadMassiveSplitsIfNeeded(
@@ -254,7 +256,7 @@ public class StockFundamentalDailySyncJob implements Job {
             }
         }
 
-        // 4. 平日純拆股無變動股票（多數 ETF）按 200 檔一批快速推進水位與斷點
+        // 4. 平日純拆股無變動股票（多數 ETF 與美股收市後純拆股補推組）按 200 檔一批快速推進水位與斷點
         int fastAdvanced = advanceFastQuietSplits(fastQuietSplitOnly, splitThrough, todayHk);
 
         // 5. 逐組處理一般公司（交易外取數 → 單組短交易原子寫入拆股／財報／SEC／重建分母／推進斷點水位）
@@ -270,7 +272,8 @@ public class StockFundamentalDailySyncJob implements Job {
         if (!fullProcessingGroups.isEmpty()) {
             Map<String, Map<Integer, LocalDate>> latestStatementEndsByFigi = preloadLatestStatementEnds(
                     fullProcessingGroups, reportEligibleFigis);
-            boolean anySecGroup = fullProcessingGroups.stream().anyMatch(CompanyGroup::hasSecEligible);
+            boolean anySecGroup = fullProcessingGroups.stream()
+                    .anyMatch(g -> !g.splitOnlyCatchup() && g.hasSecEligible());
             LocalDate todayNy = startedAt.atZone(MarketStatusService.NY_ZONE).toLocalDate();
             LocalDate filingLookbackFrom = todayNy.minusDays(RECENT_FILING_LOOKBACK_DAYS);
 
@@ -286,7 +289,7 @@ public class StockFundamentalDailySyncJob implements Job {
                 }
 
                 boolean needFutu = needsFutuSession(fullProcessingGroups, splitEligibleFigis, reportEligibleFigis,
-                        splitSymbolCounts, initialStatuses, manualFigisMode, recentEarningsFigis, recentSecCiks);
+                        splitSymbolCounts, initialStatuses, manualFigisMode, recentEarningsFigis, recentSecCiks, splitThrough);
 
                 FutuService.ObservationSession futuSession = null;
                 Set<String> supportedFutuReportSymbols = Set.of();
@@ -303,7 +306,7 @@ public class StockFundamentalDailySyncJob implements Job {
                                 group, splitEligibleFigis, splitSymbolCounts, initialStatuses,
                                 massiveSplitsByTicker, futuSession, splitThrough);
 
-                        List<ReportDownload> reportDownloads = prepareGroupReports(
+                        List<ReportDownload> reportDownloads = group.splitOnlyCatchup() ? List.of() : prepareGroupReports(
                                 group, reportEligibleFigis, initialStatuses, latestStatementEndsByFigi,
                                 manualFigisMode, recentEarningsFigis, recentSecCiks,
                                 futuSession, supportedFutuReportSymbols);
@@ -311,7 +314,7 @@ public class StockFundamentalDailySyncJob implements Job {
                             if (rd.unsupported()) unsupportedReportStocks++;
                         }
 
-                        List<SecCikDownload> secDownloads = prepareGroupSec(
+                        List<SecCikDownload> secDownloads = group.splitOnlyCatchup() ? List.of() : prepareGroupSec(
                                 group, secEligibleFigis, companyFacts, submissions, missingSecEntries);
 
                         // 單組原子交易：寫入原料、各自水位、原地重建財季分母，成功才推進 fundamental_sync_date
@@ -348,8 +351,8 @@ public class StockFundamentalDailySyncJob implements Job {
             log.warn("SEC Company Facts ZIP missing entries | count={} ciks={}",
                     missingSecEntries.size(), missingSecEntries.stream().limit(30).toList());
         }
-        log.info("Fundamental daily sync completed | todayHk={} fastSplitStocks={} groups={} reports={} secChanges={} rebuiltValuationStocks={} unsupportedReports={} splitDiscrepancies={} splitFailures={}",
-                todayHk, fastAdvanced, groupsProcessed, reportsSaved, secFactChanges,
+        log.info("Fundamental daily sync completed | todayHk={} splitThrough={} splitOnlyCatchupGroups={} fastSplitStocks={} groups={} reports={} secChanges={} rebuiltValuationStocks={} unsupportedReports={} splitDiscrepancies={} splitFailures={}",
+                todayHk, splitThrough, splitOnlyCatchupGroups, fastAdvanced, groupsProcessed, reportsSaved, secFactChanges,
                 modifiedValuationFigis.size(), unsupportedReportStocks, splitDiscrepancies, splitFailures);
     }
 
@@ -365,11 +368,14 @@ public class StockFundamentalDailySyncJob implements Job {
 
     private List<CompanyGroup> buildCompanyGroups(Map<String, Stock> universeByFigi,
                                                   Map<String, StockStatus> initialStatuses,
+                                                  Set<String> splitEligibleFigis,
+                                                  Map<String, Long> splitSymbolCounts,
                                                   Set<String> reportEligibleFigis,
                                                   Set<String> secEligibleFigis,
                                                   LocalDate todayHk,
                                                   LocalDate latestSaturdayHk,
                                                   boolean isSaturdayHk,
+                                                  LocalDate splitThrough,
                                                   Set<String> requestedFigis) {
         Map<String, List<Stock>> groupedMembers = new LinkedHashMap<>();
         Map<String, String> groupCanonicalCik = new HashMap<>();
@@ -396,7 +402,15 @@ public class StockFundamentalDailySyncJob implements Job {
                     StockStatus st = initialStatuses.get(s.getFigi());
                     return st != null && st.getFundamentalSyncDate() != null && !st.getFundamentalSyncDate().isBefore(todayHk);
                 });
-                if (allSyncedToday) continue;
+                if (allSyncedToday) {
+                    boolean needsSplitCatchup = members.stream().anyMatch(s -> isEligibleForSplitOnlyCatchup(
+                            s, splitEligibleFigis, splitSymbolCounts, initialStatuses.get(s.getFigi()), splitThrough));
+                    if (!needsSplitCatchup) continue;
+                    // 同日早盤前已同步基本面但美股收市後 split_date 落後：走純拆股增量補推，強制關閉 fullPatrol／財報／SEC
+                    groups.add(new CompanyGroup(entry.getKey(), groupCanonicalCik.get(entry.getKey()), members,
+                            false, false, false, true));
+                    continue;
+                }
             }
 
             // 週六當天，或跨日後組內有股票已初始化過斷點水位但尚未越過最近週六水位時，執行週六全市場巡檢
@@ -408,9 +422,30 @@ public class StockFundamentalDailySyncJob implements Job {
             boolean hasReport = members.stream().anyMatch(s -> reportEligibleFigis.contains(s.getFigi()));
             boolean hasSec = members.stream().anyMatch(s -> secEligibleFigis.contains(s.getFigi()));
             groups.add(new CompanyGroup(entry.getKey(), groupCanonicalCik.get(entry.getKey()), members,
-                    fullPatrol, hasReport, hasSec));
+                    fullPatrol, hasReport, hasSec, false));
         }
         return groups;
+    }
+
+    private boolean isEligibleForSplitOnlyCatchup(Stock stock,
+                                                  Set<String> splitEligibleFigis,
+                                                  Map<String, Long> splitSymbolCounts,
+                                                  StockStatus status,
+                                                  LocalDate splitThrough) {
+        if (stock == null || !splitEligibleFigis.contains(stock.getFigi())) {
+            return false;
+        }
+        if (splitSymbolCounts.getOrDefault(stock.getSymbol(), 0L) != 1L) {
+            return false;
+        }
+        if (status == null || hasSplitDiscrepancyMessage(status)) {
+            return false;
+        }
+        String msg = status.getSplitMessage();
+        if (msg != null && !msg.isBlank() && !msg.toUpperCase(java.util.Locale.ROOT).startsWith("WARNING:")) {
+            return false;
+        }
+        return status.getSplitDate() == null || status.getSplitDate().isBefore(splitThrough);
     }
 
     private Map<String, List<MassiveSplit>> preloadMassiveSplitsIfNeeded(List<CompanyGroup> groups,
@@ -425,6 +460,9 @@ public class StockFundamentalDailySyncJob implements Job {
                 if (!splitEligibleFigis.contains(s.getFigi())) continue;
                 if (splitSymbolCounts.getOrDefault(s.getSymbol(), 0L) != 1L) continue;
                 StockStatus st = initialStatuses.get(s.getFigi());
+                if (group.splitOnlyCatchup() && !isEligibleForSplitOnlyCatchup(s, splitEligibleFigis, splitSymbolCounts, st, through)) {
+                    continue;
+                }
                 if (st == null || st.getSplitDate() == null) continue;
                 LocalDate from = incrementalSplitFrom(st.getSplitDate());
                 if (minFrom == null || from.isBefore(minFrom)) minFrom = from;
@@ -486,7 +524,9 @@ public class StockFundamentalDailySyncJob implements Job {
                 for (StockStatus status : locked) {
                     if (status.getSplitFromDate() == null) status.setSplitFromDate(splitHistoryStartDate);
                     if (!hasSplitDiscrepancyMessage(status)) {
-                        status.setSplitDate(through);
+                        if (status.getSplitDate() == null || status.getSplitDate().isBefore(through)) {
+                            status.setSplitDate(through);
+                        }
                         status.setSplitMessage(null);
                     }
                     status.setFundamentalSyncDate(todayHk);
@@ -499,7 +539,8 @@ public class StockFundamentalDailySyncJob implements Job {
 
     private Map<String, Map<Integer, LocalDate>> preloadLatestStatementEnds(List<CompanyGroup> groups,
                                                                             Set<String> reportEligibleFigis) {
-        List<String> figis = groups.stream().flatMap(g -> g.members().stream())
+        List<String> figis = groups.stream().filter(g -> !g.splitOnlyCatchup())
+                .flatMap(g -> g.members().stream())
                 .map(Stock::getFigi).filter(reportEligibleFigis::contains).distinct().toList();
         if (figis.isEmpty()) return Map.of();
         Map<String, Map<Integer, LocalDate>> result = new HashMap<>();
@@ -519,7 +560,7 @@ public class StockFundamentalDailySyncJob implements Job {
                                       Set<String> recentSecCiks) {
         Set<String> candidateCiks = new LinkedHashSet<>();
         for (CompanyGroup group : groups) {
-            if (group.fullPatrol()) continue;
+            if (group.fullPatrol() || group.splitOnlyCatchup()) continue;
             for (Stock s : group.members()) {
                 if (s.getCik() != null && !s.getCik().isBlank()) {
                     candidateCiks.add(s.getCik());
@@ -541,11 +582,11 @@ public class StockFundamentalDailySyncJob implements Job {
     }
 
     private boolean hasReportGroup(List<CompanyGroup> groups) {
-        return groups.stream().anyMatch(CompanyGroup::hasReportEligible);
+        return groups.stream().anyMatch(g -> !g.splitOnlyCatchup() && g.hasReportEligible());
     }
 
     private boolean hasWeekdayReportGroup(List<CompanyGroup> groups) {
-        return groups.stream().anyMatch(g -> g.hasReportEligible() && !g.fullPatrol());
+        return groups.stream().anyMatch(g -> !g.splitOnlyCatchup() && g.hasReportEligible() && !g.fullPatrol());
     }
 
     private boolean needsFutuSession(List<CompanyGroup> groups,
@@ -555,16 +596,20 @@ public class StockFundamentalDailySyncJob implements Job {
                                      Map<String, StockStatus> initialStatuses,
                                      boolean manualFigisMode,
                                      Set<String> recentEarningsFigis,
-                                     Set<String> recentSecCiks) {
+                                     Set<String> recentSecCiks,
+                                     LocalDate splitThrough) {
         for (CompanyGroup group : groups) {
             for (Stock s : group.members()) {
                 StockStatus st = initialStatuses.get(s.getFigi());
                 if (splitEligibleFigis.contains(s.getFigi()) && splitSymbolCounts.getOrDefault(s.getSymbol(), 0L) == 1L) {
+                    if (group.splitOnlyCatchup() && !isEligibleForSplitOnlyCatchup(s, splitEligibleFigis, splitSymbolCounts, st, splitThrough)) {
+                        continue;
+                    }
                     if (group.fullPatrol() || st == null || st.getSplitDate() == null) {
                         return true;
                     }
                 }
-                if (reportEligibleFigis.contains(s.getFigi())
+                if (!group.splitOnlyCatchup() && reportEligibleFigis.contains(s.getFigi())
                         && shouldQueryFutuReport(s, st, group.fullPatrol(), manualFigisMode, recentEarningsFigis, recentSecCiks)) {
                     return true;
                 }
@@ -599,11 +644,14 @@ public class StockFundamentalDailySyncJob implements Job {
         Instant observedAt = dateTimeService.now();
         for (Stock stock : group.members()) {
             if (!splitEligibleFigis.contains(stock.getFigi())) continue;
+            StockStatus snapshot = initialStatuses.get(stock.getFigi());
+            if (group.splitOnlyCatchup() && !isEligibleForSplitOnlyCatchup(stock, splitEligibleFigis, splitSymbolCounts, snapshot, through)) {
+                continue;
+            }
             if (splitSymbolCounts.getOrDefault(stock.getSymbol(), 0L) != 1L) {
                 downloads.add(new SplitDownload(stock, List.of(), splitHistoryStartDate, false, false, true, null));
                 continue;
             }
-            StockStatus snapshot = initialStatuses.get(stock.getFigi());
             boolean fullReconcile = group.fullPatrol() || snapshot == null || snapshot.getSplitDate() == null;
             LocalDate from = fullReconcile ? splitHistoryStartDate : incrementalSplitFrom(snapshot.getSplitDate());
             try {
@@ -842,7 +890,7 @@ public class StockFundamentalDailySyncJob implements Job {
                     .map(Stock::getFigi).distinct().sorted().toList();
             if (!valuationFigis.isEmpty() && stockValuationService != null) {
                 boolean needsRebuild = valuationInputChanged;
-                if (!needsRebuild) {
+                if (!needsRebuild && !group.splitOnlyCatchup()) {
                     boolean anyHasReportOrSec = valuationFigis.stream().anyMatch(figi -> {
                         StockStatus st = lockedStatuses.get(figi);
                         return st != null && (st.getFinancialReportDate() != null || st.getSecFinancialFactsDate() != null);
@@ -928,7 +976,9 @@ public class StockFundamentalDailySyncJob implements Job {
         }
         if (status.getSplitFromDate() == null) status.setSplitFromDate(splitHistoryStartDate);
         if (!preserveExistingDiscrepancy && !hasSplitDiscrepancyMessage(status)) {
-            status.setSplitDate(through);
+            if (status.getSplitDate() == null || status.getSplitDate().isBefore(through)) {
+                status.setSplitDate(through);
+            }
             status.setSplitMessage(null);
         }
         return changedAny;

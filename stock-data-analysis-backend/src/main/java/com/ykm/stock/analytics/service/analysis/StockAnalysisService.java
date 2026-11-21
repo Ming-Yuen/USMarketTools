@@ -121,6 +121,7 @@ public class StockAnalysisService {
                 : day;
         if (!resolvedReportDate.equals(day)) {
             cutoff = calendar.getSessionCloseAt(resolvedReportDate);
+            industryCode = industries.findAt(stock.getFigi(), cutoff).map(row -> row.getIndustry().getCode()).orElse(null);
         }
         AnalysisContext context = new AnalysisContext(stock.getFigi(), cutoff, supplementalCutoff, horizon);
 
@@ -166,9 +167,11 @@ public class StockAnalysisService {
             }
         }
         reasons.addAll(price.reasons());
+        boolean sectorBreadthBreakdown = sectorMoneyFlowService != null
+                && sectorMoneyFlowService.isIndustryBreadthBreakdown(industryCode, resolvedReportDate);
         MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculate(
                 horizon, valuation, bundle.financials(), bundle.fundamentals(), observations,
-                structure, support, tradePlans, marketResult);
+                structure, support, tradePlans, marketResult, sectorBreadthBreakdown);
         // 在技術計畫（含兩收盤失效判定）與綜合摘要全部完成後，一次性載入個人組合曝險並附加倉位風險計算
         boolean historicalQuery = request.valuationDate() != null;
         boolean quoteFellBack = !historicalQuery && !resolvedReportDate.equals(day);
@@ -177,7 +180,7 @@ public class StockAnalysisService {
                 : (valuation != null ? valuation.price() : null);
         SizingAttachment sizingAttachment = attachPositionSizing(
                 stock, industryCode, resolvedReportDate, readAt, historicalQuery, quoteFellBack,
-                latestPriceClose, tradePlans, summary, marketResult);
+                sectorBreadthBreakdown, latestPriceClose, tradePlans, summary, marketResult);
         MetricResult<TradePlanResultDto> enrichedTradePlans = sizingAttachment.tradePlans();
         PositionSizingDto starterPositionSizing = sizingAttachment.starterPositionSizing();
 
@@ -258,9 +261,11 @@ public class StockAnalysisService {
 
         boolean historicalQuery = request.valuationDate() != null;
         boolean quoteFellBack = !historicalQuery && !resolvedReportDate.equals(day);
+        boolean sectorBreadthBreakdown = sectorMoneyFlowService != null
+                && sectorMoneyFlowService.isIndustryBreadthBreakdown(industryCode, resolvedReportDate);
         SizingAttachment sizingAttachment = attachPositionSizing(
                 stock, industryCode, resolvedReportDate, readAt, historicalQuery, quoteFellBack,
-                latestPriceClose, tradePlans, summary, marketResult);
+                sectorBreadthBreakdown, latestPriceClose, tradePlans, summary, marketResult);
 
         ReportEnhancementHighlightsDto etfEnhancements = loadReadOnlyEnhancements(
                 stock, resolvedReportDate, latestPriceClose, sizingAttachment.tradePlans(), summary, marketResult, true);
@@ -416,6 +421,7 @@ public class StockAnalysisService {
                                                   Instant readAt,
                                                   boolean historicalQuery,
                                                   boolean quoteFellBack,
+                                                  boolean sectorBreadthBreakdown,
                                                   BigDecimal latestPriceClose,
                                                   MetricResult<TradePlanResultDto> tradePlans,
                                                   MetricResult<InvestmentSummaryDto> summary,
@@ -518,6 +524,7 @@ public class StockAnalysisService {
                         false,
                         regime,
                         macroCautionActive,
+                        sectorBreadthBreakdown,
                         exposure.config(),
                         existingHoldingMv,
                         currentSectorMv,
@@ -545,6 +552,7 @@ public class StockAnalysisService {
                     true,
                     regime,
                     macroCautionActive,
+                    sectorBreadthBreakdown,
                     exposure.config(),
                     existingHoldingMv,
                     currentSectorMv,

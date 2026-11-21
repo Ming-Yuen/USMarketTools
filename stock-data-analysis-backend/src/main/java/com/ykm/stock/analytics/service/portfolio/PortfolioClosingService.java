@@ -24,6 +24,8 @@ import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository
 import com.ykm.stock.analytics.repository.jpa.InAppNotificationRepository;
 import com.ykm.stock.analytics.repository.jpa.SectorMoneyFlowDailyRepository;
 import com.ykm.stock.analytics.service.analysis.MarketContextService.PreloadedMarketData;
+import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService;
+import com.ykm.stock.analytics.service.analysis.SectorMoneyFlowService.SectorBreadthStatus;
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator;
 import com.ykm.stock.analytics.service.analysis.calculator.PositionSizingCalculator.SizingInputs;
 import com.ykm.stock.analytics.service.portfolio.PortfolioHealthCheckService.HealthEvaluationOutput;
@@ -43,6 +45,8 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -129,14 +133,22 @@ public class PortfolioClosingService {
         LocalDate previousTradeDate = previousOpt.map(DailyClosingBriefing::getTradeDate).orElse(null);
         boolean regimeChanged = isMeaningfulRegimeChange(previousRegime, currentRegime);
 
-        // 3. 讀取當日板塊量價資金流（CMF20d 最強／最弱前 2 大）
+        // 3. 讀取當日板塊量價資金流（CMF20d 最強／最弱前 2 大，並建立同日產業對照表供雷達倉位與廣度去重共用）
         List<SectorMoneyFlowDaily> sectorFlows = sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(tradeDate);
+        Map<String, SectorMoneyFlowDaily> sectorFlowByIndustry = new LinkedHashMap<>();
+        if (sectorFlows != null) {
+            for (SectorMoneyFlowDaily row : sectorFlows) {
+                if (row != null && row.getIndustryCode() != null) {
+                    sectorFlowByIndustry.putIfAbsent(row.getIndustryCode(), row);
+                }
+            }
+        }
         List<BriefingSectorDto> topSectors = selectTopSectors(sectorFlows, 2);
         List<BriefingSectorDto> bottomSectors = selectBottomSectors(sectorFlows, topSectors, 2);
 
         // 4. 讀取當日全市場每日雷達精選前 5 名（主清單最多 3 + 次清單最多 2，缺額遞補）並計算建議買入股數
         List<DailyOpportunityRadar> radarRows = radarRepository.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(tradeDate);
-        List<BriefingRadarItemDto> radarTop5 = selectRadarTop5(radarRows, parsedRegime, healthOutput);
+        List<BriefingRadarItemDto> radarTop5 = selectRadarTop5(radarRows, parsedRegime, healthOutput, sectorFlowByIndustry, tradeDate);
 
         // 5. 構建待寫入之分級站內提醒（簡報統計僅計實際業務警示，不含簡報已就緒本身）
         Instant generatedAt = dateTimeService.now();
@@ -202,15 +214,27 @@ public class PortfolioClosingService {
             }
         }
 
-        // 5c. 產業板塊集中度超標警示（每交易日每產業一筆）
+        // 5c. 產業板塊警示：集中度超標維持每日提醒；板塊廣度崩壞採無狀態跨波段／換倉抑制（首次進入、確認修復後新波段、或 S_now 與 S_0 完全無交集才發通知）
         for (PortfolioAlertDto sectorAlert : healthSummary.sectorAlerts()) {
             String indCode = String.valueOf(sectorAlert.payload().getOrDefault("industryCode", "UNKNOWN"));
-            notifications.add(buildNotification(
-                    "SECTOR:" + tradeDate + ":" + indCode,
-                    tradeDate, sectorAlert.severity(), InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
-                    sectorAlert.alertCode(), null, null, sectorAlert.stockName(),
-                    sectorAlert.payload(), generatedAt));
-            warningBiz++;
+            if (PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN.equals(sectorAlert.alertCode())) {
+                if (!shouldEmitSectorBreadthNotification(indCode, tradeDate, sectorAlert.payload())) {
+                    continue;
+                }
+                notifications.add(buildNotification(
+                        "SECTOR_BREADTH:" + tradeDate + ":" + indCode,
+                        tradeDate, sectorAlert.severity(), InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        sectorAlert.alertCode(), null, null, sectorAlert.stockName(),
+                        sectorAlert.payload(), generatedAt));
+                warningBiz++;
+            } else {
+                notifications.add(buildNotification(
+                        "SECTOR:" + tradeDate + ":" + indCode,
+                        tradeDate, sectorAlert.severity(), InAppNotification.CATEGORY_PORTFOLIO_HOLDING,
+                        sectorAlert.alertCode(), null, null, sectorAlert.stockName(),
+                        sectorAlert.payload(), generatedAt));
+                warningBiz++;
+            }
         }
 
         // 5d. 自選股觸發有效買點通知
@@ -225,6 +249,9 @@ public class PortfolioClosingService {
                 payload.put("suggestedShares", opp.positionSizing().suggestedShares());
                 payload.put("positionCapitalPct", opp.positionSizing().positionCapitalPct());
                 payload.put("scaleLabel", opp.positionSizing().scaleLabel());
+                if (!opp.positionSizing().sizingTags().isEmpty()) {
+                    payload.put("sizingTags", opp.positionSizing().sizingTags());
+                }
             }
             notifications.add(buildNotification(
                     "WATCHLIST:" + tradeDate + ":" + opp.figi() + ":" + opp.triggerType(),
@@ -437,7 +464,9 @@ public class PortfolioClosingService {
     /** 雙軌雷達精選前 5 名：主清單按折價與 R/R 最多 3 名 + 次清單按回踩距離與 PEG 最多 2 名，任一軌不足由另一軌遞補至最多 5 名。 */
     private List<BriefingRadarItemDto> selectRadarTop5(List<DailyOpportunityRadar> rows,
                                                        MarketRegime regime,
-                                                       HealthEvaluationOutput healthOutput) {
+                                                       HealthEvaluationOutput healthOutput,
+                                                       Map<String, SectorMoneyFlowDaily> sectorFlowByIndustry,
+                                                       LocalDate tradeDate) {
         if (rows == null || rows.isEmpty()) {
             return List.of();
         }
@@ -493,6 +522,10 @@ public class PortfolioClosingService {
                     : healthOutput.sectorMarketValueUsdByIndustry().getOrDefault(r.getIndustryCode(), BigDecimal.ZERO);
             boolean actionable = !r.isHeadwindWatchOnly() && (isStarter || "ACTIVE".equals(r.getPlanStatus()));
 
+            boolean sectorBreadthBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(
+                    r.getIndustryCode() == null ? null : sectorFlowByIndustry.get(r.getIndustryCode()),
+                    tradeDate);
+
             PositionSizingDto sizing = null;
             if (healthOutput.unverifiedHoldingFigis().contains(r.getFigi()) && "USD".equalsIgnoreCase(r.getCurrency())) {
                 sizing = PositionSizingDto.notApplicable(
@@ -510,15 +543,19 @@ public class PortfolioClosingService {
                         r.getClosePrice(),
                         r.getProtectiveStop(),
                         actionable,
+                        false,
                         isStarter,
                         regime,
                         r.isMacroCautionActive(),
+                        sectorBreadthBreakdown,
                         healthOutput.config(),
                         existingMv,
                         sectorMv,
                         healthOutput.excludedHoldingsCount()
                 ));
             }
+            String effectivePositionFraction = isStarter && sizing != null && "1/6".equals(sizing.scaleLabel())
+                    ? "1/6" : r.getPositionFraction();
             result.add(new BriefingRadarItemDto(
                     r.getFigi(),
                     r.getSymbol(),
@@ -537,7 +574,7 @@ public class PortfolioClosingService {
                     r.getFirstTargetPrice(),
                     r.getNetRiskReward(),
                     r.getPullbackAnchor(),
-                    r.getPositionFraction(),
+                    effectivePositionFraction,
                     r.getPlanStatus(),
                     actionable,
                     sizing != null ? sizing.suggestedShares() : null,
@@ -546,6 +583,65 @@ public class PortfolioClosingService {
             ));
         }
         return result;
+    }
+
+    /**
+     * 無狀態板塊廣度崩壞通知去重判定：
+     * 1. 無前期通知 -> 發送；
+     * 2. 上次通知日 T_0 至今日 D 之間存在至少一日通過門檻且未崩壞（確認修復） -> 新波段發送；
+     * 3. 同一未修復波段內，當前持倉 S_now 與上次通知快照 S_0 完全無交集（原倉已全數換血） -> 發送；否則靜默。
+     */
+    private boolean shouldEmitSectorBreadthNotification(String industryCode,
+                                                        LocalDate tradeDate,
+                                                        Map<String, Object> currentPayload) {
+        Optional<InAppNotification> lastPriorOpt = notificationRepository
+                .findTopByAlertCodeAndTradeDateLessThanAndDedupKeyEndingWithOrderByTradeDateDescIdDesc(
+                        PortfolioHealthCheckService.ALERT_HOLDING_SECTOR_BREADTH_BREAKDOWN,
+                        tradeDate,
+                        ":" + industryCode);
+        if (lastPriorOpt == null || lastPriorOpt.isEmpty() || lastPriorOpt.get().getTradeDate() == null) {
+            return true;
+        }
+        InAppNotification lastPrior = lastPriorOpt.get();
+        // 先判完全換倉（零額外 DB 查詢）；若歷史快照無 positionIds 而目前已有新倉亦視為不重疊
+        Set<String> priorPositionIds = extractStringSet(lastPrior.getPayload(), "positionIds");
+        Set<String> currentPositionIds = extractStringSet(currentPayload, "positionIds");
+        if (!currentPositionIds.isEmpty()
+                && (priorPositionIds.isEmpty() || Collections.disjoint(currentPositionIds, priorPositionIds))) {
+            return true;
+        }
+        List<SectorMoneyFlowDaily> between = sectorMoneyFlowRepository
+                .findByIndustryCodeAndTradeDateGreaterThanAndTradeDateLessThanOrderByTradeDateAsc(
+                        industryCode, lastPrior.getTradeDate(), tradeDate);
+        if (between != null) {
+            for (SectorMoneyFlowDaily row : between) {
+                SectorBreadthStatus status = SectorMoneyFlowService.evaluateBreadthBreakdown(row);
+                if (status.eligible() && !status.breakdown()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private Set<String> extractStringSet(Map<String, Object> payload, String key) {
+        if (payload == null) {
+            return Set.of();
+        }
+        Object raw = payload.get(key);
+        if (!(raw instanceof Collection<?> col)) {
+            return Set.of();
+        }
+        Set<String> out = new LinkedHashSet<>();
+        for (Object item : col) {
+            if (item != null) {
+                String value = String.valueOf(item).trim();
+                if (!value.isEmpty()) {
+                    out.add(value);
+                }
+            }
+        }
+        return out;
     }
 
     private boolean isMeaningfulRegimeChange(String previousRegime, String currentRegime) {

@@ -54,6 +54,10 @@ export function formatAlertMessage(
   const currRegimeRaw = asStr(p.currentRegime, "—");
   const stanceRaw = asStr(p.stance, "—");
   const trackTypeRaw = asStr(p.trackType, "—");
+  const deferReasonRaw = asStr(p.reason, "UNKNOWN");
+  const affectedSymbols = Array.isArray(p.affectedSymbols)
+    ? p.affectedSymbols.map((s) => String(s)).join(", ")
+    : asStr(p.affectedSymbols);
 
   const sharesNum = asNum(p.suggestedShares);
 
@@ -72,6 +76,11 @@ export function formatAlertMessage(
     resistanceLower: formatDecimal(asNum(p.resistanceLower)),
     resistanceUpper: formatDecimal(asNum(p.resistanceUpper)),
     industryName: asStr(p.industryName, asStr(p.industryCode)),
+    holdingCount: asNum(p.holdingCount) ?? 0,
+    affectedSymbols,
+    breadthAboveSma50Pct: formatPct(asNum(p.breadthAboveSma50Pct), 1),
+    breadthAboveSma200Pct: formatPct(asNum(p.breadthAboveSma200Pct), 1),
+    return20dMedian: formatPct(asNum(p.return20dMedian), 1, true),
     exposurePct: formatPct(asNum(p.exposurePct), 1),
     maxPct: formatPct(asNum(p.maxSectorExposurePct), 0),
     suggestedShares: sharesNum != null ? sharesNum : "—",
@@ -88,6 +97,11 @@ export function formatAlertMessage(
     observationDate: asStr(p.observationDate),
     impliedMovePct: formatPct(asNum(p.impliedMovePct), 1),
     stopDistancePct: formatPct(asNum(p.stopDistancePct), 1),
+    deferReason: String(t(`notifications.deferReasons.${deferReasonRaw}`, { defaultValue: deferReasonRaw })),
+    readyQuotes: asNum(p.readyQuotes) ?? 0,
+    totalTargets: asNum(p.totalTargets) ?? 0,
+    readySplits: asNum(p.readySplits) ?? 0,
+    splitTargets: asNum(p.splitTargets) ?? 0,
   };
 
   return String(t(`notifications.alerts.${alertCode}`, {

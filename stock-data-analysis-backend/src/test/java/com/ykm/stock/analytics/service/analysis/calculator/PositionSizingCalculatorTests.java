@@ -28,10 +28,10 @@ class PositionSizingCalculatorTests {
     void higherStopDistanceHalvesSuggestedSharesAndKeepsLossWithinRiskBudget() {
         PositionSizingDto lowVol = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("99"), new BigDecimal("90"),
-                true, false, MarketRegime.RISK_ON, false, defaultConfig(), BigDecimal.ZERO, BigDecimal.ZERO, 0));
+                true, false, false, MarketRegime.RISK_ON, false, false, defaultConfig(), BigDecimal.ZERO, BigDecimal.ZERO, 0));
         PositionSizingDto highVol = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("99"), new BigDecimal("80"),
-                true, false, MarketRegime.RISK_ON, false, defaultConfig(), BigDecimal.ZERO, BigDecimal.ZERO, 0));
+                true, false, false, MarketRegime.RISK_ON, false, false, defaultConfig(), BigDecimal.ZERO, BigDecimal.ZERO, 0));
 
         assertThat(lowVol.status()).isEqualTo(PositionSizingDto.STATUS_AVAILABLE);
         assertThat(lowVol.suggestedShares()).isEqualTo(100L);
@@ -49,7 +49,7 @@ class PositionSizingCalculatorTests {
     void starterOneThirdSizingAndSectorConcentrationWarning() {
         PositionSizingDto sizing = calculator.calculate(new SizingInputs(
                 "USD", "SEMI", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, true, MarketRegime.RISK_ON, false, defaultConfig(),
+                true, false, true, MarketRegime.RISK_ON, false, false, defaultConfig(),
                 BigDecimal.ZERO, new BigDecimal("28000.00"), 0));
 
         // 1/3 單檔上限 = 15,000 / 3 = 5,000 -> 50 股；1/3 風險上限 = 1,000 / (5 * 3) = 66 股 -> 取較小值 50 股
@@ -70,7 +70,7 @@ class PositionSizingCalculatorTests {
     void starterWithMacroCautionProducesExactOneSixthShares() {
         PositionSizingDto sizing = calculator.calculate(new SizingInputs(
                 "USD", "SEMI", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, true, MarketRegime.NEUTRAL, true, defaultConfig(),
+                true, false, true, MarketRegime.NEUTRAL, true, false, defaultConfig(),
                 BigDecimal.ZERO, BigDecimal.ZERO, 0));
 
         assertThat(sizing.scaleLabel()).isEqualTo("1/6");
@@ -84,13 +84,67 @@ class PositionSizingCalculatorTests {
         );
     }
 
+    /** Scenario 3b：板塊廣度崩壞半倉控管 — 單獨觸發為 1/2、與宏觀警戒同時觸發不疊乘仍為 1/2（雙標籤）、疊加試單為 1/6、BEAR/PANIC 維持 0 股。 */
+    @Test
+    void sectorBreadthBreakdownAppliesSingleHalfCutAcrossRegularMacroAndStarterWithoutDoubleHalving() {
+        // 1) 一般開倉 + 僅板塊廣度崩壞 -> 1/2（75 股）
+        PositionSizingDto sectorOnly = calculator.calculate(new SizingInputs(
+                "USD", "I41", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
+                true, false, false, MarketRegime.RISK_ON, false, true, defaultConfig(),
+                BigDecimal.ZERO, BigDecimal.ZERO, 0));
+        assertThat(sectorOnly.scaleLabel()).isEqualTo("1/2");
+        assertThat(sectorOnly.scaleDenominator()).isEqualTo(2);
+        assertThat(sectorOnly.suggestedShares()).isEqualTo(75L);
+        assertThat(sectorOnly.sizingTags()).contains(PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE);
+        assertThat(sectorOnly.sizingTags()).doesNotContain(PositionSizingDto.TAG_MACRO_HEADWIND_HALF_SIZE);
+
+        // 2) 一般開倉 + 宏觀警戒 + 板塊廣度崩壞 -> 不疊乘 1/4，仍為 1/2（75 股）且並列雙標籤
+        PositionSizingDto macroAndSector = calculator.calculate(new SizingInputs(
+                "USD", "I41", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
+                true, false, false, MarketRegime.CORRECTION, true, true, defaultConfig(),
+                BigDecimal.ZERO, BigDecimal.ZERO, 0));
+        assertThat(macroAndSector.scaleLabel()).isEqualTo("1/2");
+        assertThat(macroAndSector.scaleDenominator()).isEqualTo(2);
+        assertThat(macroAndSector.suggestedShares()).isEqualTo(75L);
+        assertThat(macroAndSector.sizingTags()).contains(
+                PositionSizingDto.TAG_MACRO_HEADWIND_HALF_SIZE,
+                PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE
+        );
+
+        // 3) 試單 1/3 + 僅板塊廣度崩壞 -> 1/6（25 股）
+        PositionSizingDto starterSector = calculator.calculate(new SizingInputs(
+                "USD", "I41", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
+                true, false, true, MarketRegime.RISK_ON, false, true, defaultConfig(),
+                BigDecimal.ZERO, BigDecimal.ZERO, 0));
+        assertThat(starterSector.scaleLabel()).isEqualTo("1/6");
+        assertThat(starterSector.scaleDenominator()).isEqualTo(6);
+        assertThat(starterSector.suggestedShares()).isEqualTo(25L);
+        assertThat(starterSector.sizingTags()).contains(
+                PositionSizingDto.TAG_TREND_PULLBACK_STARTER_ONE_THIRD,
+                PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE
+        );
+
+        // 4) 試單 1/3 + 宏觀警戒 + 板塊廣度崩壞 -> 仍為 1/6（不疊乘為 1/12）
+        PositionSizingDto starterBoth = calculator.calculate(new SizingInputs(
+                "USD", "I41", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
+                true, false, true, MarketRegime.NEUTRAL, true, true, defaultConfig(),
+                BigDecimal.ZERO, BigDecimal.ZERO, 0));
+        assertThat(starterBoth.scaleLabel()).isEqualTo("1/6");
+        assertThat(starterBoth.suggestedShares()).isEqualTo(25L);
+        assertThat(starterBoth.sizingTags()).contains(
+                PositionSizingDto.TAG_TREND_PULLBACK_STARTER_ONE_THIRD,
+                PositionSizingDto.TAG_MACRO_HEADWIND_HALF_SIZE,
+                PositionSizingDto.TAG_SECTOR_BREADTH_HEADWIND_HALF_SIZE
+        );
+    }
+
     /** Scenario 4：單檔上限包含既有部位、剛好 30% 不觸發集中度警告、CORRECTION 半倉與 BEAR/PANIC 暫緩開倉。 */
     @Test
     void existingHoldingCapExactSectorBoundaryAndMarketRegimeRules() {
         // 已持有同股 14,000，單檔上限 15,000 -> 最多新增 1,000（10 股），且加上 29,000 剛好等於 30,000（30%）不觸發警告
         PositionSizingDto capped = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, false, MarketRegime.RISK_ON, false, defaultConfig(),
+                true, false, false, MarketRegime.RISK_ON, false, false, defaultConfig(),
                 new BigDecimal("14000.00"), new BigDecimal("29000.00"), 0));
         assertThat(capped.suggestedShares()).isEqualTo(10L);
         assertThat(capped.sectorConcentrationWarning()).isFalse();
@@ -100,7 +154,7 @@ class PositionSizingCalculatorTests {
         // CORRECTION + macroCaution 同時觸發只乘一次 1/2
         PositionSizingDto correction = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                false, false, MarketRegime.CORRECTION, true, defaultConfig(),
+                false, false, false, MarketRegime.CORRECTION, true, false, defaultConfig(),
                 BigDecimal.ZERO, BigDecimal.ZERO, 0));
         assertThat(correction.scaleLabel()).isEqualTo("1/2");
         assertThat(correction.suggestedShares()).isEqualTo(75L);
@@ -113,7 +167,7 @@ class PositionSizingCalculatorTests {
         // BEAR / PANIC 暫緩開倉 -> PAUSED, 0 股；且未取整前的板塊市值 30,000.04 > 30,000（30%）仍須觸發集中度警告
         PositionSizingDto bear = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, false, MarketRegime.BEAR, true, defaultConfig(),
+                true, false, false, MarketRegime.BEAR, true, true, defaultConfig(),
                 BigDecimal.ZERO, new BigDecimal("30000.04"), 0));
         assertThat(bear.status()).isEqualTo(PositionSizingDto.STATUS_PAUSED);
         assertThat(bear.suggestedShares()).isEqualTo(0L);
@@ -125,7 +179,7 @@ class PositionSizingCalculatorTests {
         // 預設最新日行情回退至前一交易日時，須帶獨立標籤 STALE_QUOTE_DATE_FALLBACK 且 planActionable = false
         PositionSizingDto staleFallback = calculator.calculate(new SizingInputs(
                 "USD", "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, true, false, MarketRegime.RISK_ON, false, defaultConfig(),
+                true, true, false, MarketRegime.RISK_ON, false, false, defaultConfig(),
                 BigDecimal.ZERO, BigDecimal.ZERO, 0));
         assertThat(staleFallback.status()).isEqualTo(PositionSizingDto.STATUS_AVAILABLE);
         assertThat(staleFallback.planActionable()).isFalse();
@@ -138,7 +192,7 @@ class PositionSizingCalculatorTests {
     void nonUsdAndMissingCurrencyReturnNotApplicableWithoutFx() {
         PositionSizingDto hkd = calculator.calculate(new SizingInputs(
                 "HKD", "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, false, MarketRegime.RISK_ON, false, defaultConfig(),
+                true, false, false, MarketRegime.RISK_ON, false, false, defaultConfig(),
                 BigDecimal.ZERO, BigDecimal.ZERO, 0));
         assertThat(hkd.status()).isEqualTo(PositionSizingDto.STATUS_NOT_APPLICABLE);
         assertThat(hkd.reasonCode()).isEqualTo("NON_USD_CURRENCY_NO_FX");
@@ -146,7 +200,7 @@ class PositionSizingCalculatorTests {
 
         PositionSizingDto missing = calculator.calculate(new SizingInputs(
                 null, "TECH", new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("95"),
-                true, false, MarketRegime.RISK_ON, false, defaultConfig(),
+                true, false, false, MarketRegime.RISK_ON, false, false, defaultConfig(),
                 BigDecimal.ZERO, BigDecimal.ZERO, 0));
         assertThat(missing.status()).isEqualTo(PositionSizingDto.STATUS_NOT_APPLICABLE);
         assertThat(missing.reasonCode()).isEqualTo("CURRENCY_MISSING");

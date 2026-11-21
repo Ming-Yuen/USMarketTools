@@ -191,7 +191,7 @@ public class ReportExportService {
         setDecimalCell(row, col++, item.tierScore(), s.decimal2());
 
         setLongCell(row, col++, item.suggestedShares(), s.integer());
-        setTextCell(row, col++, BuyRankingReasonFormatter.scaleTagLabel(item.positionScaleTag(), loc), s.text());
+        setTextCell(row, col++, BuyRankingReasonFormatter.scaleTagLabel(item.positionScaleTag(), item.positionSizingTags(), loc), s.text());
         setTextCell(row, col++, BuyRankingReasonFormatter.formatSizingConditions(item, staleDateFallback, loc), s.wrapText());
         setPercentCell(row, col++, item.valuationDiscountPct(), s.percent());
         setDecimalCell(row, col++, item.forwardPeg(), s.decimal2());
@@ -346,7 +346,7 @@ public class ReportExportService {
                     csvNumDecimal2(item.netRiskReward()),
                     csvNumDecimal2(item.tierScore()),
                     csvNumLong(item.suggestedShares()),
-                    csvTextCell(BuyRankingReasonFormatter.scaleTagLabel(item.positionScaleTag(), loc)),
+                    csvTextCell(BuyRankingReasonFormatter.scaleTagLabel(item.positionScaleTag(), item.positionSizingTags(), loc)),
                     csvTextCell(BuyRankingReasonFormatter.formatSizingConditions(item, staleDateFallback, loc)),
                     csvNumPercent(item.valuationDiscountPct()),
                     csvNumDecimal2(item.forwardPeg()),

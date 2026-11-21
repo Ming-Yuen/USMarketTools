@@ -755,8 +755,13 @@ export function BuyRankingReportPage() {
                     const style = TIER_STYLES[item.tier] ?? TIER_STYLES.TIER_4;
                     const isEtf = item.assetType === "ETF";
                     const isExpanded = !!expandedFigis[item.figi];
-                    const scaleLabel = item.positionScaleTag
-                      ? t(`reports.buyRanking.scaleTags.${item.positionScaleTag}`, { defaultValue: item.positionScaleTag })
+                    const hasMacroHalf = item.positionSizingTags?.includes("MACRO_HEADWIND_HALF_SIZE");
+                    const hasSectorHalf = item.positionSizingTags?.includes("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
+                    const resolvedScaleKey = item.positionScaleTag === "1/2"
+                      ? (hasSectorHalf && hasMacroHalf ? "1/2_MACRO_SECTOR" : hasSectorHalf ? "1/2_SECTOR" : "1/2")
+                      : item.positionScaleTag;
+                    const scaleLabel = resolvedScaleKey
+                      ? t(`reports.buyRanking.scaleTags.${resolvedScaleKey}`, { defaultValue: item.positionScaleTag ?? resolvedScaleKey })
                       : null;
 
                     return (
@@ -973,7 +978,11 @@ export function BuyRankingReportPage() {
                                   <strong>{t("reports.buyRanking.detail.sizingStatus")}:</strong> {item.positionSizingStatus || "—"}
                                   {item.positionSizingReasonCode ? ` (${item.positionSizingReasonCode})` : ""} |{" "}
                                   <strong>{t("reports.buyRanking.detail.sizingTags")}:</strong>{" "}
-                                  {item.positionSizingTags?.length ? item.positionSizingTags.join(", ") : "—"}
+                                  {item.positionSizingTags?.length
+                                    ? item.positionSizingTags
+                                        .map((tag) => t(`portfolio.sizing.tags.${tag}`, { defaultValue: tag }))
+                                        .join(", ")
+                                    : "—"}
                                 </Typography>
                                 {!isEtf && (
                                   <Typography variant="caption">

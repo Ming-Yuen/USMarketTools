@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
@@ -13,7 +14,6 @@ import java.time.format.DateTimeFormatter;
 @RequiredArgsConstructor
 public class TreasuryDirectClient {
 
-    private static final String URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml";
     private static final ZoneId SOURCE_ZONE = ZoneId.of("America/New_York");
 
     private final RestClient restClient;
@@ -22,7 +22,15 @@ public class TreasuryDirectClient {
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMM");
 
     public TreasuryYieldCurveFeed getCurrentMonthYieldCurve() {
-        String sourceMonth = dateTimeService.nowZonedDateTime(SOURCE_ZONE).format(formatter);
+        YearMonth currentMonth = YearMonth.from(dateTimeService.nowZonedDateTime(SOURCE_ZONE));
+        return getYieldCurveForMonth(currentMonth);
+    }
+
+    public TreasuryYieldCurveFeed getYieldCurveForMonth(YearMonth month) {
+        if (month == null) {
+            throw new IllegalArgumentException("TREASURY_MONTH_REQUIRED");
+        }
+        String sourceMonth = month.format(formatter);
         return restClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .scheme("https")

@@ -848,9 +848,12 @@ public class PortfolioHealthCheckService {
         boolean forwardValueTrap = false;
         TrendPullbackStarterDto resolvedStarter = null;
 
+        boolean holdingSectorBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(
+                pre.industryCode() == null ? null : loaded.sectorFlowsByIndustry().get(pre.industryCode()),
+                targetDate);
         if (isEtf) {
             MetricResult<InvestmentSummaryDto> etfSummary = summaryCalculator.calculateForEtf(
-                    AnalysisHorizon.POSITION, evalPrice, currency, structure, support, tradePlans, marketResult);
+                    AnalysisHorizon.POSITION, evalPrice, currency, structure, support, tradePlans, marketResult, holdingSectorBreakdown);
             if (etfSummary.status() == MetricStatus.AVAILABLE && etfSummary.value() != null) {
                 resolvedVerdict = etfSummary.value().verdict();
                 resolvedBacking = etfSummary.value().fundamentalBacking();
@@ -906,9 +909,6 @@ public class PortfolioHealthCheckService {
                     ? v.getFundamentalBacking() : ValuationSummaryCalculator.evaluateFundamentalBacking(fundamentalsDto, currentLoss);
             BigDecimal bandLow = valuationFresh ? v.getFairValueLow() : null;
 
-            boolean holdingSectorBreakdown = SectorMoneyFlowService.isSameDayBreadthBreakdown(
-                    pre.industryCode() == null ? null : loaded.sectorFlowsByIndustry().get(pre.industryCode()),
-                    targetDate);
             RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                     AnalysisHorizon.POSITION, evalPrice, verdict, bandLow, backing,
                     fundamentalsDto, futuObs, structure, support, tradePlans, marketResult, holdingSectorBreakdown);

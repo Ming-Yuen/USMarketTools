@@ -357,10 +357,13 @@ class StockFundamentalDailySyncJobTests {
         when(marketStatusService.getLastClosedTradingDay()).thenReturn(fridayClosed);
 
         Stock quietStock = stock("F_NVDA", "NVDA", "Common Stock", "0001045810");
+        Stock warningStock = stock("F_WARN", "WARN", "Common Stock", "0001234567");
         Stock splitStock = stock("F_SPLT", "SPLT", "Common Stock", "0000999999");
         Stock discStock = stock("F_DISC", "DISC", "Common Stock", null);
 
         StockStatus quietStatus = status("F_NVDA", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        StockStatus warningStatus = status("F_WARN", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        warningStatus.setSplitMessage("WARNING:HISTORICAL_PROVIDER_NOTE");
         StockStatus splitStatus = status("F_SPLT", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
         StockStatus discStatus = status("F_DISC", LocalDate.of(2025, 5, 31), null, null, SATURDAY_HK);
         discStatus.setSplitMessage("ERROR:SPLIT_STORED_EVENT_NOT_RETURNED:2025-06-01:dates=1");
@@ -372,15 +375,17 @@ class StockFundamentalDailySyncJobTests {
         fridaySplit.setSplitFrom(BigDecimal.ONE);
         fridaySplit.setSplitTo(new BigDecimal("2"));
 
-        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(quietStock, splitStock, discStock));
+        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(quietStock, warningStock, splitStock, discStock));
         when(stocks.findFinancialReportSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
                 new ActiveStockWithStatus(quietStock, quietStatus),
+                new ActiveStockWithStatus(warningStock, warningStatus),
                 new ActiveStockWithStatus(splitStock, splitStatus)));
         when(stocks.findSecFinancialFactsSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
                 new ActiveStockWithStatus(quietStock, quietStatus),
+                new ActiveStockWithStatus(warningStock, warningStatus),
                 new ActiveStockWithStatus(splitStock, splitStatus)));
-        when(statuses.findAllById(anyCollection())).thenReturn(List.of(quietStatus, splitStatus, discStatus));
-        when(statuses.findAllByIdForUpdate(List.of("F_NVDA"))).thenReturn(List.of(quietStatus));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(quietStatus, warningStatus, splitStatus, discStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_NVDA", "F_WARN"))).thenReturn(List.of(quietStatus, warningStatus));
         when(statuses.findAllByIdForUpdate(List.of("F_SPLT"))).thenReturn(List.of(splitStatus));
         when(massiveService.getSplitsFrom(LocalDate.of(2026, 11, 12))).thenReturn(List.of(fridaySplit));
         when(splitRepository.findByFigiAndExecutionDateBetween(eq("F_SPLT"), any(), any())).thenReturn(List.of());
@@ -391,8 +396,10 @@ class StockFundamentalDailySyncJobTests {
         verify(massiveService).getSplitsFrom(LocalDate.of(2026, 11, 12));
         verifyNoInteractions(futu, companyFactsArchive, submissionsArchive);
 
-        // 無拆股股走快速通道推進 splitDate 至 11-20
+        // 無拆股股（含 WARNING: 訊息普通股）走快速批次通道推進 splitDate 至 11-20，且保留既有 WARNING: 不被清空
         assertThat(quietStatus.getSplitDate()).isEqualTo(fridayClosed);
+        assertThat(warningStatus.getSplitDate()).isEqualTo(fridayClosed);
+        assertThat(warningStatus.getSplitMessage()).isEqualTo("WARNING:HISTORICAL_PROVIDER_NOTE");
         // 真有拆股的 SPLT 落庫新拆股、重建財季分母並刷新最新估值
         assertThat(splitStatus.getSplitDate()).isEqualTo(fridayClosed);
         verify(splitRepository).saveAll(anyCollection());

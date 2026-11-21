@@ -1054,7 +1054,7 @@ public class BuyRankingReportService {
         if (isEtf) {
             return buildEtfItem(
                     entry, params, asOfDate, data, marketBg, globalRegime, indCode, indName, sectorFlow,
-                    hasTargetDayQuote, evalPrice, price, structure, support, tradePlans, marketResult, planList);
+                    sectorBreadthBreakdown, hasTargetDayQuote, evalPrice, price, structure, support, tradePlans, marketResult, planList);
         }
         return buildEquityItem(
                 entry, params, asOfDate, obsCutoff, maxAnnualObsDate, data, marketBg, globalRegime,
@@ -1072,6 +1072,7 @@ public class BuyRankingReportService {
             String indCode,
             String indName,
             SectorMoneyFlowDaily sectorFlow,
+            boolean sectorBreadthBreakdown,
             boolean hasTargetDayQuote,
             BigDecimal evalPrice,
             MetricResult<NormalizedPriceSeriesDto> price,
@@ -1092,7 +1093,7 @@ public class BuyRankingReportService {
         }
 
         MetricResult<InvestmentSummaryDto> etfSummaryRes = summaryCalculator.calculateForEtf(
-                params.horizon(), evalPrice, stock.getCurrency(), structure, support, tradePlans, marketResult);
+                params.horizon(), evalPrice, stock.getCurrency(), structure, support, tradePlans, marketResult, sectorBreadthBreakdown);
         InvestmentSummaryDto etfSummary = etfSummaryRes.status() == MetricStatus.AVAILABLE ? etfSummaryRes.value() : null;
         if (etfSummary == null) {
             return buildSimpleTier4Item(entry, params.resolvedLocale(), indCode, indName, sectorFlow,
@@ -1176,7 +1177,7 @@ public class BuyRankingReportService {
         boolean macroCautionActive = etfSummary.macroCaution() != null && etfSummary.macroCaution().active();
         PositionSizingDto sizing = computePositionSizing(
                 figi, stock.getCurrency(), indCode, evalPrice, zoneEx, tc.tier(),
-                false, globalRegime, macroCautionActive, false, data.staleDateFallback(), data.exposure());
+                false, globalRegime, macroCautionActive, sectorBreadthBreakdown, data.staleDateFallback(), data.exposure());
 
         return assembleItem(
                 entry, params.resolvedLocale(), indCode, indName, sectorFlow,

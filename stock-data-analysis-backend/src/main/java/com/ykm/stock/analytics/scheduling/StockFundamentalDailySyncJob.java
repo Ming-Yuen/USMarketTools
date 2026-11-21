@@ -442,10 +442,15 @@ public class StockFundamentalDailySyncJob implements Job {
             return false;
         }
         String msg = status.getSplitMessage();
-        if (msg != null && !msg.isBlank() && !msg.toUpperCase(java.util.Locale.ROOT).startsWith("WARNING:")) {
+        if (msg != null && !msg.isBlank() && !isWarningSplitMessage(status)) {
             return false;
         }
         return status.getSplitDate() == null || status.getSplitDate().isBefore(splitThrough);
+    }
+
+    private boolean isWarningSplitMessage(StockStatus status) {
+        return status != null && status.getSplitMessage() != null
+                && status.getSplitMessage().toUpperCase(java.util.Locale.ROOT).startsWith("WARNING:");
     }
 
     private Map<String, List<MassiveSplit>> preloadMassiveSplitsIfNeeded(List<CompanyGroup> groups,
@@ -501,7 +506,8 @@ public class StockFundamentalDailySyncJob implements Job {
         if (hasSplitDiscrepancyMessage(status)) {
             return false;
         }
-        if (status.getSplitMessage() != null && SecurityTypePolicy.supportsValuation(stock.getStockType())) {
+        if (status.getSplitMessage() != null && !status.getSplitMessage().isBlank()
+                && !isWarningSplitMessage(status) && SecurityTypePolicy.supportsValuation(stock.getStockType())) {
             return false;
         }
         List<MassiveSplit> events = massiveSplitsByTicker.getOrDefault(stock.getSymbol(), List.of());
@@ -527,7 +533,9 @@ public class StockFundamentalDailySyncJob implements Job {
                         if (status.getSplitDate() == null || status.getSplitDate().isBefore(through)) {
                             status.setSplitDate(through);
                         }
-                        status.setSplitMessage(null);
+                        if (!isWarningSplitMessage(status)) {
+                            status.setSplitMessage(null);
+                        }
                     }
                     status.setFundamentalSyncDate(todayHk);
                 }
@@ -979,7 +987,9 @@ public class StockFundamentalDailySyncJob implements Job {
             if (status.getSplitDate() == null || status.getSplitDate().isBefore(through)) {
                 status.setSplitDate(through);
             }
-            status.setSplitMessage(null);
+            if (!isWarningSplitMessage(status)) {
+                status.setSplitMessage(null);
+            }
         }
         return changedAny;
     }

@@ -256,13 +256,13 @@ public class StockAnalysisService {
             }
         }
         List<AnalysisReasonDto> reasons = new ArrayList<>(price.reasons());
+        boolean sectorBreadthBreakdown = sectorMoneyFlowService != null
+                && sectorMoneyFlowService.isIndustryBreadthBreakdown(industryCode, resolvedReportDate);
         MetricResult<InvestmentSummaryDto> summary = summaryCalculator.calculateForEtf(
-                horizon, latestPriceClose, stock.getCurrency(), structure, support, tradePlans, marketResult);
+                horizon, latestPriceClose, stock.getCurrency(), structure, support, tradePlans, marketResult, sectorBreadthBreakdown);
 
         boolean historicalQuery = request.valuationDate() != null;
         boolean quoteFellBack = !historicalQuery && !resolvedReportDate.equals(day);
-        boolean sectorBreadthBreakdown = sectorMoneyFlowService != null
-                && sectorMoneyFlowService.isIndustryBreadthBreakdown(industryCode, resolvedReportDate);
         SizingAttachment sizingAttachment = attachPositionSizing(
                 stock, industryCode, resolvedReportDate, readAt, historicalQuery, quoteFellBack,
                 sectorBreadthBreakdown, latestPriceClose, tradePlans, summary, marketResult);

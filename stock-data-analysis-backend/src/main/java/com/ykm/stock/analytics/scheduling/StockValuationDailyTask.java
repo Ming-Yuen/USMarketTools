@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -192,16 +193,22 @@ public class StockValuationDailyTask implements Job {
                 boolean radarPublished = radarRunRepository == null || radarRunRepository.existsById(snapshotDate);
                 if (radarPublished) {
                     // 4b. 獨立容錯隔離執行持倉自動體檢與站內收盤簡報／提醒寫入：異常僅記警告日誌，絕不回滾上游估值、板塊資金流、雷達與訊號結算
+                    boolean closingPublished = true;
                     if (portfolioClosingService != null) {
                         try {
-                            portfolioClosingService.publishDailyClosing(snapshotDate, startedAt);
+                            Optional<com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.DailyClosingBriefingDto> briefing =
+                                    portfolioClosingService.publishDailyClosing(snapshotDate, startedAt);
+                            closingPublished = briefing != null && briefing.isPresent();
                         } catch (RuntimeException ex) {
+                            closingPublished = false;
                             log.warn("Portfolio closing health check & briefing failed (isolated; upstream committed) | tradeDate={}",
                                     snapshotDate, ex);
                         }
                     }
-                    // 4c. 既有同日延後警告自動標為已讀，並於雷達正式發布後非同步觸發籌碼與異動事件同步
-                    markDeferredNotificationReadSafely(targetDate);
+                    // 4c. 僅於收盤簡報亦完成發布時才將既有延後警告自動標為已讀，避免簡報失敗卻靜默消掉告警；雷達發布後正常異步觸發籌碼同步
+                    if (closingPublished) {
+                        markDeferredNotificationReadSafely(targetDate);
+                    }
                     triggerChipEventSyncSafely(snapshotDate);
                 } else {
                     log.warn("Batch 03 downstream deferred: radar not published after refresh | targetDate={}", targetDate);

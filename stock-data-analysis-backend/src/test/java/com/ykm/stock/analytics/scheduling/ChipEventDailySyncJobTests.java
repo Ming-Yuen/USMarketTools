@@ -2,9 +2,11 @@ package com.ykm.stock.analytics.scheduling;
 
 import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.orm.entity.SysConfig;
+import com.ykm.stock.analytics.client.SecEdgarClient;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRepository;
 import com.ykm.stock.analytics.repository.jpa.DailyOpportunityRadarRunRepository;
@@ -12,6 +14,7 @@ import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEventAiSummaryRepository;
+import com.ykm.stock.analytics.repository.jpa.StockOptionsSummaryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockSplitRepository;
@@ -43,6 +46,7 @@ import static org.mockito.Mockito.when;
 
 class ChipEventDailySyncJobTests {
     private static final LocalDate TRADE_DATE = LocalDate.of(2026, 11, 20);
+    private static final Instant SESSION_CLOSE = Instant.parse("2026-11-20T21:00:00Z");
     private static final Instant NOW = Instant.parse("2026-11-21T03:00:00Z");
 
     private final PortfolioItemRepository portfolioItemRepository = mock(PortfolioItemRepository.class);
@@ -53,6 +57,7 @@ class ChipEventDailySyncJobTests {
     private final StockSplitRepository splitRepository = mock(StockSplitRepository.class);
     private final MarketEventRepository marketEventRepository = mock(MarketEventRepository.class);
     private final StockEventAiSummaryRepository summaryRepository = mock(StockEventAiSummaryRepository.class);
+    private final StockOptionsSummaryRepository optionsSummaryRepository = mock(StockOptionsSummaryRepository.class);
     private final OptionsEnhancementService optionsService = mock(OptionsEnhancementService.class);
     private final SecInsiderAndInstitutionalService insider13fService = mock(SecInsiderAndInstitutionalService.class);
     private final StockEventSummaryService eventSummaryService = mock(StockEventSummaryService.class);
@@ -69,15 +74,18 @@ class ChipEventDailySyncJobTests {
         job = new ChipEventDailySyncJob(
                 portfolioItemRepository, radarRunRepository, radarRepository, stockRepository,
                 quoteRepository, splitRepository, marketEventRepository, summaryRepository,
-                optionsService, insider13fService, eventSummaryService, aiGateway, calendar, dateTimeService);
+                optionsSummaryRepository, optionsService, insider13fService, eventSummaryService,
+                aiGateway, calendar, dateTimeService);
         ReflectionTestUtils.setField(job, "sysConfigRepository", sysConfigRepository);
 
         storedWatermark = null;
         when(dateTimeService.now()).thenReturn(NOW);
         when(calendar.getLastClosedTradingDay(NOW)).thenReturn(TRADE_DATE);
+        when(calendar.getSessionCloseAt(TRADE_DATE)).thenReturn(SESSION_CLOSE);
         when(calendar.getTradingDays(any(), any())).thenReturn(List.of(TRADE_DATE.minusDays(1), TRADE_DATE));
         when(marketEventRepository.findEarningsFigisBetween(any(), any())).thenReturn(Set.of());
         when(summaryRepository.countByTriggerDateAndAiProviderNot(any(), any())).thenReturn(0L);
+        when(optionsSummaryRepository.findSettledFigisForSession(anyCollection(), any(), any())).thenReturn(List.of());
         when(quoteRepository.findByFigiAndQuoteDateLessThanEqualOrderByQuoteDateDesc(any(), any(), any())).thenReturn(List.of());
         when(sysConfigRepository.findByConfigKeyInOrderByIdAsc(List.of(ChipEventDailySyncJob.CONFIG_KEY_SYNCED_TRADE_DATE)))
                 .thenAnswer(inv -> storedWatermark == null ? List.of() : List.of(storedWatermark));
@@ -189,6 +197,78 @@ class ChipEventDailySyncJobTests {
         job.execute(ctx);
         assertThat(storedWatermark).isNotNull();
         assertThat(storedWatermark.getConfigValue()).isEqualTo(TRADE_DATE.toString());
+    }
+
+    /**
+     * Scenario：
+     * 1) 未配置 Alpaca、SEC 未配置或單股確定性 404（SecNotFoundException）與 AI 摘要逾時均不阻斷完成水位；
+     * 2) SEC 403 限流仍屬可重試失敗，必須阻斷水位保留兜底重跑；
+     * 3) 非 force 重跑時，當日收市後已落庫且狀態為 AVAILABLE/NOT_APPLICABLE 之期權標的跳過重抓，未結算（如盤中刷新或 INSUFFICIENT_DATA）照常補抓；force=true 則全部重抓。
+     */
+    @Test
+    void nonRetryableMissingCredentials404AndAiErrorsDoNotBlockWatermarkWhileSettledOptionsSkipExceptForce() {
+        PortfolioItem h1 = new PortfolioItem();
+        h1.setFigi("F_NVDA");
+        h1.setItemType(PortfolioItem.TYPE_HOLDING);
+        PortfolioItem h2 = new PortfolioItem();
+        h2.setFigi("F_AMD");
+        h2.setItemType(PortfolioItem.TYPE_HOLDING);
+        Stock nvda = stock("F_NVDA", "NVDA", "0001045810");
+        Stock amd = stock("F_AMD", "AMD", "0000002488");
+
+        DailyOpportunityRadarRun run = new DailyOpportunityRadarRun();
+        run.setRadarDate(TRADE_DATE);
+        when(portfolioItemRepository.findAll()).thenReturn(List.of(h1, h2));
+        when(radarRunRepository.findTopByOrderByRadarDateDesc()).thenReturn(Optional.of(run));
+        when(radarRunRepository.existsById(TRADE_DATE)).thenReturn(true);
+        when(radarRepository.findByRadarDateOrderByTrackTypeAscDiscountToMidDescSymbolAsc(TRADE_DATE)).thenReturn(List.of());
+        when(stockRepository.findAllById(anyCollection())).thenReturn(List.of(nvda, amd));
+        when(marketEventRepository.findEarningsFigisBetween(any(), any())).thenReturn(Set.of("F_NVDA"));
+        when(aiGateway.isAutomatedAvailable()).thenReturn(true);
+        when(eventSummaryService.refreshNewsAndFilings(nvda))
+                .thenReturn(new StockEventSummaryService.NewsRefreshResult(1, 0, List.of(mock(EnhancementDtos.StockNewsEventDto.class))));
+        when(eventSummaryService.summarizeAutomated(nvda, "EARNINGS_WINDOW"))
+                .thenThrow(new RuntimeException("AI_TIMEOUT"));
+
+        // 1) Alpaca 未配置 + SEC 確定性 404 + AI 逾時 -> 仍推進水位，且 Alpaca 未配置首筆即短路不再呼叫第二筆
+        when(optionsService.refreshStock(nvda)).thenThrow(new IllegalStateException("ALPACA_API_CREDENTIALS_REQUIRED"));
+        when(insider13fService.syncForm4ForStock(nvda))
+                .thenThrow(new SecEdgarClient.SecNotFoundException("SEC_EDGAR_NOT_FOUND:0001045810", null));
+        when(insider13fService.syncForm4ForStock(amd))
+                .thenThrow(new SecEdgarClient.SecUnauthorizedException("SEC_USER_AGENT_NOT_CONFIGURED", null));
+
+        job.execute(null);
+        verify(optionsService, times(1)).refreshStock(nvda);
+        verify(optionsService, never()).refreshStock(amd);
+        assertThat(storedWatermark).isNotNull();
+        assertThat(storedWatermark.getConfigValue()).isEqualTo(TRADE_DATE.toString());
+
+        // 2) SEC 403 限流仍計入 form4Failed 阻斷水位；同時非 force 重跑只跳過已於 sessionCloseAt 後結算的 F_NVDA，仍補抓 F_AMD
+        storedWatermark = null;
+        org.mockito.Mockito.doReturn(null).when(optionsService).refreshStock(nvda);
+        org.mockito.Mockito.doReturn(null).when(optionsService).refreshStock(amd);
+        org.mockito.Mockito.doThrow(new SecEdgarClient.SecUnauthorizedException("SEC_EDGAR_UNAUTHORIZED:403:SEC_SUBMISSIONS:0001045810", null))
+                .when(insider13fService).syncForm4ForStock(nvda);
+        org.mockito.Mockito.doReturn(null).when(insider13fService).syncForm4ForStock(amd);
+        when(optionsSummaryRepository.findSettledFigisForSession(anyCollection(), org.mockito.ArgumentMatchers.eq(TRADE_DATE),
+                org.mockito.ArgumentMatchers.eq(SESSION_CLOSE))).thenReturn(List.of("F_NVDA"));
+
+        job.execute(null);
+        assertThat(storedWatermark).isNull();
+        verify(optionsService, times(1)).refreshStock(nvda);
+        verify(optionsService, times(1)).refreshStock(amd);
+
+        // 3) force=true 不受已結算期權跳過限制，F_NVDA 亦強制重刷
+        org.mockito.Mockito.doReturn(null).when(insider13fService).syncForm4ForStock(nvda);
+        JobExecutionContext forcedCtx = mock(JobExecutionContext.class);
+        JobDataMap map = new JobDataMap();
+        map.put("force", Boolean.TRUE);
+        when(forcedCtx.getMergedJobDataMap()).thenReturn(map);
+
+        job.execute(forcedCtx);
+        verify(optionsService, times(2)).refreshStock(nvda);
+        verify(optionsService, times(2)).refreshStock(amd);
+        assertThat(storedWatermark).isNotNull();
     }
 
     private Stock stock(String figi, String symbol, String cik) {

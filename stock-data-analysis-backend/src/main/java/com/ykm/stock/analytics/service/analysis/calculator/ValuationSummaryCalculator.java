@@ -262,7 +262,7 @@ public class ValuationSummaryCalculator {
                 priceStructure, supportResistance, tradePlans, marketContext);
     }
 
-    /** 專供 ETF／ETP 產出純技術與資金面綜合摘要（估值與基本面標示 NOT_APPLICABLE_FOR_ETF，保留大盤逆風、真假破位與支撐阻力觀察）。 */
+    /** 專供 ETF／ETP 產出純技術與資金面綜合摘要（估值與基本面標示 NOT_APPLICABLE_FOR_ETF，保留大盤逆風、真假破位、板塊廣度崩壞與支撐阻力觀察）。 */
     public MetricResult<InvestmentSummaryDto> calculateForEtf(
             AnalysisHorizon horizon,
             BigDecimal currentPrice,
@@ -270,7 +270,8 @@ public class ValuationSummaryCalculator {
             MetricResult<PriceStructureDto> priceStructure,
             MetricResult<SupportResistanceDto> supportResistance,
             MetricResult<TradePlanResultDto> tradePlans,
-            MetricResult<MarketContextDto> marketContext) {
+            MetricResult<MarketContextDto> marketContext,
+            boolean sectorBreadthBreakdown) {
         AnalysisHorizon effectiveHorizon = horizon == null ? AnalysisHorizon.POSITION : horizon;
         boolean structureAvailable = priceStructure != null && priceStructure.status() == MetricStatus.AVAILABLE && priceStructure.value() != null;
         boolean supportAvailable = supportResistance != null && supportResistance.status() == MetricStatus.AVAILABLE && supportResistance.value() != null;
@@ -320,6 +321,9 @@ public class ValuationSummaryCalculator {
         }
 
         List<SummaryFlagDto> risks = new ArrayList<>();
+        if (sectorBreadthBreakdown) {
+            risks.add(new SummaryFlagDto("SECTOR_BREADTH_BREAKDOWN", "MEDIUM", Map.of()));
+        }
         if (macroCaution != null && macroCaution.marketRegime() != null
                 && (macroCaution.marketRegime() == MarketRegime.PANIC
                 || macroCaution.marketRegime() == MarketRegime.BEAR

@@ -1,6 +1,7 @@
 package com.ykm.stock.analytics.scheduling;
 
 import com.ykm.common.common_lib.service.DateTimeService;
+import com.ykm.stock.analytics.client.SecEdgarClient;
 import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
@@ -16,6 +17,7 @@ import com.ykm.stock.analytics.repository.jpa.MarketEventRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioItemRepository;
 import com.ykm.stock.analytics.repository.jpa.PortfolioSysConfigRepository;
 import com.ykm.stock.analytics.repository.jpa.StockEventAiSummaryRepository;
+import com.ykm.stock.analytics.repository.jpa.StockOptionsSummaryRepository;
 import com.ykm.stock.analytics.repository.jpa.StockQuoteRepository;
 import com.ykm.stock.analytics.repository.jpa.StockRepository;
 import com.ykm.stock.analytics.repository.jpa.StockSplitRepository;
@@ -42,6 +44,7 @@ import java.math.MathContext;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +76,7 @@ public class ChipEventDailySyncJob implements Job {
     private final StockSplitRepository splitRepository;
     private final MarketEventRepository marketEventRepository;
     private final StockEventAiSummaryRepository summaryRepository;
+    private final StockOptionsSummaryRepository optionsSummaryRepository;
     private final OptionsEnhancementService optionsService;
     private final SecInsiderAndInstitutionalService insider13fService;
     private final StockEventSummaryService eventSummaryService;
@@ -115,7 +119,17 @@ public class ChipEventDailySyncJob implements Job {
         Set<String> earningsWindowFigis = marketEventRepository.findEarningsFigisBetween(
                 tradeDate.minusDays(3), tradeDate.plusDays(3));
 
+        Instant sessionCloseAt = calendar.getSessionCloseAt(tradeDate);
+        Set<String> settledOptionsFigis = Set.of();
+        if (!forceRun && sessionCloseAt != null) {
+            List<String> settled = optionsSummaryRepository.findSettledFigisForSession(targetFigis, tradeDate, sessionCloseAt);
+            if (settled != null && !settled.isEmpty()) {
+                settledOptionsFigis = new HashSet<>(settled);
+            }
+        }
+
         int optionsOk = 0;
+        int optionsSkipped = 0;
         int optionsFailed = 0;
         int form4Ok = 0;
         int form4Failed = 0;
@@ -123,62 +137,126 @@ public class ChipEventDailySyncJob implements Job {
         int newsFailed = 0;
         int aiSummarized = (int) summaryRepository.countByTriggerDateAndAiProviderNot(
                 tradeDate, StockEventAiSummary.PROVIDER_MANUAL_IMPORT);
+        int aiFailed = 0;
+        boolean optionsUnconfigured = false;
+        boolean secUnconfigured = false;
         Set<String> scannedForm4Ciks = new LinkedHashSet<>();
 
         for (String figi : targetFigis) {
             Stock stock = stockMap.get(figi);
             if (stock == null) continue;
 
-            // 2. 期權摘要（支援正股、ADR 與 ETF）
-            try {
-                optionsService.refreshStock(stock);
-                optionsOk++;
-            } catch (RuntimeException ex) {
-                optionsFailed++;
-                log.debug("Options sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+            // 2. 期權摘要（支援正股、ADR 與 ETF；非 force 重跑且當日收市後已有有效結算快照則跳過；未配置 Alpaca 不計為失敗）
+            if (settledOptionsFigis.contains(figi)) {
+                optionsSkipped++;
+            } else if (!optionsUnconfigured) {
+                try {
+                    optionsService.refreshStock(stock);
+                    optionsOk++;
+                } catch (RuntimeException ex) {
+                    if (isAlpacaUnconfigured(ex)) {
+                        optionsUnconfigured = true;
+                        log.info("Options sync disabled: Alpaca credentials not configured");
+                    } else {
+                        optionsFailed++;
+                        log.debug("Options sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                    }
+                }
             }
 
-            // 3. SEC Form 4（按 CIK 去重，跳過 ETF）
-            if (!SecurityTypePolicy.isEtfType(stock.getStockType())
+            // 3. SEC Form 4（按 CIK 去重，跳過 ETF；未配置 User-Agent 或確定性 404 不阻斷當日水位，403／5xx／網路錯誤保留重試）
+            if (!secUnconfigured && !SecurityTypePolicy.isEtfType(stock.getStockType())
                     && stock.getCik() != null && !stock.getCik().isBlank()
                     && scannedForm4Ciks.add(stock.getCik())) {
                 try {
                     insider13fService.syncForm4ForStock(stock);
                     form4Ok++;
                 } catch (RuntimeException ex) {
-                    form4Failed++;
-                    log.debug("Form 4 sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                    if (isSecUnconfigured(ex)) {
+                        secUnconfigured = true;
+                        log.info("Form 4 sync disabled: SEC User-Agent not configured");
+                    } else if (isSecNotFound(ex)) {
+                        log.debug("Form 4 sync skipped (deterministic 404) | symbol={} cik={}", stock.getSymbol(), stock.getCik());
+                    } else {
+                        form4Failed++;
+                        log.debug("Form 4 sync skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                    }
                 }
             }
 
-            // 4. 新聞與 8-K/6-K：僅於單日漲跌逾 ±5% 或財報前後 ±3 日觸發
+            // 4. 新聞與 8-K/6-K：僅於單日漲跌逾 ±5% 或財報前後 ±3 日觸發；AI 摘要異常獨立隔離不阻斷完成水位
             String triggerReason = resolveEventTriggerReason(figi, tradeDate, earningsWindowFigis);
             if (triggerReason != null) {
+                NewsRefreshResult refreshed = null;
                 try {
-                    NewsRefreshResult refreshed = eventSummaryService.refreshNewsAndFilings(stock);
+                    refreshed = eventSummaryService.refreshNewsAndFilings(stock);
                     newsTriggered++;
-                    if (aiGateway.isAutomatedAvailable() && aiSummarized < AI_SUMMARY_DAILY_CAP
-                            && refreshed.recentEvents() != null && !refreshed.recentEvents().isEmpty()) {
-                        // 發起呼叫前即計入當日預算上限，避免供應商已計費但本地逾時或驗證失敗導致超額呼叫
-                        aiSummarized++;
-                        eventSummaryService.summarizeAutomated(stock, triggerReason);
-                    }
                 } catch (RuntimeException ex) {
                     newsFailed++;
-                    log.debug("Event news/summary skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                    log.debug("Event news refresh skipped | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                }
+                if (refreshed != null && aiGateway.isAutomatedAvailable() && aiSummarized < AI_SUMMARY_DAILY_CAP
+                        && refreshed.recentEvents() != null && !refreshed.recentEvents().isEmpty()) {
+                    // 發起呼叫前即計入當日預算上限，避免供應商已計費但本地逾時或驗證失敗導致超額呼叫
+                    aiSummarized++;
+                    try {
+                        eventSummaryService.summarizeAutomated(stock, triggerReason);
+                    } catch (RuntimeException ex) {
+                        aiFailed++;
+                        log.debug("Event AI summary skipped (isolated) | symbol={} reason={}", stock.getSymbol(), ex.getMessage());
+                    }
                 }
             }
         }
 
-        // 5. 僅當本輪已涵蓋當日正式雷達且無外部同步失敗時才推進完成水位，避免來源中斷或 11:00 搶跑擋掉重跑補抓
+        // 5. 僅當本輪已涵蓋當日正式雷達且無可重試外部同步失敗時才推進完成水位，避免來源中斷或 11:00 搶跑擋掉重跑補抓
         boolean hadSyncFailure = optionsFailed > 0 || form4Failed > 0 || newsFailed > 0;
         boolean watermarkAdvanced = radarPublished && !hadSyncFailure;
         if (watermarkAdvanced) {
             advanceSyncedWatermark(tradeDate);
         }
-        log.info("Chip & event daily sync completed | tradeDate={} radarPublished={} watermarkAdvanced={} targets={} optionsOk={} optionsFailed={} form4Ciks={} form4Failed={} newsTriggered={} newsFailed={} aiSummarized={}",
+        log.info("Chip & event daily sync completed | tradeDate={} radarPublished={} watermarkAdvanced={} targets={} optionsOk={} optionsSkipped={} optionsFailed={} form4Ciks={} form4Failed={} newsTriggered={} newsFailed={} aiSummarized={} aiFailed={}",
                 tradeDate, radarPublished, watermarkAdvanced, targetFigis.size(),
-                optionsOk, optionsFailed, form4Ok, form4Failed, newsTriggered, newsFailed, aiSummarized);
+                optionsOk, optionsSkipped, optionsFailed, form4Ok, form4Failed, newsTriggered, newsFailed, aiSummarized, aiFailed);
+    }
+
+    private boolean isAlpacaUnconfigured(Throwable ex) {
+        Throwable cur = ex;
+        while (cur != null) {
+            String msg = cur.getMessage();
+            if (msg != null && msg.contains("ALPACA_API_CREDENTIALS_REQUIRED")) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    private boolean isSecUnconfigured(Throwable ex) {
+        Throwable cur = ex;
+        while (cur != null) {
+            String msg = cur.getMessage();
+            if (msg != null && msg.contains("SEC_USER_AGENT_NOT_CONFIGURED")) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    private boolean isSecNotFound(Throwable ex) {
+        Throwable cur = ex;
+        while (cur != null) {
+            if (cur instanceof SecEdgarClient.SecNotFoundException) {
+                return true;
+            }
+            String msg = cur.getMessage();
+            if (msg != null && msg.contains("SEC_EDGAR_NOT_FOUND")) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private LocalDate resolveTradeDate(JobDataMap params, Instant now) {

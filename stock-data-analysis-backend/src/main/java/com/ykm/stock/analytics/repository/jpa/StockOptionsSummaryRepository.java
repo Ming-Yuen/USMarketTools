@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
@@ -16,6 +17,17 @@ public interface StockOptionsSummaryRepository extends JpaRepository<StockOption
     Optional<StockOptionsSummary> findTopByFigiAndSnapshotDateLessThanEqualOrderBySnapshotDateDesc(String figi, LocalDate date);
 
     List<StockOptionsSummary> findByFigiAndSnapshotDateBetweenOrderBySnapshotDateAsc(String figi, LocalDate from, LocalDate through);
+
+    @Query("""
+            select s.figi from StockOptionsSummary s
+            where s.figi in :figis
+              and s.snapshotDate = :snapshotDate
+              and s.status in ('AVAILABLE', 'NOT_APPLICABLE')
+              and s.observedAt >= :sessionCloseAt
+            """)
+    List<String> findSettledFigisForSession(@Param("figis") Collection<String> figis,
+                                            @Param("snapshotDate") LocalDate snapshotDate,
+                                            @Param("sessionCloseAt") Instant sessionCloseAt);
 
     @Query("""
             select s from StockOptionsSummary s

@@ -428,6 +428,39 @@ class BuyRankingReportServiceTests {
         assertThat(staleItem.positionScaleTag()).isEqualTo("FULL");
         assertThat(staleItem.positionSizingTags()).doesNotContain("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
         assertThat(staleItem.suggestedShares()).isEqualTo(sameDayItem.suggestedShares() * 2L);
+
+        // 分類 ETF（具正式 StockIndustryHistory）與普通股／持倉體檢一致套用板塊半倉，未分類 ETF 維持 FULL
+        Stock classifiedEtf = stock("FIGI_ETF_CLS", "SMHC", "Semi ETF Classified", "ETF", "USD", true);
+        Stock unclassifiedEtf = stock("FIGI_ETF_RAW", "SMHU", "Semi ETF Unclassified", "ETP", "USD", true);
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), eq(List.of("SMHC", "SMHU"))))
+                .thenReturn(List.of(classifiedEtf, unclassifiedEtf));
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE)))
+                .thenReturn(List.of(industryHistory("FIGI_ETF_CLS", "I41", "Semiconductors")));
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(
+                        quoteRow("FIGI_ETF_CLS", new BigDecimal("100.00")),
+                        quoteRow("FIGI_ETF_RAW", new BigDecimal("100.00"))));
+        stubTechnicalStack("FIGI_ETF_CLS", new BigDecimal("100.00"), new BigDecimal("98.00"), new BigDecimal("100.00"),
+                new BigDecimal("95.00"), new BigDecimal("125.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+        stubTechnicalStack("FIGI_ETF_RAW", new BigDecimal("100.00"), new BigDecimal("98.00"), new BigDecimal("100.00"),
+                new BigDecimal("95.00"), new BigDecimal("125.00"), TradePlanStatus.ACTIVE,
+                null, MarketRegime.RISK_ON, EntryPermission.ALLOW);
+        when(sectorMoneyFlowRepository.findByTradeDateOrderByCmf20dDescDollarVolume1dDesc(AS_OF))
+                .thenReturn(List.of(brokenSameDay));
+
+        BuyRankingRequest etfReq = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("SMHC", "SMHU"),
+                List.of(BuyRankingDtos.ASSET_ETF), true,
+                null, BuyRankingDtos.GRADE_ALL, null, null, null, "POSITION", "en", 1, 300);
+        BuyRankingResponse etfResp = service.generateReport(etfReq, "en");
+        BuyRankingItemDto clsItem = etfResp.items().stream().filter(i -> "SMHC".equals(i.symbol())).findFirst().orElseThrow();
+        BuyRankingItemDto rawItem = etfResp.items().stream().filter(i -> "SMHU".equals(i.symbol())).findFirst().orElseThrow();
+        assertThat(clsItem.positionScaleTag()).isEqualTo("1/2");
+        assertThat(clsItem.positionSizingTags()).contains("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
+        assertThat(rawItem.positionScaleTag()).isEqualTo("FULL");
+        assertThat(rawItem.positionSizingTags()).doesNotContain("SECTOR_BREADTH_HEADWIND_HALF_SIZE");
+        assertThat(rawItem.suggestedShares()).isEqualTo(clsItem.suggestedShares() * 2L);
     }
 
     @Test

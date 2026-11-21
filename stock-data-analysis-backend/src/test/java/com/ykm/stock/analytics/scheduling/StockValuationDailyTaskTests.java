@@ -106,6 +106,8 @@ class StockValuationDailyTaskTests {
         dailyOpportunityRadarService = mock(com.ykm.stock.analytics.service.analysis.DailyOpportunityRadarService.class);
         signalTrackingService = mock(com.ykm.stock.analytics.service.analysis.SignalTrackingService.class);
         portfolioClosingService = mock(com.ykm.stock.analytics.service.portfolio.PortfolioClosingService.class);
+        when(portfolioClosingService.publishDailyClosing(any(), any()))
+                .thenReturn(Optional.of(mock(com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.DailyClosingBriefingDto.class)));
         task = new StockValuationDailyTask(stocks, statuses, shareObservations, futu, valuationService, calendar, clock, tx, entityManager,
                 latestRepo, sectorMoneyFlowService, dailyOpportunityRadarService, signalTrackingService, portfolioClosingService);
 
@@ -735,24 +737,37 @@ class StockValuationDailyTaskTests {
         org.mockito.Mockito.verifyNoInteractions(sectorMoneyFlowService, dailyOpportunityRadarService);
         org.mockito.Mockito.verify(notifRepo, org.mockito.Mockito.times(1)).save(any());
 
-        // 3) SPY 與 QQQ 皆存在且就緒 -> 即使入口快照 op1.status 仍停在 D-1，重讀最新狀態仍正確放行、自動標記已讀並帶 tradeDate 觸發籌碼同步
+        // 3) SPY 與 QQQ 皆存在且就緒，但收盤簡報暫時拋錯或回傳 empty -> 不得靜默將 EOD_PIPELINE_DEFERRED 標為已讀（籌碼同步照常觸發）
         when(stocks.findByActiveStatusAndSymbolIn(ActiveStatus.ACTIVE, List.of("SPY", "QQQ"))).thenReturn(List.of(spy, qqq));
+        when(portfolioClosingService.publishDailyClosing(eq(DAY_NOV_12), any()))
+                .thenThrow(new RuntimeException("BRIEFING_LOCK_TIMEOUT"));
         task.execute(null);
-        org.mockito.Mockito.verify(sectorMoneyFlowService).refreshDaily(eq(DAY_NOV_12), any());
-        org.mockito.Mockito.verify(dailyOpportunityRadarService).refreshDaily(eq(DAY_NOV_12), any());
-        org.mockito.Mockito.verify(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(notifRepo, org.mockito.Mockito.never())
+                .markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(any(), any(), any());
+
+        org.mockito.Mockito.doReturn(Optional.empty()).when(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+        task.execute(null);
+        org.mockito.Mockito.verify(notifRepo, org.mockito.Mockito.never())
+                .markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(any(), any(), any());
+
+        // 4) 收盤簡報成功回傳後重跑 -> 自動將 EOD_PIPELINE_DEFERRED 標為已讀並帶 tradeDate 觸發籌碼同步
+        org.mockito.Mockito.doReturn(Optional.of(mock(com.ykm.stock.analytics.model.dto.stockInsight.portfolio.PortfolioDtos.DailyClosingBriefingDto.class)))
+                .when(portfolioClosingService).publishDailyClosing(eq(DAY_NOV_12), any());
+        task.execute(null);
+        org.mockito.Mockito.verify(sectorMoneyFlowService, org.mockito.Mockito.times(3)).refreshDaily(eq(DAY_NOV_12), any());
+        org.mockito.Mockito.verify(dailyOpportunityRadarService, org.mockito.Mockito.times(3)).refreshDaily(eq(DAY_NOV_12), any());
         org.mockito.Mockito.verify(notifRepo).markReadByAlertCodeAndTradeDateLessThanEqualIfUnread(
                 eq(StockValuationDailyTask.ALERT_EOD_PIPELINE_DEFERRED), eq(DAY_NOV_12), eq(NOW));
         org.mockito.ArgumentCaptor<JobDataMap> triggerDataCaptor = org.mockito.ArgumentCaptor.forClass(JobDataMap.class);
-        org.mockito.Mockito.verify(scheduler).triggerJob(eq(chipKey), triggerDataCaptor.capture());
+        org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.times(3)).triggerJob(eq(chipKey), triggerDataCaptor.capture());
         assertThat(triggerDataCaptor.getValue().getString("tradeDate")).isEqualTo(DAY_NOV_12.toString());
 
-        // 4) 籌碼排程停用（無 active trigger）或 app.schedules.enabled=false 時，重跑安全略過觸發且不拋例外
+        // 5) 籌碼排程停用（無 active trigger）或 app.schedules.enabled=false 時，重跑安全略過觸發且不拋例外
         org.mockito.Mockito.doReturn(List.of()).when(scheduler).getTriggersOfJob(chipKey);
         task.execute(null);
         when(scheduler.isStarted()).thenReturn(false);
         task.execute(null);
-        org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.times(1)).triggerJob(eq(chipKey), any(JobDataMap.class));
+        org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.times(3)).triggerJob(eq(chipKey), any(JobDataMap.class));
     }
 
     private StockShareObservation persistedObsFrom(FutuService.ShareSnapshot snap, long shares) {

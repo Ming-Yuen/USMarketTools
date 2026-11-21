@@ -862,6 +862,16 @@ class ValuationSummaryCalculatorTests {
         assertThat(broken.trendPullbackStarter().positionFraction()).isEqualTo("1/6");
         assertThat(broken.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
                 .contains("SECTOR_BREADTH_BREAKDOWN");
+
+        // 分類 ETF 摘要亦同步揭露 SECTOR_BREADTH_BREAKDOWN 風險旗標；未觸發時不輸出
+        InvestmentSummaryDto etfNormal = calculator.calculateForEtf(
+                AnalysisHorizon.POSITION, new BigDecimal("210"), "USD", ps, null, null, mc, false).value();
+        assertThat(etfNormal.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .doesNotContain("SECTOR_BREADTH_BREAKDOWN");
+        InvestmentSummaryDto etfBroken = calculator.calculateForEtf(
+                AnalysisHorizon.POSITION, new BigDecimal("210"), "USD", ps, null, null, mc, true).value();
+        assertThat(etfBroken.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("SECTOR_BREADTH_BREAKDOWN");
     }
 
     private MetricResult<PriceStructureDto> pullbackDailyStructure(

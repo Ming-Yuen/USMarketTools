@@ -116,6 +116,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public class SignalReplayAuditJob implements Job {
     public static final String FILE_TYPE_EVENTS = "events";
     public static final String FILE_TYPE_SUMMARY = "summary";
+    public static final String MODE_PIT = "PIT";
+    public static final String MODE_NON_PIT = "NON_PIT";
+    public static final String OUTCOME_ENTRY_GAPPED_ABOVE_TARGET = "ENTRY_GAPPED_ABOVE_TARGET";
+    public static final String OUTCOME_ENTRY_GAPPED_BELOW_STOP = "ENTRY_GAPPED_BELOW_STOP";
     private static final LocalDate DEFAULT_START_DATE = LocalDate.of(2019, 1, 1);
     private static final int MIN_HISTORICAL_SAMPLES = 6;
     private static final long CONSERVATIVE_FILING_LAG_DAYS = 45L;
@@ -216,6 +220,7 @@ public class SignalReplayAuditJob implements Job {
     private record StockStateKey(
             String stance,
             String radarTrack,
+            String planStatus,
             String weeklyTrend,
             String dailyMinorTrend,
             boolean highRiskBreakdown
@@ -265,6 +270,7 @@ public class SignalReplayAuditJob implements Job {
             BigDecimal protectiveStop,
             BigDecimal firstTarget,
             boolean cooldownDistinct,
+            boolean trackPlanDistinct,
             ForwardSettlement settlement
     ) {}
 
@@ -388,9 +394,11 @@ public class SignalReplayAuditJob implements Job {
             throw new IllegalArgumentException("INVALID_SIGNAL_REPLAY_DATE_RANGE");
         }
         List<String> requestedSymbols = parseSymbolsParam(params.getString("symbols"));
+        String valuationMode = parseValuationMode(params.getString("valuationMode"));
+        boolean nonPitMode = MODE_NON_PIT.equals(valuationMode);
         boolean defaultUniverse = requestedSymbols.isEmpty();
 
-        updateStatus("RUNNING", runId, startedAt, null, startDate, endDate, 0, 0, 0, null, 0, 0, null, List.of());
+        updateStatus("RUNNING", runId, valuationMode, startedAt, null, startDate, endDate, 0, 0, 0, null, 0, 0, null, List.of());
         try {
             // 1. 解析代表性樣本池並唯讀預載 5 年前置日線、拆股、財季分母、外幣匯率與產業歷史
             List<LocalDate> replayDays = marketStatusService.getTradingDays(startDate, endDate);
@@ -403,7 +411,7 @@ public class SignalReplayAuditJob implements Job {
             }
             Set<String> allCurrencies = collectReportingCurrencies(rawBundles);
             FxRateLookup fxLookup = fxRateService.preload(allCurrencies, startDate.minusYears(5), endDate);
-            List<StockBundle> bundles = attachMonthEndPitMultiples(rawBundles, fxLookup);
+            List<StockBundle> bundles = attachMonthEndPitMultiples(rawBundles, fxLookup, nonPitMode);
             StockBundle spyBundle = findBundleBySymbol(bundles, "SPY");
             StockBundle qqqBundle = findBundleBySymbol(bundles, "QQQ");
 
@@ -451,13 +459,13 @@ public class SignalReplayAuditJob implements Job {
                             spyClose, null, null, false,
                             null, null, null, null, null, null, "MARKET_EOD",
                             regimeName(currentRegime), "MARKET_REGIME", null, null, null,
-                            regimeChanged, spySettle));
+                            regimeChanged, false, spySettle));
                     if (currentRegime != null) {
                         previousRegime = currentRegime;
                     }
                 }
                 if (dayIdx == 0 || (dayIdx + 1) % 100 == 0) {
-                    updateStatus("RUNNING", runId, startedAt, null, startDate, endDate,
+                    updateStatus("RUNNING", runId, valuationMode, startedAt, null, startDate, endDate,
                             0, totalDays, bundles.size(), day, 0, marketEvents.size(), null, List.of());
                 }
             }
@@ -473,7 +481,7 @@ public class SignalReplayAuditJob implements Job {
                 List<Callable<List<EventRow>>> tasks = new ArrayList<>(bundles.size());
                 for (StockBundle bundle : bundles) {
                     tasks.add(() -> replaySingleStock(
-                            bundle, spyBundle, dailyContexts, fxLookup,
+                            bundle, spyBundle, dailyContexts, fxLookup, valuationMode, nonPitMode,
                             runId, startedAt, startDate, endDate, totalDays, bundles.size(),
                             totalExpectedSnapshots, snapshotCounter, emittedCounter));
                 }
@@ -497,23 +505,23 @@ public class SignalReplayAuditJob implements Job {
             Path eventsPath = outDir.resolve(eventsFileName);
             Path summaryPath = outDir.resolve(summaryFileName);
             writeEventsCsv(eventsPath, events);
-            int summaryRowCount = writeSummaryCsv(summaryPath, startDate, endDate, bundles.size(), dailyRegimes, events, spyBundle, qqqBundle);
+            int summaryRowCount = writeSummaryCsv(summaryPath, valuationMode, startDate, endDate, bundles.size(), dailyRegimes, events, spyBundle, qqqBundle);
 
             List<Map<String, Object>> files = List.of(
                     fileDescriptor(FILE_TYPE_EVENTS, eventsFileName, Files.size(eventsPath), events.size()),
                     fileDescriptor(FILE_TYPE_SUMMARY, summaryFileName, Files.size(summaryPath), summaryRowCount)
             );
             Instant finishedAt = dateTimeService.now();
-            updateStatus("COMPLETED", runId, startedAt, finishedAt, startDate, endDate,
+            updateStatus("COMPLETED", runId, valuationMode, startedAt, finishedAt, startDate, endDate,
                     totalDays, totalDays, bundles.size(), endDate, processedSnapshots, events.size(), null, files);
-            if (defaultUniverse && processedSnapshots > 0 && bundles.size() == DEFAULT_SYMBOL_GROUPS.size()) {
+            if (defaultUniverse && !nonPitMode && processedSnapshots > 0 && bundles.size() == DEFAULT_SYMBOL_GROUPS.size()) {
                 JobConfigRepository.advanceWatermarkDate(jobConfigRepository, TaskCode.SIGNAL_REPLAY_AUDIT, endDate);
             }
-            log.info("Signal replay audit completed | runId={} startDate={} endDate={} symbols={} snapshots={} events={} outDir={}",
-                    runId, startDate, endDate, bundles.size(), processedSnapshots, events.size(), outDir);
+            log.info("Signal replay audit completed | runId={} mode={} startDate={} endDate={} symbols={} snapshots={} events={} outDir={}",
+                    runId, valuationMode, startDate, endDate, bundles.size(), processedSnapshots, events.size(), outDir);
         } catch (Exception ex) {
             Instant failedAt = dateTimeService.now();
-            updateStatus("FAILED", runId, startedAt, failedAt, startDate, endDate,
+            updateStatus("FAILED", runId, valuationMode, startedAt, failedAt, startDate, endDate,
                     0, 0, 0, null, 0, 0, ex.getMessage(), List.of());
             log.error("Signal replay audit failed | runId={}", runId, ex);
             throw new IllegalStateException("SIGNAL_REPLAY_AUDIT_FAILED: " + ex.getMessage(), ex);
@@ -526,6 +534,8 @@ public class SignalReplayAuditJob implements Job {
             StockBundle spyBundle,
             List<DailyMarketContext> dailyContexts,
             FxRateLookup fxLookup,
+            String valuationMode,
+            boolean nonPitMode,
             String runId,
             Instant startedAt,
             LocalDate startDate,
@@ -538,6 +548,7 @@ public class SignalReplayAuditJob implements Job {
         List<EventRow> stockEvents = new ArrayList<>();
         StockStateKey prevState = null;
         Map<String, LocalDate> lastDistinctSignalDate = new HashMap<>();
+        Map<String, LocalDate> lastDistinctTrackPlanDate = new HashMap<>();
 
         for (int dayIdx = 0; dayIdx < totalDays; dayIdx++) {
             DailyMarketContext ctx = dailyContexts.get(dayIdx);
@@ -574,7 +585,7 @@ public class SignalReplayAuditJob implements Job {
             }
 
             BigDecimal closePrice = windowQuotes.getLast().closePrice();
-            String weeklyTrend = extractTrend(structure.value(), AnalysisTimeframe.WEEKLY);
+            String weeklyTrend = extractWeeklyMajorTrend(structure.value());
             String dailyMinorTrend = ValuationSummaryCalculator.extractDailyMinorTrend(structure);
             IndustryResolution indRes = resolveIndustryAt(bundle, ctx.cutoff());
 
@@ -592,11 +603,12 @@ public class SignalReplayAuditJob implements Job {
                 highRiskBreakdown = sumVal != null && sumVal.breakoutDiagnosis() != null
                         && sumVal.breakoutDiagnosis().diagnosis() != null
                         && "HIGH_RISK_BREAKDOWN".equals(sumVal.breakoutDiagnosis().diagnosis().name());
+                supportZone = findSupportZoneById(support, sumVal == null ? null : sumVal.technicalSupportZoneId());
                 radarTrack = "ETF_TECHNICAL_BULLISH_SUPPORT".equals(stance) ? "ETF_BULLISH" : "NONE";
                 pitVal = new PitValuationSnapshot(null, null, "NOT_APPLICABLE_FOR_ETF",
                         null, null, null, null, "NOT_APPLICABLE_FOR_ETF", null, "ETF_NO_FINANCIALS");
             } else {
-                pitVal = evaluatePitValuation(bundle, day, closePrice, fxLookup);
+                pitVal = evaluatePitValuation(bundle, day, closePrice, fxLookup, nonPitMode);
                 RadarEvaluationResult eval = summaryCalculator.evaluateForRadar(
                         AnalysisHorizon.POSITION,
                         closePrice,
@@ -616,29 +628,44 @@ public class SignalReplayAuditJob implements Job {
                 radarTrack = resolveRadarTrack(eval, closePrice, pitVal.verdict(), pitVal.fundamentalBacking());
             }
 
-            StockStateKey nextState = new StockStateKey(stance, radarTrack, weeklyTrend, dailyMinorTrend, highRiskBreakdown);
+            List<TradePlanDto> planList = tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
+                    ? tradePlans.value().plans() : List.of();
+            TradePlanDto matchedPlan = findMatchingPlan(planList, supportZone);
+            String planStatus = matchedPlan != null && matchedPlan.status() != null ? matchedPlan.status().name() : null;
+
+            StockStateKey nextState = new StockStateKey(stance, radarTrack, planStatus, weeklyTrend, dailyMinorTrend, highRiskBreakdown);
             boolean isActionableSignal = isActionableBuyOrDefensiveSignal(stance, radarTrack, highRiskBreakdown);
             boolean stateChanged = prevState == null
                     || !Objects.equals(prevState.stance(), nextState.stance())
                     || !Objects.equals(prevState.radarTrack(), nextState.radarTrack())
+                    || !Objects.equals(prevState.planStatus(), nextState.planStatus())
                     || prevState.highRiskBreakdown() != nextState.highRiskBreakdown()
                     || !Objects.equals(prevState.weeklyTrend(), nextState.weeklyTrend());
             prevState = nextState;
 
             if (stateChanged || dayIdx == totalDays - 1) {
-                List<TradePlanDto> planList = tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
-                        ? tradePlans.value().plans() : List.of();
-                TradePlanDto matchedPlan = findMatchingPlan(planList, supportZone);
                 BigDecimal protectiveStop = roundPrice(resolveProtectiveStop(matchedPlan, supportZone));
                 BigDecimal firstTarget = roundPrice(resolveFirstTargetAbovePrice(matchedPlan, closePrice));
-                String planStatus = matchedPlan != null && matchedPlan.status() != null ? matchedPlan.status().name() : null;
 
-                String cooldownKey = stance == null ? "NONE" : stance;
-                LocalDate prevCooldownDate = lastDistinctSignalDate.get(cooldownKey);
-                boolean cooldownDistinct = isActionableSignal
+                // 全立場統一 20 交易日冷卻去重（不再僅針對 highRiskBreakdown 才放行非買入立場，避免比較分母偏差）
+                boolean validStanceForCooldown = stance != null && !stance.isBlank()
+                        && !"INSUFFICIENT_EVIDENCE".equals(stance) && !"INSUFFICIENT_DATA".equals(stance);
+                LocalDate prevCooldownDate = validStanceForCooldown ? lastDistinctSignalDate.get(stance) : null;
+                boolean cooldownDistinct = validStanceForCooldown
                         && (prevCooldownDate == null || isOutsideCooldown(prevCooldownDate, day));
                 if (cooldownDistinct) {
-                    lastDistinctSignalDate.put(cooldownKey, day);
+                    lastDistinctSignalDate.put(stance, day);
+                }
+
+                // 獨立按 (radarTrack | planStatus) 追蹤 20 交易日冷卻，確保 WAITING_TRIGGER -> ACTIVE 轉正不被前序觀察日遮蔽
+                boolean trackPlanDistinct = false;
+                if (radarTrack != null && !"NONE".equals(radarTrack)) {
+                    String trackPlanKey = buildTrackPlanKey(radarTrack, planStatus);
+                    LocalDate prevTrackPlanDate = lastDistinctTrackPlanDate.get(trackPlanKey);
+                    if (prevTrackPlanDate == null || isOutsideCooldown(prevTrackPlanDate, day)) {
+                        trackPlanDistinct = true;
+                        lastDistinctTrackPlanDate.put(trackPlanKey, day);
+                    }
                 }
 
                 ForwardSettlement settlement = settleForward(bundle, spyBundle, day, protectiveStop, firstTarget);
@@ -653,13 +680,13 @@ public class SignalReplayAuditJob implements Job {
                         pitVal.primaryMetric(), pitVal.currentMultiple(), pitVal.verdict(),
                         pitVal.fairValueLow(), pitVal.fairValueMid(), pitVal.fundamentalBacking(), pitVal.pitBasis(),
                         stance, radarTrack, planStatus, protectiveStop, firstTarget,
-                        cooldownDistinct, settlement));
+                        cooldownDistinct, trackPlanDistinct, settlement));
                 emittedCounter.incrementAndGet();
             }
 
             if (doneSnapshots == 1 || doneSnapshots % 400 == 0) {
                 int approxDays = Math.min(totalDays, (int) Math.round((doneSnapshots * (double) totalDays) / totalExpectedSnapshots));
-                updateStatus("RUNNING", runId, startedAt, null, startDate, endDate,
+                updateStatus("RUNNING", runId, valuationMode, startedAt, null, startDate, endDate,
                         approxDays, totalDays, totalSymbols, day, doneSnapshots, emittedCounter.get(), null, List.of());
             }
         }
@@ -821,8 +848,8 @@ public class SignalReplayAuditJob implements Job {
         return bundles;
     }
 
-    /** 預先按各月末交易日當時 PIT 可見財季計算月末估值倍數（嚴格 <= mDay，零未來函數，避免逐日重算 5 年月末）。 */
-    private List<StockBundle> attachMonthEndPitMultiples(List<StockBundle> rawBundles, FxRateLookup fxLookup) {
+    /** 預先按各月末交易日計算月末估值倍數（PIT 模式嚴格 <= mDay，NON_PIT 模式對齊正式 matchPeriod，避免逐日重算 5 年月末）。 */
+    private List<StockBundle> attachMonthEndPitMultiples(List<StockBundle> rawBundles, FxRateLookup fxLookup, boolean nonPitMode) {
         List<StockBundle> enriched = new ArrayList<>(rawBundles.size());
         for (StockBundle b : rawBundles) {
             if (b.etf() || (b.adr() && !b.verifiedAdr()) || b.periods().isEmpty() || b.quotes().isEmpty()) {
@@ -836,12 +863,17 @@ public class SignalReplayAuditJob implements Job {
             List<MonthEndPitMultiples> monthMultiples = new ArrayList<>(monthEndBars.size());
             for (QuoteBarRow mBar : monthEndBars.values()) {
                 LocalDate mDay = mBar.quoteDate();
-                List<StockFinancialPeriod> mPit = filterPitVisiblePeriods(b.periods(), mDay);
-                if (mPit.isEmpty()) continue;
-                StockFinancialPeriod mp = mPit.getLast();
+                StockFinancialPeriod mp;
+                if (nonPitMode) {
+                    mp = StockValuationService.matchPeriod(b.periods(), mDay);
+                } else {
+                    List<StockFinancialPeriod> mPit = filterPitVisiblePeriods(b.periods(), mDay);
+                    mp = mPit.isEmpty() ? null : mPit.getLast();
+                }
+                if (mp == null) continue;
                 FxResolution mFx = resolveFx(fxLookup, mp, b.stock().getCurrency(), mDay);
                 BigDecimal mFxRate = mFx != null && mFx.isUsable() ? mFx.usdPerUnit() : null;
-                BigDecimal mShares = resolvePitSharesAtDay(mp, b.splits(), mDay);
+                BigDecimal mShares = resolvePitSharesAtDay(mp, b.splits(), mDay, nonPitMode);
                 BigDecimal mMcap = mShares != null && mShares.signum() > 0 ? mBar.closePrice().multiply(mShares, MC) : null;
                 DayEpsResolution mEps = StockValuationService.resolveDayEps(
                         b.stock().getCurrency(), b.status(), mp, b.splits(), mDay, mFxRate,
@@ -858,27 +890,37 @@ public class SignalReplayAuditJob implements Job {
         return enriched;
     }
 
-    // --- 嚴格 Point-in-Time (PIT) 估值與基本面重算（零未來函數） ---
+    // --- Point-in-Time (PIT) 與可選正式 Non-PIT 估值與基本面重算 ---
 
-    private PitValuationSnapshot evaluatePitValuation(StockBundle bundle, LocalDate day, BigDecimal closePrice, FxRateLookup fxLookup) {
+    private PitValuationSnapshot evaluatePitValuation(
+            StockBundle bundle, LocalDate day, BigDecimal closePrice, FxRateLookup fxLookup, boolean nonPitMode) {
         if (bundle.adr() && !bundle.verifiedAdr()) {
             return new PitValuationSnapshot(null, null, "INSUFFICIENT_EVIDENCE", null, null, null, null,
                     "INSUFFICIENT_DATA", null, "ADR_RATIO_UNVERIFIED");
         }
-        List<StockFinancialPeriod> pitPeriods = filterPitVisiblePeriods(bundle.periods(), day);
-        if (pitPeriods.isEmpty() || closePrice == null || closePrice.signum() <= 0) {
-            return new PitValuationSnapshot(null, null, "INSUFFICIENT_EVIDENCE", null, null, null, null,
-                    "INSUFFICIENT_DATA", null, "PIT_NO_PERIOD");
+        List<StockFinancialPeriod> visiblePeriods;
+        StockFinancialPeriod matched;
+        String pitBasis;
+        if (nonPitMode) {
+            matched = StockValuationService.matchPeriod(bundle.periods(), day);
+            visiblePeriods = matched == null ? List.of() : periodsUpTo(bundle.periods(), matched.getPeriodEnd());
+            pitBasis = matched == null ? "NON_PIT_NO_PERIOD" : "NON_PIT_FORMAL";
+        } else {
+            visiblePeriods = filterPitVisiblePeriods(bundle.periods(), day);
+            matched = visiblePeriods.isEmpty() ? null : visiblePeriods.getLast();
+            pitBasis = resolvePitBasis(matched);
         }
-        StockFinancialPeriod matched = pitPeriods.getLast();
-        String pitBasis = resolvePitBasis(matched);
+        if (matched == null || closePrice == null || closePrice.signum() <= 0) {
+            return new PitValuationSnapshot(null, null, "INSUFFICIENT_EVIDENCE", null, null, null, null,
+                    "INSUFFICIENT_DATA", null, nonPitMode ? "NON_PIT_NO_PERIOD" : "PIT_NO_PERIOD");
+        }
         String quoteCurrency = bundle.stock().getCurrency();
         FxResolution fxRes = resolveFx(fxLookup, matched, quoteCurrency, day);
         BigDecimal fxRate = fxRes != null && fxRes.isUsable() ? fxRes.usdPerUnit() : null;
         String fxFailure = fxRes != null && !fxRes.isUsable() && fxRes.reason() != null ? fxRes.reason().name() : null;
         String splitError = StockValuationService.splitSyncError(bundle.status());
 
-        BigDecimal sharesAtDay = resolvePitSharesAtDay(matched, bundle.splits(), day);
+        BigDecimal sharesAtDay = resolvePitSharesAtDay(matched, bundle.splits(), day, nonPitMode);
         BigDecimal marketCapAtDay = sharesAtDay != null && sharesAtDay.signum() > 0 ? closePrice.multiply(sharesAtDay, MC) : null;
         DayEpsResolution epsRes = StockValuationService.resolveDayEps(
                 quoteCurrency, bundle.status(), matched, bundle.splits(), day, fxRate,
@@ -890,7 +932,7 @@ public class SignalReplayAuditJob implements Job {
         String primaryMetric = choosePrimaryMetric(dayMultiples, bundle.financialInstitution());
         BigDecimal currentMultiple = primaryMetric == null ? null : dayMultiples.get(primaryMetric);
 
-        // 嚴格以 <= day 之近 5 年月末日與各月末日當時 PIT 可見財季構建歷史估值帶 [L, M, H]
+        // 嚴格以 <= day 之近 5 年月末日構建正式 P20/P50/P80 歷史估值帶 [L, M, H]
         ValuationReferenceDto historicalRef = buildPitHistoricalReference(
                 bundle, day, matched, primaryMetric, currentMultiple, closePrice, sharesAtDay, fxRate, quoteCurrency);
         ObjectiveBandVerdict bandVerdict = ValuationSummaryCalculator.computeObjectiveBandAndVerdict(closePrice, historicalRef, null);
@@ -898,7 +940,7 @@ public class SignalReplayAuditJob implements Job {
 
         BigDecimal peAtDay = dayMultiples.get("PE");
         FundamentalSnapshotDto fundamentals = fundamentalCalculator.calculate(new FundamentalSnapshotCalculator.Inputs(
-                pitPeriods, matched, bundle.splits(), day, quoteCurrency,
+                visiblePeriods, matched, bundle.splits(), day, quoteCurrency,
                 closePrice, marketCapAtDay, marketCapAtDay == null ? "VALUATION_DATE_SHARES_MISSING" : null,
                 epsAtDay, epsRes.peReason(), peAtDay,
                 bundle.financialInstitution(), splitError, fxRate, fxFailure, bundle.verifiedAdr()));
@@ -917,6 +959,19 @@ public class SignalReplayAuditJob implements Job {
                 backing,
                 fundamentals,
                 pitBasis);
+    }
+
+    private List<StockFinancialPeriod> periodsUpTo(List<StockFinancialPeriod> allPeriods, LocalDate maxPeriodEnd) {
+        if (allPeriods == null || allPeriods.isEmpty() || maxPeriodEnd == null) {
+            return List.of();
+        }
+        List<StockFinancialPeriod> out = new ArrayList<>();
+        for (StockFinancialPeriod p : allPeriods) {
+            if (p != null && p.getPeriodEnd() != null && !p.getPeriodEnd().isAfter(maxPeriodEnd)) {
+                out.add(p);
+            }
+        }
+        return out;
     }
 
     List<StockFinancialPeriod> filterPitVisiblePeriods(List<StockFinancialPeriod> allPeriods, LocalDate day) {
@@ -958,15 +1013,18 @@ public class SignalReplayAuditJob implements Job {
         return "PIT_CONSERVATIVE_45D";
     }
 
-    private BigDecimal resolvePitSharesAtDay(StockFinancialPeriod period, List<StockSplit> splits, LocalDate day) {
+    private BigDecimal resolvePitSharesAtDay(StockFinancialPeriod period, List<StockSplit> splits, LocalDate day, boolean nonPitMode) {
         if (period == null || period.getSharesOutstanding() == null || period.getSharesOutstanding().signum() <= 0
                 || !MetricStatus.AVAILABLE.name().equals(period.getSharesOutstandingStatus())) {
             return null;
         }
         LocalDate basisDate = period.getSharesBasisDate() != null ? period.getSharesBasisDate() : period.getPeriodEnd();
         LocalDate shareSecAvail = period.getSharesSecAvailableFromDate();
-        // 嚴格禁止把未來才觀測或申報的股數（含 OBSERVED_SHARES）反推至歷史日期
-        if (basisDate == null || basisDate.isAfter(day) || (shareSecAvail != null && shareSecAvail.isAfter(day))) {
+        if (basisDate == null) {
+            return null;
+        }
+        // PIT 模式嚴格禁止把未來才觀測或申報的股數（含 OBSERVED_SHARES）反推至歷史日期
+        if (!nonPitMode && (basisDate.isAfter(day) || (shareSecAvail != null && shareSecAvail.isAfter(day)))) {
             return null;
         }
         BigDecimal factor = StockSplitCalculator.shareFactor(splits, basisDate, day);
@@ -1081,12 +1139,13 @@ public class SignalReplayAuditJob implements Job {
             return null;
         }
         Collections.sort(samples);
-        BigDecimal p25 = percentile(samples, new BigDecimal("0.25"));
+        // 對齊正式 StockValuationService 歷史 5 年分位帶口徑：P20 / P50 / P80
+        BigDecimal p20 = percentile(samples, new BigDecimal("0.20"));
         BigDecimal p50 = percentile(samples, new BigDecimal("0.50"));
-        BigDecimal p75 = percentile(samples, new BigDecimal("0.75"));
-        BigDecimal priceLow = impliedPriceForMultiple(metricCode, p25, currentMultiple, currentPrice, matched, sharesAtDay, fxRate, quoteCurrency);
+        BigDecimal p80 = percentile(samples, new BigDecimal("0.80"));
+        BigDecimal priceLow = impliedPriceForMultiple(metricCode, p20, currentMultiple, currentPrice, matched, sharesAtDay, fxRate, quoteCurrency);
         BigDecimal priceMed = impliedPriceForMultiple(metricCode, p50, currentMultiple, currentPrice, matched, sharesAtDay, fxRate, quoteCurrency);
-        BigDecimal priceHigh = impliedPriceForMultiple(metricCode, p75, currentMultiple, currentPrice, matched, sharesAtDay, fxRate, quoteCurrency);
+        BigDecimal priceHigh = impliedPriceForMultiple(metricCode, p80, currentMultiple, currentPrice, matched, sharesAtDay, fxRate, quoteCurrency);
         if (priceLow == null || priceMed == null || priceHigh == null
                 || priceLow.signum() <= 0 || priceMed.signum() <= 0 || priceHigh.signum() <= 0) {
             return null;
@@ -1094,7 +1153,7 @@ public class SignalReplayAuditJob implements Job {
         BigDecimal pctRank = midRankPercentile(samples, currentMultiple);
         return new ValuationReferenceDto(
                 ValuationReferenceDto.KIND_HISTORICAL_MARKET, metricCode, MetricStatus.AVAILABLE.name(), null,
-                p25, p50, p75, priceLow, priceHigh,
+                p20, p50, p80, priceLow, priceHigh,
                 samples.size(), windowMonths, windowMonths - samples.size(),
                 firstSampleDate, lastSampleDate, currentMultiple, pctRank, priceMed,
                 null, null, null, null, null, null,
@@ -1181,39 +1240,57 @@ public class SignalReplayAuditJob implements Job {
         return "NONE";
     }
 
-    private TradePlanDto findMatchingPlan(List<TradePlanDto> plans, LevelZoneDto supportZone) {
-        if (plans == null || plans.isEmpty()) return null;
-        if (supportZone != null && supportZone.id() != null) {
-            for (TradePlanDto p : plans) {
-                if (p != null && supportZone.id().equals(p.sourceZoneId())) {
-                    return p;
-                }
+    private LevelZoneDto findSupportZoneById(MetricResult<SupportResistanceDto> support, String zoneId) {
+        if (zoneId == null || support == null || support.status() != MetricStatus.AVAILABLE || support.value() == null) {
+            return null;
+        }
+        for (LevelZoneDto z : support.value().supports()) {
+            if (z != null && zoneId.equals(z.id())) {
+                return z;
             }
         }
-        for (TradePlanDto p : plans) {
-            if (p != null && p.status() != null && "ACTIVE".equals(p.status().name())) {
-                return p;
+        for (LevelZoneDto z : support.value().containingZones()) {
+            if (z != null && zoneId.equals(z.id())) {
+                return z;
             }
-        }
-        return plans.getFirst();
-    }
-
-    private BigDecimal resolveProtectiveStop(TradePlanDto plan, LevelZoneDto supportZone) {
-        if (plan != null && plan.stop() != null && plan.stop().protectivePrice() != null && plan.stop().protectivePrice().signum() > 0) {
-            return plan.stop().protectivePrice();
-        }
-        if (supportZone != null && supportZone.lower() != null && supportZone.lower().signum() > 0) {
-            return supportZone.lower();
         }
         return null;
     }
 
-    private BigDecimal resolveFirstTargetAbovePrice(TradePlanDto plan, BigDecimal price) {
-        if (plan == null || plan.targets() == null || price == null) return null;
-        for (TargetDto t : plan.targets()) {
-            if (t != null && t.price() != null && t.price().compareTo(price) > 0) {
-                return t.price();
+    /** 與 DailyOpportunityRadarService 一致：嚴格匹配同支撐區與邊界版本之交易計畫，絕不混入其他無關區域計畫。 */
+    private TradePlanDto findMatchingPlan(List<TradePlanDto> plans, LevelZoneDto supportZone) {
+        if (plans == null || supportZone == null || supportZone.id() == null) {
+            return null;
+        }
+        for (TradePlanDto p : plans) {
+            if (p != null && supportZone.id().equals(p.sourceZoneId())
+                    && (p.sourceBoundsVersion() <= 0 || p.sourceBoundsVersion() == supportZone.boundsVersion())) {
+                return p;
             }
+        }
+        return null;
+    }
+
+    /** 與 DailyOpportunityRadarService 一致：優先採匹配計畫保護止損，缺值時回退同支撐區下緣減 0.5 ATR。 */
+    private BigDecimal resolveProtectiveStop(TradePlanDto plan, LevelZoneDto supportZone) {
+        if (plan != null && plan.stop() != null && plan.stop().protectivePrice() != null && plan.stop().protectivePrice().signum() > 0) {
+            return plan.stop().protectivePrice();
+        }
+        if (supportZone != null && supportZone.lower() != null && supportZone.anchorAtr() != null && supportZone.anchorAtr().signum() > 0) {
+            BigDecimal stop = supportZone.lower().subtract(supportZone.anchorAtr().multiply(HALF_ATR, MC), MC);
+            return stop.signum() > 0 ? stop : null;
+        }
+        return null;
+    }
+
+    /** 與 DailyOpportunityRadarService 一致：僅於第一道阻力目標嚴格高於收盤價時採用，絕不跳過未突破第一阻力改取後續目標。 */
+    private BigDecimal resolveFirstTargetAbovePrice(TradePlanDto plan, BigDecimal price) {
+        if (plan == null || plan.targets() == null || plan.targets().isEmpty() || price == null) {
+            return null;
+        }
+        TargetDto first = plan.targets().getFirst();
+        if (first != null && first.price() != null && first.price().compareTo(price) > 0) {
+            return first.price();
         }
         return null;
     }
@@ -1264,8 +1341,22 @@ public class SignalReplayAuditJob implements Job {
         int evaluatedSessions = maxForwardIdx - sigIdx;
         BigDecimal maxFavorable = BigDecimal.ZERO;
         BigDecimal maxAdverse = BigDecimal.ZERO;
-        String outcome = stopAtEntry == null && targetAtEntry == null ? "NO_PLAN" : SignalTrackingLog.OUTCOME_PENDING;
+        // 次日開盤已直接跳空高於第一目標或低於保護止損時，不得誤記為正常進場後的 TARGET_HIT_FIRST／STOP_HIT_FIRST
+        boolean entryGappedBelowStop = stopAtEntry != null && entryOpen.compareTo(stopAtEntry) <= 0;
+        boolean entryGappedAboveTarget = targetAtEntry != null && entryOpen.compareTo(targetAtEntry) >= 0;
+        String outcome;
         LocalDate outcomeDate = null;
+        if (stopAtEntry == null && targetAtEntry == null) {
+            outcome = "NO_PLAN";
+        } else if (entryGappedBelowStop) {
+            outcome = OUTCOME_ENTRY_GAPPED_BELOW_STOP;
+            outcomeDate = entryDate;
+        } else if (entryGappedAboveTarget) {
+            outcome = OUTCOME_ENTRY_GAPPED_ABOVE_TARGET;
+            outcomeDate = entryDate;
+        } else {
+            outcome = SignalTrackingLog.OUTCOME_PENDING;
+        }
 
         for (int idx = sigIdx + 1; idx <= maxForwardIdx; idx++) {
             QuoteBarRow bar = bundle.quotes().get(idx);
@@ -1373,6 +1464,7 @@ public class SignalReplayAuditJob implements Job {
 
     private int writeSummaryCsv(
             Path path,
+            String valuationMode,
             LocalDate startDate,
             LocalDate endDate,
             int symbolCount,
@@ -1415,6 +1507,7 @@ public class SignalReplayAuditJob implements Job {
                 }
             }
             String metaNotes = "window=" + startDate + "~" + endDate + ";symbols=" + symbolCount
+                    + ";valuationMode=" + valuationMode
                     + ";regimeSwitches=" + regimeSwitches
                     + ";spyCrashLeMinus2Pct_ALLOW=" + pct(allowSpyCrash, allowWithNext) + "%"
                     + ";RESTRICTED=" + pct(restrictedSpyCrash, restrictedWithNext) + "%"
@@ -1472,13 +1565,18 @@ public class SignalReplayAuditJob implements Job {
                 writtenRows++;
             }
 
-            // 4. Stock Signals Aggregated by Stance (cooldownDistinct=true to prevent repeated-day inflation)
+            // 4. Stock Signals Aggregated by Stance & by Radar Track × Plan Status (independent 20d cooldowns)
             Map<String, GroupAccumulator> byStance = new LinkedHashMap<>();
+            Map<String, GroupAccumulator> byTrackPlan = new LinkedHashMap<>();
             Map<String, GroupAccumulator> byGroupBuy = new LinkedHashMap<>();
             Map<String, GroupAccumulator> bySymbolBuy = new LinkedHashMap<>();
             for (EventRow r : events) {
                 if ("MARKET_REGIME_CHANGE".equals(r.eventKind()) || "MARKET_REGIME_LATEST".equals(r.eventKind())) {
                     continue;
+                }
+                if (r.trackPlanDistinct() && r.radarTrack() != null && !"NONE".equals(r.radarTrack())) {
+                    String tpKey = buildTrackPlanKey(r.radarTrack(), r.planStatus());
+                    byTrackPlan.put(tpKey, byTrackPlan.getOrDefault(tpKey, GroupAccumulator.empty()).add(r.settlement()));
                 }
                 if (!r.cooldownDistinct()) {
                     continue;
@@ -1490,7 +1588,8 @@ public class SignalReplayAuditJob implements Job {
                     bySymbolBuy.put(r.symbol(), bySymbolBuy.getOrDefault(r.symbol(), GroupAccumulator.empty()).add(r.settlement()));
                 }
             }
-            writtenRows += writeAccumulatorSection(writer, "BY_STANCE_DISTINCT", byStance, "20d_cooldown_dedup");
+            writtenRows += writeAccumulatorSection(writer, "BY_STANCE_DISTINCT", byStance, "20d_cooldown_dedup_all_stances");
+            writtenRows += writeAccumulatorSection(writer, "BY_TRACK_PLAN_STATUS", byTrackPlan, "20d_cooldown_dedup_by_track_and_plan_status");
             writtenRows += writeAccumulatorSection(writer, "BUY_SIGNALS_BY_GROUP", byGroupBuy, "bullish_entries_survivorship_check");
             writtenRows += writeAccumulatorSection(writer, "BUY_SIGNALS_BY_SYMBOL", bySymbolBuy, "per_symbol_bullish_entries");
         }
@@ -1531,7 +1630,7 @@ public class SignalReplayAuditJob implements Job {
     // --- 狀態追蹤與磁碟持久化 ---
 
     private void updateStatus(
-            String status, String runId, Instant startedAt, Instant finishedAt,
+            String status, String runId, String valuationMode, Instant startedAt, Instant finishedAt,
             LocalDate startDate, LocalDate endDate,
             int processedDays, int totalDays, int totalSymbols, LocalDate currentDate,
             int processedSnapshots, int emittedEvents, String errorMessage,
@@ -1540,6 +1639,7 @@ public class SignalReplayAuditJob implements Job {
         snapshot.put("taskCode", TaskCode.SIGNAL_REPLAY_AUDIT);
         snapshot.put("status", status);
         snapshot.put("runId", runId);
+        snapshot.put("valuationMode", valuationMode);
         snapshot.put("startedAt", startedAt == null ? null : startedAt.toString());
         snapshot.put("finishedAt", finishedAt == null ? null : finishedAt.toString());
         snapshot.put("startDate", startDate == null ? null : startDate.toString());
@@ -1697,24 +1797,31 @@ public class SignalReplayAuditJob implements Job {
         return EntryPermission.ALLOW;
     }
 
-    private String extractTrend(PriceStructureDto structure, AnalysisTimeframe tf) {
+    private String extractWeeklyMajorTrend(PriceStructureDto structure) {
         if (structure == null || structure.timeframes() == null) return null;
         for (TimeframeStructureDto item : structure.timeframes()) {
-            if (item != null && item.timeframe() == tf
-                    && item.minorTrend() != null && item.minorTrend().value() != null
-                    && item.minorTrend().value().state() != null) {
-                return item.minorTrend().value().state().name();
+            if (item != null && item.timeframe() == AnalysisTimeframe.WEEKLY
+                    && item.majorTrend() != null && item.majorTrend().value() != null
+                    && item.majorTrend().value().state() != null) {
+                return item.majorTrend().value().state().name();
             }
         }
         return null;
+    }
+
+    private String buildTrackPlanKey(String radarTrack, String planStatus) {
+        String planBucket = (planStatus == null || planStatus.isBlank()) ? "NO_PLAN" : planStatus;
+        return radarTrack + "|" + planBucket;
     }
 
     private boolean isActionableBuyOrDefensiveSignal(String stance, String radarTrack, boolean highRiskBreakdown) {
         if (highRiskBreakdown) return true;
         if (radarTrack != null && !"NONE".equals(radarTrack)) return true;
         return isBullishBuyStance(stance)
-                || "AVOID_OR_REDUCE".equals(stance)
+                || "CAUTION_VALUE_TRAP".equals(stance)
+                || "CAUTION_OVEREXTENSION".equals(stance)
                 || "WAIT_FOR_MARKET_STABILIZATION".equals(stance)
+                || "WAIT_FOR_STABILIZATION".equals(stance)
                 || "WATCH_PULLBACK_TO_BAND".equals(stance);
     }
 
@@ -1758,6 +1865,17 @@ public class SignalReplayAuditJob implements Job {
             throw new IllegalArgumentException("SIGNAL_REPLAY_SYMBOLS_PARAM_EMPTY");
         }
         return parsed;
+    }
+
+    private String parseValuationMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return MODE_PIT;
+        }
+        String normalized = raw.trim().toUpperCase(Locale.ROOT);
+        if (MODE_PIT.equals(normalized) || MODE_NON_PIT.equals(normalized)) {
+            return normalized;
+        }
+        throw new IllegalArgumentException("INVALID_SIGNAL_REPLAY_VALUATION_MODE");
     }
 
     private BigDecimal scaleNullable(BigDecimal value, BigDecimal factor) {

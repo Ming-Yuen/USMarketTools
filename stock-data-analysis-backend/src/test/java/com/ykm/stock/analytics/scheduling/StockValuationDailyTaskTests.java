@@ -389,6 +389,7 @@ class StockValuationDailyTaskTests {
         currentReports.addAll(singleQuarter("F_SPLIT", "2026-03-31", 1, 2026, "0.50"));
 
         List<com.ykm.stock.analytics.model.entity.SecFinancialFact> facts = new ArrayList<>();
+        facts.add(secEpsFact("0001045810", "2025-01-01", "2025-03-31", "2025-05-01", "10-Q", "2.00"));
         facts.add(secEpsFact("0001045810", "2025-04-01", "2025-06-30", "2026-08-01", "10-Q", "0.25"));
         facts.add(secEpsFact("0001045810", "2025-07-01", "2025-09-30", "2026-11-01", "10-Q", "0.35"));
         facts.add(secEpsFact("0001045810", "2025-01-01", "2025-12-31", "2026-02-20", "10-K", "12.00"));

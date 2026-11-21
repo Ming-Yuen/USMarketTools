@@ -2445,7 +2445,7 @@ public class StockValuationService {
                 row::setNetIncomeCommonTtmSource, row::setNetIncomeCommonTtmCalculation, row::setNetIncomeCommonTtmPeriodStart, row::setNetIncomeCommonTtmAvailableAt);
 
         // 3. TTM 稀釋 EPS 與拆股基準驗證
-        populateEpsTtm(row, reportsUpToP, effectiveIncome, secFlows, allStockSecFacts, stockSplits,
+        populateEpsTtm(stock, row, reportsUpToP, effectiveIncome, secFlows, allStockSecFacts, stockSplits,
                 multiClass, verifiedOneToOne, adrCtx, reportingCurrency, periodEnd, ttmStart, incomeObs, latestShareBasisDate, calculatedAt, usedSecFlows);
 
         // 4. TTM 營運現金流
@@ -2581,13 +2581,13 @@ public class StockValuationService {
     }
 
     private void populateEpsTtm(
-            StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues income,
+            Stock stock, StockFinancialPeriod row, List<ReportValues> reportsUpToP, ReportValues income,
             Flows secFlows, List<SecFinancialFact> allStockSecFacts, List<StockSplit> stockSplits,
             boolean multiClass, boolean verifiedOneToOne, AdrContext adrCtx, String currency, LocalDate periodEnd, LocalDate futuStart, Instant incomeObs,
             LocalDate latestShareBasisDate, Instant calculatedAt, Set<Flow> usedSecFlows) {
         String figi = row.getFigi();
         boolean isAdr = adrCtx != null && adrCtx.adr();
-        // ADR 的 Futu Diluted EPS 為每 ADR 口徑而 SEC 為每原股口徑，禁止將兩者混算於同一 TTM 內
+        // ADR 的 Futu Diluted EPS 為每 ADR 口徑而 SEC 為每原股口徑，禁止將兩者混算於同一 TTM 內或交叉驗證
         boolean allowSecEps = (!multiClass || verifiedOneToOne) && !isAdr;
         Flow issuerEps = secFlows == null ? null : samePeriodSecFlow(secFlows.dilutedEpsTtm(), periodEnd);
         Flow secEps = allowSecEps ? issuerEps : null;
@@ -2613,25 +2613,29 @@ public class StockValuationService {
         }
 
         LocalDate resolvedBasisDate = null;
+        boolean futuSplitUnconfirmed = false;
         if (futuEps != null && futuEps.value() != null && epsPeriod != null) {
             if (!hasSplitAfter(stockSplits, epsBasisFrom, latestShareBasisDate)) {
                 resolvedBasisDate = latestShareBasisDate;
-            } else if (verifyFutuEpsAtBasis(epsSourceReports, epsPeriod, allStockSecFacts, currency, stockSplits, latestShareBasisDate, calculatedAt)) {
+            } else if (allowSecEps && verifyFutuEpsAtBasis(stock, epsSourceReports, epsPeriod, allStockSecFacts, currency, stockSplits,
+                    latestShareBasisDate, latestShareBasisDate, calculatedAt)) {
                 resolvedBasisDate = latestShareBasisDate;
-            } else if (!hasSplitBetween(stockSplits, epsBasisFrom, epsPeriod.periodEnd())
-                    && verifyFutuEpsAtBasis(epsSourceReports, epsPeriod, allStockSecFacts, currency, stockSplits, epsPeriod.periodEnd(), calculatedAt)) {
+            } else if (allowSecEps && verifyFutuEpsAtBasis(stock, epsSourceReports, epsPeriod, allStockSecFacts, currency, stockSplits,
+                    epsPeriod.periodEnd(), latestShareBasisDate, calculatedAt)) {
                 resolvedBasisDate = epsPeriod.periodEnd();
             } else {
                 futuEps = unverifiedMetric("EPS_SPLIT_BASIS_UNCONFIRMED");
+                futuSplitUnconfirmed = true;
                 mixedEps.clear();
             }
         }
 
+        boolean hasVerifiedFutu = futuEps != null && futuEps.value() != null && resolvedBasisDate != null;
         boolean completeSecInstead = !mixedEps.isEmpty() && secEps != null && secEps.value() != null
                 && epsPeriod != null && epsPeriod.periodEnd().equals(secEps.periodEnd());
         boolean useSec = allowSecEps && (completeSecInstead || preferSec(secEps, futuEps, epsPeriod));
         if (useSec) {
-            LocalDate secBasisDate = resolveSecEpsBasisDate(secEps, allStockSecFacts, currency, stockSplits, latestShareBasisDate, calculatedAt);
+            LocalDate secBasisDate = resolveSecEpsBasisDate(stock, secEps, allStockSecFacts, currency, stockSplits, latestShareBasisDate, calculatedAt);
             if (secEps.value() != null && secBasisDate != null) {
                 usedSecFlows.add(secEps);
                 row.setEpsTtm(secEps.value());
@@ -2644,18 +2648,20 @@ public class StockValuationService {
                 row.setEpsShareBasisDate(secBasisDate);
                 return;
             }
-            String secFail = secEps.value() != null ? "EPS_SPLIT_BASIS_UNCONFIRMED" : secEps.reason();
-            ValuationReason reason = ValuationReason.fromCode(secFail);
-            row.setEpsTtmStatus(reason == null ? MetricStatus.INSUFFICIENT_DATA.name() : reason.statusName());
-            row.setEpsTtmReason(reason);
-            row.setEpsTtmSource("SEC");
-            row.setEpsTtmPeriodStart(secEps.periodStart());
-            row.setEpsTtmAvailableAt(secEps.observedAt());
-            row.setEpsTtmSecAvailableFromDate(secEps.availableFrom());
-            return;
+            if (!hasVerifiedFutu) {
+                String secFail = secEps.value() != null ? "EPS_SPLIT_BASIS_UNCONFIRMED" : secEps.reason();
+                ValuationReason reason = ValuationReason.fromCode(secFail);
+                row.setEpsTtmStatus(reason == null ? MetricStatus.INSUFFICIENT_DATA.name() : reason.statusName());
+                row.setEpsTtmReason(reason);
+                row.setEpsTtmSource("SEC");
+                row.setEpsTtmPeriodStart(secEps.periodStart());
+                row.setEpsTtmAvailableAt(secEps.observedAt());
+                row.setEpsTtmSecAvailableFromDate(secEps.availableFrom());
+                return;
+            }
         }
 
-        if (futuEps != null && futuEps.value() != null && resolvedBasisDate != null) {
+        if (hasVerifiedFutu) {
             usedSecFlows.addAll(mixedEps);
             String src = mixedEps.isEmpty() ? "FUTU" : "FUTU_AND_SEC";
             String calc = epsPeriod != null && epsPeriod.periodType() == 7 ? "Futu 直接申報年度稀釋 EPS" : "Futu 四季稀釋 EPS 之和";
@@ -2673,7 +2679,9 @@ public class StockValuationService {
         }
 
         String failCode;
-        if (!allowSecEps && (futuEps == null || futuEps.value() == null) && issuerEps != null && issuerEps.periodEnd() != null) {
+        if (futuSplitUnconfirmed) {
+            failCode = "EPS_SPLIT_BASIS_UNCONFIRMED";
+        } else if (!allowSecEps && (futuEps == null || futuEps.value() == null) && issuerEps != null && issuerEps.periodEnd() != null) {
             failCode = "SEC_SHARE_CLASS_EPS_UNVERIFIED";
         } else if (futuEps != null) {
             failCode = reasonOf(futuEps);
@@ -3111,82 +3119,136 @@ public class StockValuationService {
         return versions.stream().min(Comparator.comparing(SecFinancialFact::getAccession)).orElse(null);
     }
 
-    private boolean verifyFutuEpsAtBasis(List<ReportValues> reports, ReportValues latest, List<SecFinancialFact> rawSecFacts,
-                                         String currency, List<StockSplit> stockSplits, LocalDate targetBasisDate, Instant calculatedAt) {
+    private boolean verifyFutuEpsAtBasis(Stock stock, List<ReportValues> reports, ReportValues latest, List<SecFinancialFact> allStockSecFacts,
+                                         String currency, List<StockSplit> stockSplits, LocalDate targetBasisDate,
+                                         LocalDate horizonBasisDate, Instant calculatedAt) {
         List<ReportValues> periods = calculator.trailingPeriods(reports, latest.figi(), 1, latest.periodEnd());
         if (periods.isEmpty()) return false;
+        boolean anyExposed = false;
         for (ReportValues period : periods) {
-            if (!hasSplitAfter(stockSplits, period.periodEnd(), targetBasisDate)) continue;
+            // 受拆股影響與否必須依 (periodEnd, horizonBasisDate] 判定，不可依待測 targetBasisDate 跳過驗證
+            if (!hasSplitAfter(stockSplits, period.periodEnd(), horizonBasisDate)) continue;
+            anyExposed = true;
             BigDecimal periodEps = period.value(FinancialConcept.DILUTED_EPS).value();
-            BigDecimal netIncome = calculator.flowInput(period, FinancialConcept.NET_INCOME_COMMON).value();
-            if (secCalculator.isEpsSplitBasisVerified(periodEps, netIncome, period.periodEnd(), period.periodType() == 7,
-                    rawSecFacts, currency, stockSplits, targetBasisDate, calculatedAt)) {
+            BigDecimal netIncome = period.value(FinancialConcept.NET_INCOME_COMMON).value();
+            List<SecFinancialFact> periodCikFacts = cikFactsForPeriod(stock, allStockSecFacts, period.periodEnd());
+            SecFinancialFactsCalculator.EpsSplitVerification verdict = secCalculator.verifyEpsSplitBasis(
+                    periodEps, netIncome, period.periodEnd(), period.periodType() == 7,
+                    periodCikFacts, currency, stockSplits, targetBasisDate, horizonBasisDate, calculatedAt);
+            if (verdict == SecFinancialFactsCalculator.EpsSplitVerification.VERIFIED) {
                 continue;
             }
-            if (period.periodType() == 4 && isFourthQuarterVerifiedViaAnnual10K(reports, period, rawSecFacts, currency, stockSplits, targetBasisDate, calculatedAt)) {
+            if (verdict == SecFinancialFactsCalculator.EpsSplitVerification.REJECTED) {
+                return false;
+            }
+            if (period.periodType() == 4 && isFourthQuarterVerifiedViaAnnual10K(stock, reports, period, allStockSecFacts,
+                    currency, stockSplits, targetBasisDate, horizonBasisDate, calculatedAt)) {
                 continue;
             }
             return false;
         }
-        return true;
+        return anyExposed;
     }
 
-    /** 美國公司第四季僅提交 10-K（無單季 10-Q XBRL 標籤）：核對同日年度 EPS 已通過 SEC 10-K 驗證，且同財年 Q1..Q4 之和與年度 EPS 股份基準吻合。 */
-    private boolean isFourthQuarterVerifiedViaAnnual10K(List<ReportValues> reports, ReportValues q4, List<SecFinancialFact> rawSecFacts,
-                                                        String currency, List<StockSplit> stockSplits, LocalDate targetBasisDate, Instant calculatedAt) {
-        if (q4.fiscalYear() == null) return false;
-        ReportValues annual = reports.stream()
-                .filter(r -> r.statementType() == 1 && r.periodType() == 7 && q4.periodEnd().equals(r.periodEnd()))
-                .findFirst().orElse(null);
-        if (annual == null) return false;
+    /** 美國公司第四季僅提交 10-K（無單季 10-Q XBRL 標籤）：核對同日年度 EPS 與 Q1..Q3 皆通過驗證、四季連續且排除對照拆股基準歧義。 */
+    private boolean isFourthQuarterVerifiedViaAnnual10K(Stock stock, List<ReportValues> reports, ReportValues q4,
+                                                        List<SecFinancialFact> allStockSecFacts, String currency, List<StockSplit> stockSplits,
+                                                        LocalDate targetBasisDate, LocalDate horizonBasisDate, Instant calculatedAt) {
+        if (q4.fiscalYear() == null || !sameCurrency(currency, q4.currency())) return false;
+        List<ReportValues> annuals = reports.stream()
+                .filter(r -> r.statementType() == 1 && r.periodType() == 7 && q4.periodEnd().equals(r.periodEnd())
+                        && sameCurrency(currency, r.currency()))
+                .toList();
+        if (annuals.size() != 1) return false;
+        ReportValues annual = annuals.getFirst();
         BigDecimal annualEps = annual.value(FinancialConcept.DILUTED_EPS).value();
-        BigDecimal annualNi = calculator.flowInput(annual, FinancialConcept.NET_INCOME_COMMON).value();
-        if (annualEps == null || !secCalculator.isEpsSplitBasisVerified(annualEps, annualNi, annual.periodEnd(), true,
-                rawSecFacts, currency, stockSplits, targetBasisDate, calculatedAt)) {
+        BigDecimal annualNi = annual.value(FinancialConcept.NET_INCOME_COMMON).value();
+        List<SecFinancialFact> annualCikFacts = cikFactsForPeriod(stock, allStockSecFacts, annual.periodEnd());
+        if (annualEps == null || secCalculator.verifyEpsSplitBasis(annualEps, annualNi, annual.periodEnd(), true,
+                annualCikFacts, currency, stockSplits, targetBasisDate, horizonBasisDate, calculatedAt)
+                != SecFinancialFactsCalculator.EpsSplitVerification.VERIFIED) {
             return false;
         }
         List<ReportValues> fyQuarters = reports.stream()
-                .filter(r -> r.statementType() == 1 && Objects.equals(q4.fiscalYear(), r.fiscalYear()) && r.periodType() >= 1 && r.periodType() <= 4)
+                .filter(r -> r.statementType() == 1 && Objects.equals(q4.fiscalYear(), r.fiscalYear())
+                        && r.periodType() >= 1 && r.periodType() <= 4 && sameCurrency(currency, r.currency()))
+                .sorted(Comparator.comparing(ReportValues::periodEnd).reversed())
                 .toList();
-        if (fyQuarters.size() != 4) return false;
+        if (fyQuarters.size() != 4 || !fyQuarters.getFirst().periodEnd().equals(q4.periodEnd())
+                || fyQuarters.stream().map(ReportValues::periodType).distinct().count() != 4
+                || !calculator.areContiguousQuarters(fyQuarters, q4.periodEnd())) {
+            return false;
+        }
         BigDecimal sum = BigDecimal.ZERO;
         for (ReportValues q : fyQuarters) {
             BigDecimal qEps = q.value(FinancialConcept.DILUTED_EPS).value();
             if (qEps == null) return false;
+            if (q.periodType() != 4 && hasSplitAfter(stockSplits, q.periodEnd(), horizonBasisDate)) {
+                BigDecimal qNi = q.value(FinancialConcept.NET_INCOME_COMMON).value();
+                List<SecFinancialFact> qCikFacts = cikFactsForPeriod(stock, allStockSecFacts, q.periodEnd());
+                if (secCalculator.verifyEpsSplitBasis(qEps, qNi, q.periodEnd(), false,
+                        qCikFacts, currency, stockSplits, targetBasisDate, horizonBasisDate, calculatedAt)
+                        != SecFinancialFactsCalculator.EpsSplitVerification.VERIFIED) {
+                    return false;
+                }
+            }
             sum = sum.add(qEps, MC);
         }
-        BigDecimal tol = annualEps.abs().multiply(new BigDecimal("0.04")).max(new BigDecimal("0.03"));
-        return sum.subtract(annualEps, MC).abs().compareTo(tol) <= 0;
+        BigDecimal tol = annualEps.abs().multiply(new BigDecimal("0.04"), MC).max(new BigDecimal("0.03"));
+        if (sum.subtract(annualEps, MC).abs().compareTo(tol) > 0) return false;
+
+        BigDecimal q4Eps = q4.value(FinancialConcept.DILUTED_EPS).value();
+        if (q4Eps == null) return false;
+        if (q4Eps.signum() != 0) {
+            for (LocalDate rival : secCalculator.distinctRivalBasisDates(stockSplits, q4.periodEnd(), targetBasisDate, horizonBasisDate)) {
+                BigDecimal q4UnderRival = q4Eps.multiply(StockSplitCalculator.shareFactor(stockSplits, targetBasisDate, rival), MC);
+                BigDecimal rivalSum = sum.subtract(q4Eps, MC).add(q4UnderRival, MC);
+                if (rivalSum.subtract(annualEps, MC).abs().compareTo(tol) <= 0) return false;
+            }
+        }
+        return true;
     }
 
-    private LocalDate resolveSecEpsBasisDate(Flow secEps, List<SecFinancialFact> rawSecFacts, String currency,
+    private LocalDate resolveSecEpsBasisDate(Stock stock, Flow secEps, List<SecFinancialFact> allStockSecFacts, String currency,
                                              List<StockSplit> stockSplits, LocalDate latestShareBasisDate, Instant calculatedAt) {
         if (secEps == null || secEps.value() == null || secEps.epsBasisFrom() == null || secEps.periodEnd() == null) return null;
         if (!hasSplitAfter(stockSplits, secEps.epsBasisFrom(), latestShareBasisDate)) {
             return latestShareBasisDate;
         }
+        List<SecFinancialFact> secCikFacts = cikFactsForPeriod(stock, allStockSecFacts, secEps.periodEnd());
+        boolean directAnnual = secEps.epsBasisFrom().equals(secEps.periodEnd());
         LocalDate latestSplitToNow = stockSplits.stream().map(StockSplit::getExecutionDate)
                 .filter(exec -> exec.isAfter(secEps.epsBasisFrom()) && !exec.isAfter(latestShareBasisDate))
                 .max(LocalDate::compareTo).orElse(null);
         if (latestSplitToNow != null && secEps.earliestFiled() != null && !secEps.earliestFiled().isBefore(latestSplitToNow)
-                && StockSplitCalculator.shareFactor(stockSplits, secEps.earliestFiled(), latestShareBasisDate).compareTo(BigDecimal.ONE) == 0) {
+                && StockSplitCalculator.shareFactor(stockSplits, secEps.earliestFiled(), latestShareBasisDate).compareTo(BigDecimal.ONE) == 0
+                && !secCalculator.hasUnrestatedPostSplitComparative(secEps, allStockSecFacts, d -> resolveCik(stock, d),
+                        currency, stockSplits, latestShareBasisDate, calculatedAt)) {
             return latestShareBasisDate;
         }
-        boolean annual = secEps.periodStart() != null
-                && ChronoUnit.DAYS.between(secEps.periodStart(), secEps.periodEnd()) + 1 >= 364;
-        if (annual && secCalculator.isEpsSplitBasisVerified(secEps.value(), null, secEps.periodEnd(), true,
-                rawSecFacts, currency, stockSplits, latestShareBasisDate, calculatedAt)) {
+        if (directAnnual && secCalculator.verifyEpsSplitBasis(secEps.value(), null, secEps.periodEnd(), true,
+                secCikFacts, currency, stockSplits, latestShareBasisDate, latestShareBasisDate, calculatedAt)
+                == SecFinancialFactsCalculator.EpsSplitVerification.VERIFIED) {
             return latestShareBasisDate;
         }
+        // 全數組成季皆須於拆股前申報完成（檢查 latestFiled 而非 earliestFiled），禁止混用拆前與拆後申報季
         if (!hasSplitBetween(stockSplits, secEps.epsBasisFrom(), secEps.periodEnd())
-                && secEps.earliestFiled() != null && !hasSplitBetween(stockSplits, secEps.periodEnd(), secEps.earliestFiled())) {
+                && secEps.latestFiled() != null && !hasSplitBetween(stockSplits, secEps.periodEnd(), secEps.latestFiled())) {
             return secEps.periodEnd();
         }
-        if (annual && secCalculator.isEpsSplitBasisVerified(secEps.value(), null, secEps.periodEnd(), true,
-                rawSecFacts, currency, stockSplits, secEps.periodEnd(), calculatedAt)) {
+        if (directAnnual && secCalculator.verifyEpsSplitBasis(secEps.value(), null, secEps.periodEnd(), true,
+                secCikFacts, currency, stockSplits, secEps.periodEnd(), latestShareBasisDate, calculatedAt)
+                == SecFinancialFactsCalculator.EpsSplitVerification.VERIFIED) {
             return secEps.periodEnd();
         }
         return null;
+    }
+
+    private List<SecFinancialFact> cikFactsForPeriod(Stock stock, List<SecFinancialFact> allStockSecFacts, LocalDate periodEnd) {
+        if (stock == null || allStockSecFacts == null || allStockSecFacts.isEmpty()) return List.of();
+        String cik = resolveCik(stock, periodEnd);
+        if (cik == null) return List.of();
+        return allStockSecFacts.stream().filter(f -> cik.equals(f.getCik())).toList();
     }
 
     private boolean isPeriodPublishedAtCutoff(StockFinancialPeriod p, LocalDate queryDay, Instant cutoffAt) {

@@ -87,11 +87,23 @@ public class SecFinancialFactsCalculator {
             "NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic",
             "CommonStockSharesOutstanding");
 
+    public enum EpsSplitVerification {
+        VERIFIED,
+        REJECTED,
+        INCONCLUSIVE
+    }
+
     public record Flow(BigDecimal value, LocalDate periodStart, LocalDate periodEnd, LocalDate availableFrom,
-                       Instant observedAt, String reason, LocalDate epsBasisFrom, LocalDate earliestFiled, String note) {
+                       Instant observedAt, String reason, LocalDate epsBasisFrom, LocalDate earliestFiled,
+                       LocalDate latestFiled, String note, List<SecFinancialFact> epsComponents) {
+        public Flow(BigDecimal value, LocalDate periodStart, LocalDate periodEnd, LocalDate availableFrom,
+                    Instant observedAt, String reason, LocalDate epsBasisFrom, LocalDate earliestFiled, String note) {
+            this(value, periodStart, periodEnd, availableFrom, observedAt, reason, epsBasisFrom, earliestFiled, null, note, List.of());
+        }
+
         public Flow(BigDecimal value, LocalDate periodStart, LocalDate periodEnd, LocalDate availableFrom,
                     Instant observedAt, String reason, LocalDate epsBasisFrom) {
-            this(value, periodStart, periodEnd, availableFrom, observedAt, reason, epsBasisFrom, null, null);
+            this(value, periodStart, periodEnd, availableFrom, observedAt, reason, epsBasisFrom, null, null, null, List.of());
         }
     }
 
@@ -458,7 +470,26 @@ public class SecFinancialFactsCalculator {
     public boolean isEpsSplitBasisVerified(BigDecimal reportedEps, BigDecimal futuNetIncome, LocalDate periodEnd, boolean annualPeriod,
                                            List<SecFinancialFact> allCikFacts, String currency, List<StockSplit> splits,
                                            LocalDate valuationDay, Instant calculatedAt) {
-        if (reportedEps == null || periodEnd == null || currency == null) return false;
+        if (valuationDay == null || calculatedAt == null) return false;
+        LocalDate knownNyDay = calculatedAt.atZone(ZoneId.of("America/New_York")).toLocalDate();
+        LocalDate horizon = splits == null ? valuationDay : splits.stream()
+                .map(StockSplit::getExecutionDate)
+                .filter(d -> d != null && !d.isAfter(knownNyDay))
+                .max(LocalDate::compareTo)
+                .filter(d -> d.isAfter(valuationDay))
+                .orElse(valuationDay);
+        return verifyEpsSplitBasis(reportedEps, futuNetIncome, periodEnd, annualPeriod, allCikFacts, currency, splits,
+                valuationDay, horizon, calculatedAt) == EpsSplitVerification.VERIFIED;
+    }
+
+    /** 驗證跨越拆股日的單期稀釋 EPS，並區分通過（VERIFIED）、直接證據反證／版本衝突（REJECTED）與缺證據（INCONCLUSIVE）。 */
+    public EpsSplitVerification verifyEpsSplitBasis(BigDecimal reportedEps, BigDecimal futuNetIncome, LocalDate periodEnd, boolean annualPeriod,
+                                                    List<SecFinancialFact> allCikFacts, String currency, List<StockSplit> splits,
+                                                    LocalDate targetBasisDate, LocalDate horizonBasisDate, Instant calculatedAt) {
+        if (reportedEps == null || periodEnd == null || currency == null || targetBasisDate == null
+                || horizonBasisDate == null || calculatedAt == null || allCikFacts == null || splits == null) {
+            return EpsSplitVerification.INCONCLUSIVE;
+        }
         LocalDate knownNyDay = calculatedAt.atZone(ZoneId.of("America/New_York")).toLocalDate();
         List<SecFinancialFact> matchingPeriod = allCikFacts.stream().filter(fact -> "us-gaap".equals(fact.getTaxonomy())
                 && fact.getPeriodStart() != null && fact.getPeriodEnd() != null
@@ -468,71 +499,391 @@ public class SecFinancialFactsCalculator {
                 && fact.getObservedAt() != null && !fact.getObservedAt().isAfter(calculatedAt)
                 && (annualPeriod ? annual(new Period(fact.getPeriodStart(), fact.getPeriodEnd()))
                         : quarter(new Period(fact.getPeriodStart(), fact.getPeriodEnd())))).toList();
+        if (matchingPeriod.isEmpty()) return EpsSplitVerification.INCONCLUSIVE;
 
-        // ① 拆股後提交之直接申報 SEC 稀釋 EPS，或拆股前原申報（期末至申報日間無拆股）按已知拆股因子對齊後一致
-        LocalDate latestSplitUpToDay = splits.stream().map(StockSplit::getExecutionDate)
-                .filter(exec -> exec.isAfter(periodEnd) && !exec.isAfter(valuationDay))
-                .max(LocalDate::compareTo).orElse(null);
-        List<SecFinancialFact> directEps = matchingPeriod.stream()
-                .filter(fact -> ("EarningsPerShareDiluted".equals(fact.getTag()) || "EarningsPerShareBasicAndDiluted".equals(fact.getTag()))
-                        && (currency + "/shares").equals(fact.getUnit()) && fact.getValue() != null
-                        && (latestSplitUpToDay == null || !fact.getFiled().isBefore(latestSplitUpToDay))
-                        && StockSplitCalculator.shareFactor(splits, fact.getFiled(), valuationDay).compareTo(BigDecimal.ONE) == 0)
-                .sorted(Comparator.comparing(SecFinancialFact::getFiled).reversed()).toList();
-        if (!directEps.isEmpty()) {
-            BigDecimal secPostSplitEps = directEps.getFirst().getValue();
-            if (reportedEps.subtract(secPostSplitEps).abs().compareTo(new BigDecimal("0.02")) <= 0) return true;
+        List<LocalDate> rivalDates = distinctRivalBasisDates(splits, periodEnd, targetBasisDate, horizonBasisDate);
+
+        // ① 拆前原報與同拆股區間直接申報 SEC 稀釋 EPS（先過濾後取最新修訂，並攔截非重述分拆比較期）
+        String epsUnit = currency + "/shares";
+        FactSelection unambiguousEps = selectPreferredFact(matchingPeriod, "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted", epsUnit,
+                fact -> splits.stream().noneMatch(s -> s.getExecutionDate().isAfter(fact.getPeriodEnd())
+                        && !s.getExecutionDate().isAfter(fact.getFiled())));
+        if (unambiguousEps.conflict()) return EpsSplitVerification.REJECTED;
+
+        FactSelection directTarget = selectDirectEpsForRegime(matchingPeriod, epsUnit, periodEnd, splits, targetBasisDate, unambiguousEps.fact());
+        if (directTarget.conflict()) return EpsSplitVerification.REJECTED;
+
+        List<SecFinancialFact> directRivals = new ArrayList<>();
+        for (LocalDate rivalDate : rivalDates) {
+            FactSelection rivalSel = selectDirectEpsForRegime(matchingPeriod, epsUnit, periodEnd, splits, rivalDate, unambiguousEps.fact());
+            if (rivalSel.conflict()) return EpsSplitVerification.REJECTED;
+            if (rivalSel.fact() != null) directRivals.add(rivalSel.fact());
         }
-        List<SecFinancialFact> unambiguousEps = matchingPeriod.stream()
-                .filter(fact -> ("EarningsPerShareDiluted".equals(fact.getTag()) || "EarningsPerShareBasicAndDiluted".equals(fact.getTag()))
-                        && (currency + "/shares").equals(fact.getUnit()) && fact.getValue() != null
-                        && splits.stream().noneMatch(s -> s.getExecutionDate().isAfter(fact.getPeriodEnd())
-                                && !s.getExecutionDate().isAfter(fact.getFiled())))
-                .sorted(Comparator.comparing(SecFinancialFact::getFiled).reversed()).toList();
-        if (!unambiguousEps.isEmpty()) {
-            SecFinancialFact baseFact = unambiguousEps.getFirst();
-            BigDecimal factor = StockSplitCalculator.shareFactor(splits, baseFact.getFiled(), valuationDay);
-            if (factor.signum() > 0) {
-                BigDecimal adjustedSecEps = baseFact.getValue().divide(factor, MathContext.DECIMAL128);
-                BigDecimal tol = adjustedSecEps.abs().multiply(new BigDecimal("0.03")).max(new BigDecimal("0.02"));
-                if (reportedEps.subtract(adjustedSecEps).abs().compareTo(tol) <= 0) return true;
+
+        if (reportedEps.signum() == 0) {
+            for (SecFinancialFact rivalFact : directRivals) {
+                if (rivalFact.getValue().signum() != 0) return EpsSplitVerification.REJECTED;
             }
+            if (directTarget.fact() != null) {
+                return directTarget.fact().getValue().signum() == 0 ? EpsSplitVerification.VERIFIED : EpsSplitVerification.REJECTED;
+            }
+            if (unambiguousEps.fact() != null) {
+                return unambiguousEps.fact().getValue().signum() == 0 ? EpsSplitVerification.VERIFIED : EpsSplitVerification.REJECTED;
+            }
+        } else if (directTarget.fact() != null || unambiguousEps.fact() != null || !directRivals.isEmpty()) {
+            boolean matchesTarget = (directTarget.fact() != null && matchesDirectEps(reportedEps, directTarget.fact().getValue()))
+                    || (unambiguousEps.fact() != null && matchesScaledEps(reportedEps, unambiguousEps.fact().getValue(),
+                            StockSplitCalculator.shareFactor(splits, unambiguousEps.fact().getFiled(), targetBasisDate)));
+            boolean matchesRival = false;
+            for (SecFinancialFact rivalFact : directRivals) {
+                if (matchesDirectEps(reportedEps, rivalFact.getValue())) {
+                    matchesRival = true;
+                    break;
+                }
+            }
+            if (!matchesRival && unambiguousEps.fact() != null) {
+                for (LocalDate rivalDate : rivalDates) {
+                    BigDecimal rivalFactor = StockSplitCalculator.shareFactor(splits, unambiguousEps.fact().getFiled(), rivalDate);
+                    if (matchesScaledEps(reportedEps, unambiguousEps.fact().getValue(), rivalFactor)) {
+                        matchesRival = true;
+                        break;
+                    }
+                }
+            }
+            if (!matchesRival && directTarget.fact() != null) {
+                for (LocalDate rivalDate : rivalDates) {
+                    BigDecimal rivalFactor = StockSplitCalculator.shareFactor(splits, directTarget.fact().getFiled(), rivalDate);
+                    if (matchesScaledEps(reportedEps, directTarget.fact().getValue(), rivalFactor)) {
+                        matchesRival = true;
+                        break;
+                    }
+                }
+            }
+            if (matchesRival) return EpsSplitVerification.REJECTED;
+            if (matchesTarget) return EpsSplitVerification.VERIFIED;
         }
 
         // ② 同報期盈利分子除以拆股對齊後之「加權平均稀釋股數」交叉驗證（絕不用期末股本猜測）
-        List<SecFinancialFact> shareFacts = matchingPeriod.stream()
-                .filter(fact -> DILUTED_WEIGHTED_SHARES.equals(fact.getTag()) && "shares".equals(fact.getUnit())
-                        && fact.getValue() != null && fact.getValue().signum() > 0)
-                .sorted(Comparator.comparing(SecFinancialFact::getFiled).reversed()).toList();
-        if (shareFacts.isEmpty()) {
-            shareFacts = matchingPeriod.stream()
-                    .filter(fact -> BASIC_AND_DILUTED_WEIGHTED_SHARES.equals(fact.getTag()) && "shares".equals(fact.getUnit())
-                            && fact.getValue() != null && fact.getValue().signum() > 0)
-                    .sorted(Comparator.comparing(SecFinancialFact::getFiled).reversed()).toList();
-        }
-        if (shareFacts.isEmpty()) return false;
-        SecFinancialFact chosenShares = shareFacts.getFirst();
-        BigDecimal dilutedSharesAtDay = chosenShares.getValue()
-                .multiply(StockSplitCalculator.shareFactor(splits, chosenShares.getFiled(), valuationDay), MathContext.DECIMAL128);
-        if (dilutedSharesAtDay.signum() <= 0) return false;
+        FactSelection unambiguousShares = selectPreferredFact(matchingPeriod, DILUTED_WEIGHTED_SHARES, BASIC_AND_DILUTED_WEIGHTED_SHARES, "shares",
+                fact -> fact.getValue() != null && fact.getValue().signum() > 0
+                        && splits.stream().noneMatch(s -> s.getExecutionDate().isAfter(fact.getPeriodEnd())
+                                && !s.getExecutionDate().isAfter(fact.getFiled())));
+        if (unambiguousShares.conflict()) return EpsSplitVerification.REJECTED;
 
-        BigDecimal numerator = futuNetIncome;
-        if (numerator == null) {
-            numerator = matchingPeriod.stream()
-                    .filter(fact -> "NetIncomeLossAvailableToCommonStockholdersBasic".equals(fact.getTag())
-                            && currency.equals(fact.getUnit()) && fact.getValue() != null)
-                    .max(Comparator.comparing(SecFinancialFact::getFiled))
-                    .map(SecFinancialFact::getValue)
-                    .orElseGet(() -> matchingPeriod.stream()
-                            .filter(fact -> "NetIncomeLoss".equals(fact.getTag())
-                                    && currency.equals(fact.getUnit()) && fact.getValue() != null)
-                            .max(Comparator.comparing(SecFinancialFact::getFiled))
-                            .map(SecFinancialFact::getValue).orElse(null));
+        FactSelection directShares = selectDirectSharesForRegime(matchingPeriod, periodEnd, splits, targetBasisDate, unambiguousShares.fact());
+        if (directShares.conflict()) return EpsSplitVerification.REJECTED;
+
+        SecFinancialFact chosenShares = directShares.fact() != null ? directShares.fact() : unambiguousShares.fact();
+        if (chosenShares == null) {
+            FactSelection latestShares = selectPreferredFact(matchingPeriod, DILUTED_WEIGHTED_SHARES, BASIC_AND_DILUTED_WEIGHTED_SHARES, "shares",
+                    fact -> fact.getValue() != null && fact.getValue().signum() > 0
+                            && !isUnrestatedShareFact(matchingPeriod, fact, splits, unambiguousShares.fact()));
+            if (latestShares.conflict()) return EpsSplitVerification.REJECTED;
+            chosenShares = latestShares.fact();
         }
-        if (numerator == null) return false;
-        BigDecimal impliedEps = numerator.divide(dilutedSharesAtDay, MathContext.DECIMAL128);
-        BigDecimal tolerance = impliedEps.abs().multiply(new BigDecimal("0.03")).max(new BigDecimal("0.02"));
-        return reportedEps.subtract(impliedEps).abs().compareTo(tolerance) <= 0;
+        if (chosenShares == null) return EpsSplitVerification.INCONCLUSIVE;
+
+        BigDecimal numerator = null;
+        LocalDate shareStart = chosenShares.getPeriodStart();
+        LocalDate shareEnd = chosenShares.getPeriodEnd();
+        List<SecFinancialFact> exactSamePeriod = matchingPeriod.stream()
+                .filter(fact -> shareStart.equals(fact.getPeriodStart()) && shareEnd.equals(fact.getPeriodEnd()))
+                .toList();
+        FactSelection commonNi = selectPreferredFact(exactSamePeriod, "NetIncomeLossAvailableToCommonStockholdersBasic",
+                "NetIncomeLossAvailableToCommonStockholdersBasic", currency, fact -> fact.getValue() != null);
+        if (commonNi.conflict()) return EpsSplitVerification.REJECTED;
+        if (commonNi.fact() != null) {
+            numerator = commonNi.fact().getValue();
+        } else if (futuNetIncome != null) {
+            numerator = futuNetIncome;
+        } else if (!hasPositivePreferredStock(allCikFacts, shareEnd, knownNyDay, calculatedAt)) {
+            FactSelection genericNi = selectPreferredFact(exactSamePeriod, "NetIncomeLoss",
+                    "NetIncomeLoss", currency, fact -> fact.getValue() != null);
+            if (genericNi.conflict()) return EpsSplitVerification.REJECTED;
+            numerator = genericNi.fact() == null ? null : genericNi.fact().getValue();
+        }
+        if (numerator == null) return EpsSplitVerification.INCONCLUSIVE;
+
+        BigDecimal targetShares = chosenShares.getValue()
+                .multiply(StockSplitCalculator.shareFactor(splits, chosenShares.getFiled(), targetBasisDate), MathContext.DECIMAL128);
+        if (targetShares.signum() <= 0) return EpsSplitVerification.INCONCLUSIVE;
+
+        BigDecimal impliedTarget = numerator.divide(targetShares, MathContext.DECIMAL128);
+        if (reportedEps.signum() == 0) {
+            return impliedTarget.abs().compareTo(new BigDecimal("0.005")) <= 0
+                    ? EpsSplitVerification.VERIFIED : EpsSplitVerification.REJECTED;
+        }
+        boolean matchesTarget = matchesImpliedEps(reportedEps, impliedTarget);
+        for (LocalDate rivalDate : rivalDates) {
+            BigDecimal rivalShares = chosenShares.getValue()
+                    .multiply(StockSplitCalculator.shareFactor(splits, chosenShares.getFiled(), rivalDate), MathContext.DECIMAL128);
+            if (rivalShares.signum() > 0 && matchesImpliedEps(reportedEps, numerator.divide(rivalShares, MathContext.DECIMAL128))) {
+                return EpsSplitVerification.REJECTED;
+            }
+        }
+        return matchesTarget ? EpsSplitVerification.VERIFIED : EpsSplitVerification.INCONCLUSIVE;
+    }
+
+    /** 列出 (periodEnd, horizonBasisDate] 內與 targetBasisDate 累計拆股因子不同的對照基準日（必含拆前 periodEnd）。 */
+    public List<LocalDate> distinctRivalBasisDates(List<StockSplit> splits, LocalDate periodEnd,
+                                                   LocalDate targetBasisDate, LocalDate horizonBasisDate) {
+        if (splits == null || periodEnd == null || targetBasisDate == null || horizonBasisDate == null) return List.of();
+        List<LocalDate> candidates = new ArrayList<>();
+        candidates.add(periodEnd);
+        for (StockSplit split : splits) {
+            if (split != null && split.getExecutionDate() != null
+                    && split.getExecutionDate().isAfter(periodEnd) && !split.getExecutionDate().isAfter(horizonBasisDate)) {
+                candidates.add(split.getExecutionDate());
+            }
+        }
+        if (horizonBasisDate.isAfter(periodEnd)) candidates.add(horizonBasisDate);
+
+        BigDecimal targetCum = StockSplitCalculator.shareFactor(splits, periodEnd, targetBasisDate);
+        List<BigDecimal> seenFactors = new ArrayList<>();
+        seenFactors.add(targetCum);
+        List<LocalDate> rivals = new ArrayList<>();
+        for (LocalDate candidate : candidates) {
+            BigDecimal cum = StockSplitCalculator.shareFactor(splits, periodEnd, candidate);
+            boolean duplicate = false;
+            for (BigDecimal seen : seenFactors) {
+                if (seen.compareTo(cum) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                seenFactors.add(cum);
+                rivals.add(candidate);
+            }
+        }
+        return rivals;
+    }
+
+    /** 檢查 SEC 拆後比較期（單年或四季，含跨前任 CIK 與多拆股中間態）是否存在未隨拆股／分拆重述的舊值。 */
+    public boolean hasUnrestatedPostSplitComparative(Flow secEps, List<SecFinancialFact> allStockFacts,
+                                                     java.util.function.Function<LocalDate, String> periodCikResolver,
+                                                     String currency, List<StockSplit> splits, LocalDate horizonBasisDate, Instant calculatedAt) {
+        if (secEps == null || secEps.epsComponents() == null || secEps.epsComponents().isEmpty()
+                || allStockFacts == null || currency == null || splits == null || horizonBasisDate == null || calculatedAt == null) {
+            return false;
+        }
+        LocalDate knownNyDay = calculatedAt.atZone(ZoneId.of("America/New_York")).toLocalDate();
+        String epsUnit = currency + "/shares";
+        for (SecFinancialFact comp : secEps.epsComponents()) {
+            if (comp == null || comp.getPeriodStart() == null || comp.getPeriodEnd() == null
+                    || comp.getFiled() == null || comp.getValue() == null) {
+                continue;
+            }
+            boolean exposed = splits.stream().anyMatch(s -> s.getExecutionDate().isAfter(comp.getPeriodEnd())
+                    && !s.getExecutionDate().isAfter(horizonBasisDate));
+            if (!exposed) continue;
+            String resolvedCik = periodCikResolver == null ? comp.getCik() : periodCikResolver.apply(comp.getPeriodEnd());
+            List<SecFinancialFact> samePeriodEarlier = allStockFacts.stream()
+                    .filter(fact -> "us-gaap".equals(fact.getTaxonomy())
+                            && ("EarningsPerShareDiluted".equals(fact.getTag()) || "EarningsPerShareBasicAndDiluted".equals(fact.getTag()))
+                            && epsUnit.equals(fact.getUnit()) && fact.getValue() != null
+                            && (Objects.equals(comp.getCik(), fact.getCik()) || Objects.equals(resolvedCik, fact.getCik()))
+                            && comp.getPeriodStart().equals(fact.getPeriodStart())
+                            && comp.getPeriodEnd().equals(fact.getPeriodEnd())
+                            && fact.getFiled() != null && fact.getFiled().isBefore(comp.getFiled()) && !fact.getFiled().isAfter(knownNyDay)
+                            && !fact.getPeriodEnd().isAfter(fact.getFiled())
+                            && fact.getObservedAt() != null && !fact.getObservedAt().isAfter(calculatedAt)
+                            && StockSplitCalculator.shareFactor(splits, fact.getFiled(), comp.getFiled()).compareTo(BigDecimal.ONE) != 0)
+                    .toList();
+            if (hasUnrestatedEarlierRegime(samePeriodEarlier, comp, epsUnit, splits)) return true;
+        }
+        return false;
+    }
+
+    private boolean hasUnrestatedEarlierRegime(List<SecFinancialFact> samePeriodEarlier, SecFinancialFact comp,
+                                               String epsUnit, List<StockSplit> splits) {
+        if (samePeriodEarlier.isEmpty()) return false;
+        List<BigDecimal> checkedFactors = new ArrayList<>();
+        for (SecFinancialFact candidate : samePeriodEarlier) {
+            BigDecimal factor = StockSplitCalculator.shareFactor(splits, candidate.getFiled(), comp.getFiled());
+            boolean alreadyChecked = false;
+            for (BigDecimal seen : checkedFactors) {
+                if (seen.compareTo(factor) == 0) {
+                    alreadyChecked = true;
+                    break;
+                }
+            }
+            if (alreadyChecked) continue;
+            checkedFactors.add(factor);
+            FactSelection regimeSel = selectPreferredFact(samePeriodEarlier, "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted",
+                    epsUnit, fact -> StockSplitCalculator.shareFactor(splits, fact.getFiled(), comp.getFiled()).compareTo(factor) == 0);
+            if (regimeSel.conflict()) return true;
+            if (regimeSel.fact() != null && isUnrestatedComparativeEps(regimeSel.fact(), comp, splits)) return true;
+        }
+        return false;
+    }
+
+    private boolean hasPositivePreferredStock(List<SecFinancialFact> allCikFacts, LocalDate periodEnd, LocalDate knownNyDay, Instant calculatedAt) {
+        Set<String> preferredTags = Set.of(
+                "PreferredStockIncludingAdditionalPaidInCapitalNetOfDiscount",
+                "PreferredStockValueOutstanding",
+                "PreferredStockValue",
+                "ConvertiblePreferredStockNonredeemableOrRedeemableIssuerOptionValue");
+        return allCikFacts.stream().anyMatch(fact -> "us-gaap".equals(fact.getTaxonomy())
+                && preferredTags.contains(fact.getTag())
+                && fact.getPeriodStart() == null && periodEnd.equals(fact.getPeriodEnd())
+                && fact.getFiled() != null && !fact.getFiled().isAfter(knownNyDay)
+                && !fact.getPeriodEnd().isAfter(fact.getFiled())
+                && fact.getObservedAt() != null && !fact.getObservedAt().isAfter(calculatedAt)
+                && fact.getValue() != null && fact.getValue().signum() > 0);
+    }
+
+    private record FactSelection(SecFinancialFact fact, boolean conflict) {}
+
+    private FactSelection selectDirectEpsForRegime(List<SecFinancialFact> matchingPeriod, String epsUnit, LocalDate periodEnd,
+                                                   List<StockSplit> splits, LocalDate regimeDate, SecFinancialFact unambiguousOrig) {
+        LocalDate latestSplitUpToRegime = splits.stream().map(StockSplit::getExecutionDate)
+                .filter(exec -> exec.isAfter(periodEnd) && !exec.isAfter(regimeDate))
+                .max(LocalDate::compareTo).orElse(null);
+        FactSelection direct = selectPreferredFact(matchingPeriod, "EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted", epsUnit,
+                fact -> (latestSplitUpToRegime == null || !fact.getFiled().isBefore(latestSplitUpToRegime))
+                        && StockSplitCalculator.shareFactor(splits, fact.getFiled(), regimeDate).compareTo(BigDecimal.ONE) == 0);
+        if (direct.conflict() || direct.fact() == null) return direct;
+        SecFinancialFact chosen = direct.fact();
+        List<SecFinancialFact> earlierDiffRegime = matchingPeriod.stream()
+                .filter(fact -> ("EarningsPerShareDiluted".equals(fact.getTag()) || "EarningsPerShareBasicAndDiluted".equals(fact.getTag()))
+                        && epsUnit.equals(fact.getUnit()) && fact.getValue() != null
+                        && chosen.getPeriodStart().equals(fact.getPeriodStart()) && chosen.getPeriodEnd().equals(fact.getPeriodEnd())
+                        && fact.getFiled().isBefore(chosen.getFiled())
+                        && StockSplitCalculator.shareFactor(splits, fact.getFiled(), chosen.getFiled()).compareTo(BigDecimal.ONE) != 0)
+                .toList();
+        if (hasUnrestatedEarlierRegime(earlierDiffRegime, chosen, epsUnit, splits)) {
+            return new FactSelection(null, false);
+        }
+        if (unambiguousOrig != null && isUnrestatedComparativeEps(unambiguousOrig, chosen, splits)) {
+            return new FactSelection(null, false);
+        }
+        return direct;
+    }
+
+    private FactSelection selectDirectSharesForRegime(List<SecFinancialFact> matchingPeriod, LocalDate periodEnd,
+                                                      List<StockSplit> splits, LocalDate regimeDate, SecFinancialFact unambiguousShares) {
+        LocalDate latestSplitUpToRegime = splits.stream().map(StockSplit::getExecutionDate)
+                .filter(exec -> exec.isAfter(periodEnd) && !exec.isAfter(regimeDate))
+                .max(LocalDate::compareTo).orElse(null);
+        FactSelection direct = selectPreferredFact(matchingPeriod, DILUTED_WEIGHTED_SHARES, BASIC_AND_DILUTED_WEIGHTED_SHARES, "shares",
+                fact -> fact.getValue() != null && fact.getValue().signum() > 0
+                        && (latestSplitUpToRegime == null || !fact.getFiled().isBefore(latestSplitUpToRegime))
+                        && StockSplitCalculator.shareFactor(splits, fact.getFiled(), regimeDate).compareTo(BigDecimal.ONE) == 0);
+        if (direct.conflict() || direct.fact() == null) return direct;
+        if (isUnrestatedShareFact(matchingPeriod, direct.fact(), splits, unambiguousShares)) {
+            return new FactSelection(null, false);
+        }
+        return direct;
+    }
+
+    private boolean isUnrestatedShareFact(List<SecFinancialFact> matchingPeriod, SecFinancialFact chosen,
+                                          List<StockSplit> splits, SecFinancialFact unambiguousShares) {
+        List<SecFinancialFact> earlierDiffRegime = matchingPeriod.stream()
+                .filter(fact -> (DILUTED_WEIGHTED_SHARES.equals(fact.getTag()) || BASIC_AND_DILUTED_WEIGHTED_SHARES.equals(fact.getTag()))
+                        && "shares".equals(fact.getUnit()) && fact.getValue() != null && fact.getValue().signum() > 0
+                        && chosen.getPeriodStart().equals(fact.getPeriodStart()) && chosen.getPeriodEnd().equals(fact.getPeriodEnd())
+                        && fact.getFiled().isBefore(chosen.getFiled())
+                        && StockSplitCalculator.shareFactor(splits, fact.getFiled(), chosen.getFiled()).compareTo(BigDecimal.ONE) != 0)
+                .toList();
+        if (hasUnrestatedEarlierSharesRegime(earlierDiffRegime, chosen, splits)) return true;
+        return unambiguousShares != null && isUnrestatedComparativeShares(unambiguousShares, chosen, splits);
+    }
+
+    private boolean hasUnrestatedEarlierSharesRegime(List<SecFinancialFact> earlierDiffRegime, SecFinancialFact chosen, List<StockSplit> splits) {
+        if (earlierDiffRegime.isEmpty()) return false;
+        List<BigDecimal> checkedFactors = new ArrayList<>();
+        for (SecFinancialFact candidate : earlierDiffRegime) {
+            BigDecimal factor = StockSplitCalculator.shareFactor(splits, candidate.getFiled(), chosen.getFiled());
+            boolean alreadyChecked = false;
+            for (BigDecimal seen : checkedFactors) {
+                if (seen.compareTo(factor) == 0) {
+                    alreadyChecked = true;
+                    break;
+                }
+            }
+            if (alreadyChecked) continue;
+            checkedFactors.add(factor);
+            FactSelection regimeSel = selectPreferredFact(earlierDiffRegime, DILUTED_WEIGHTED_SHARES, BASIC_AND_DILUTED_WEIGHTED_SHARES,
+                    "shares", fact -> StockSplitCalculator.shareFactor(splits, fact.getFiled(), chosen.getFiled()).compareTo(factor) == 0);
+            if (regimeSel.conflict()) return true;
+            if (regimeSel.fact() != null && isUnrestatedComparativeShares(regimeSel.fact(), chosen, splits)) return true;
+        }
+        return false;
+    }
+
+    private FactSelection selectPreferredFact(List<SecFinancialFact> matchingPeriod, String primaryTag, String fallbackTag,
+                                              String expectedUnit, java.util.function.Predicate<SecFinancialFact> filter) {
+        List<SecFinancialFact> primary = matchingPeriod.stream()
+                .filter(fact -> primaryTag.equals(fact.getTag()) && expectedUnit.equals(fact.getUnit())
+                        && fact.getValue() != null && filter.test(fact))
+                .toList();
+        FactSelection primarySel = selectUniqueFact(primary);
+        if (primarySel.conflict() || primarySel.fact() != null) return primarySel;
+        List<SecFinancialFact> fallback = matchingPeriod.stream()
+                .filter(fact -> fallbackTag.equals(fact.getTag()) && expectedUnit.equals(fact.getUnit())
+                        && fact.getValue() != null && filter.test(fact))
+                .toList();
+        return selectUniqueFact(fallback);
+    }
+
+    private FactSelection selectUniqueFact(List<SecFinancialFact> candidates) {
+        if (candidates.isEmpty()) return new FactSelection(null, false);
+        Map<Period, Point> rev = revisions(candidates);
+        if (rev.isEmpty()) return new FactSelection(null, false);
+        if (rev.size() != 1) return new FactSelection(null, true);
+        Point point = rev.values().iterator().next();
+        return new FactSelection(point.fact(), point.conflict());
+    }
+
+    private boolean isUnrestatedComparativeEps(SecFinancialFact origFact, SecFinancialFact compFact, List<StockSplit> splits) {
+        BigDecimal factor = StockSplitCalculator.shareFactor(splits, origFact.getFiled(), compFact.getFiled());
+        if (factor.compareTo(BigDecimal.ONE) == 0) return false;
+        if (origFact.getValue().signum() == 0 || compFact.getValue().signum() == 0
+                || origFact.getValue().signum() != compFact.getValue().signum()) {
+            return false;
+        }
+        BigDecimal expected = origFact.getValue().divide(factor, MathContext.DECIMAL128);
+        BigDecimal distToOrig = compFact.getValue().subtract(origFact.getValue(), MathContext.DECIMAL128).abs()
+                .divide(origFact.getValue().abs(), MathContext.DECIMAL128);
+        BigDecimal distToExpected = compFact.getValue().subtract(expected, MathContext.DECIMAL128).abs()
+                .divide(expected.abs(), MathContext.DECIMAL128);
+        return distToOrig.compareTo(distToExpected) <= 0;
+    }
+
+    private boolean isUnrestatedComparativeShares(SecFinancialFact origShares, SecFinancialFact compShares, List<StockSplit> splits) {
+        BigDecimal factor = StockSplitCalculator.shareFactor(splits, origShares.getFiled(), compShares.getFiled());
+        if (factor.compareTo(BigDecimal.ONE) == 0) return false;
+        BigDecimal expected = origShares.getValue().multiply(factor, MathContext.DECIMAL128);
+        BigDecimal distToOrig = compShares.getValue().subtract(origShares.getValue(), MathContext.DECIMAL128).abs()
+                .divide(origShares.getValue().abs(), MathContext.DECIMAL128);
+        BigDecimal distToExpected = compShares.getValue().subtract(expected, MathContext.DECIMAL128).abs()
+                .divide(expected.abs(), MathContext.DECIMAL128);
+        return distToOrig.compareTo(distToExpected) <= 0;
+    }
+
+    private boolean matchesDirectEps(BigDecimal reported, BigDecimal directSec) {
+        if (reported == null || directSec == null || reported.signum() == 0 || directSec.signum() == 0) return false;
+        if (reported.signum() != directSec.signum()) return false;
+        return reported.subtract(directSec, MathContext.DECIMAL128).abs().compareTo(new BigDecimal("0.02")) <= 0;
+    }
+
+    private boolean matchesScaledEps(BigDecimal reported, BigDecimal sourceSec, BigDecimal shareFactor) {
+        if (reported == null || sourceSec == null || shareFactor == null || shareFactor.signum() <= 0) return false;
+        if (reported.signum() == 0 || sourceSec.signum() == 0 || reported.signum() != sourceSec.signum()) return false;
+        BigDecimal expected = sourceSec.divide(shareFactor, MathContext.DECIMAL128);
+        BigDecimal roundingFloor = new BigDecimal("0.005").divide(shareFactor, MathContext.DECIMAL128)
+                .add(new BigDecimal("0.005"), MathContext.DECIMAL128);
+        BigDecimal tol = expected.abs().multiply(new BigDecimal("0.03"), MathContext.DECIMAL128)
+                .max(new BigDecimal("0.02")).max(roundingFloor);
+        return reported.subtract(expected, MathContext.DECIMAL128).abs().compareTo(tol) <= 0;
+    }
+
+    private boolean matchesImpliedEps(BigDecimal reported, BigDecimal implied) {
+        if (reported == null || implied == null || reported.signum() == 0 || implied.signum() == 0) return false;
+        if (reported.signum() != implied.signum()) return false;
+        BigDecimal tol = implied.abs().multiply(new BigDecimal("0.03"), MathContext.DECIMAL128).max(new BigDecimal("0.02"));
+        return reported.subtract(implied, MathContext.DECIMAL128).abs().compareTo(tol) <= 0;
     }
 
     private List<SecFinancialFact> eligible(List<SecFinancialFact> input, String cik, String currency, Instant calculatedAt) {
@@ -795,7 +1146,7 @@ public class SecFinancialFactsCalculator {
         if (result.value() == null) return result;
         String note = usedTags.isEmpty() ? DEPRECIATION_AMORTIZATION : String.join(", ", usedTags);
         return new Flow(result.value(), result.periodStart(), result.periodEnd(), result.availableFrom(),
-                result.observedAt(), null, null, result.earliestFiled(), note);
+                result.observedAt(), null, null, result.earliestFiled(), result.latestFiled(), note, List.of());
     }
 
     private SecFinancialFact copyWithTag(SecFinancialFact source, String tag) {
@@ -1147,7 +1498,8 @@ public class SecFinancialFactsCalculator {
         LocalDate available = components.stream().map(Flow::availableFrom).filter(Objects::nonNull).max(LocalDate::compareTo).orElse(null);
         Instant observed = components.stream().map(Flow::observedAt).filter(Objects::nonNull).max(Instant::compareTo).orElse(null);
         LocalDate earliestFiled = components.stream().map(Flow::earliestFiled).filter(Objects::nonNull).min(LocalDate::compareTo).orElse(null);
-        return new Flow(value, first.periodStart(), first.periodEnd(), available, observed, null, null, earliestFiled, note);
+        LocalDate latestFiled = components.stream().map(Flow::latestFiled).filter(Objects::nonNull).max(LocalDate::compareTo).orElse(null);
+        return new Flow(value, first.periodStart(), first.periodEnd(), available, observed, null, null, earliestFiled, latestFiled, note, List.of());
     }
 
     private Flow operatingCashFlow(List<SecFinancialFact> facts, BiFunction<List<SecFinancialFact>, String, Flow> read) {
@@ -1309,9 +1661,12 @@ public class SecFinancialFactsCalculator {
         LocalDate available = points.stream().map(point -> point.fact().getAvailableFromDate()).max(LocalDate::compareTo).orElseThrow();
         Instant observed = points.stream().map(point -> point.fact().getObservedAt()).max(Instant::compareTo).orElseThrow();
         LocalDate earliestFiled = points.stream().map(point -> point.fact().getFiled()).filter(Objects::nonNull).min(LocalDate::compareTo).orElse(null);
-        LocalDate epsBasisFrom = Set.of("EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted").contains(points.getFirst().fact().getTag())
+        LocalDate latestFiled = points.stream().map(point -> point.fact().getFiled()).filter(Objects::nonNull).max(LocalDate::compareTo).orElse(null);
+        boolean isEps = Set.of("EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted").contains(points.getFirst().fact().getTag());
+        LocalDate epsBasisFrom = isEps
                 ? points.stream().map(point -> point.fact().getPeriodEnd()).min(LocalDate::compareTo).orElseThrow() : null;
-        return new Flow(value, start, end, available, observed, null, epsBasisFrom, earliestFiled, note);
+        List<SecFinancialFact> epsComponents = isEps ? points.stream().map(Point::fact).toList() : List.of();
+        return new Flow(value, start, end, available, observed, null, epsBasisFrom, earliestFiled, latestFiled, note, epsComponents);
     }
 
     private boolean annual(Period period) {

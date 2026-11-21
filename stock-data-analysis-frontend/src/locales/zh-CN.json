@@ -1025,6 +1025,8 @@
       "filterTierAll": "全部量级",
       "filterMaxDist": "距支撑上限（%）",
       "filterMinRr": "最低净盈亏比",
+      "filterPlanStatus": "计划状态",
+      "filterPlanStatusAll": "全部状态",
       "headwindWatchTag": "逆风仅观察",
       "cols": {
         "symbol": "标的",
@@ -1036,7 +1038,7 @@
         "stop": "保护止损",
         "targetRr": "目标与净 R/R",
         "earningsDays": "距下次财报",
-        "stance": "观察倾向"
+        "stance": "观察倾向与计划状态"
       },
       "daysUnit": "{{days}} 天",
       "noEarningsDate": "无已知排程",
@@ -1302,7 +1304,7 @@
       "TRANSITION": "趨势转换中",
       "UNKNOWN": "未知",
       "ACTIVE": "计划条件已成立",
-      "WAITING_TRIGGER": "等待觸發条件",
+      "WAITING_TRIGGER": "等待触发条件",
       "INVALIDATED": "计划已失效",
       "UNAVAILABLE": "无法提供",
       "ZONE_LIMIT": "区间内限价",

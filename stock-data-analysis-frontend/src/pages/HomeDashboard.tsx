@@ -109,6 +109,13 @@ const regimeChipColor = (regime?: string | null): "success" | "info" | "warning"
   return "default";
 };
 
+const planStatusChipColor = (status?: string | null): "success" | "warning" | "error" | "default" => {
+  if (status === "ACTIVE") return "success";
+  if (status === "WAITING_TRIGGER") return "warning";
+  if (status === "INVALIDATED") return "error";
+  return "default";
+};
+
 const HomeDashboard: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -120,6 +127,7 @@ const HomeDashboard: React.FC = () => {
   const [radarTier, setRadarTier] = useState("ALL");
   const [radarMaxDistPct, setRadarMaxDistPct] = useState("");
   const [radarMinRr, setRadarMinRr] = useState("");
+  const [radarPlanStatus, setRadarPlanStatus] = useState("ALL");
   const [flowSort, setFlowSort] = useState<"cmf20d" | "shareDelta" | "breadth50" | "dollarVol1d">("cmf20d");
   const [flowOrder, setFlowOrder] = useState<"TOP" | "BOTTOM">("TOP");
   const [statsTab, setStatsTab] = useState<"TYPE" | "REGIME" | "INDUSTRY" | "TIER">("TYPE");
@@ -177,9 +185,12 @@ const HomeDashboard: React.FC = () => {
       if (radarTab === "VALUE" && minRrNum != null && Number.isFinite(minRrNum)) {
         if (item.netRiskReward == null || item.netRiskReward < minRrNum) return false;
       }
+      if (radarTab === "VALUE" && radarPlanStatus !== "ALL") {
+        if (item.planStatus !== radarPlanStatus) return false;
+      }
       return true;
     });
-  }, [activeRadarRaw, radarTab, radarSearch, radarIndustry, radarTier, radarMaxDistPct, radarMinRr, t]);
+  }, [activeRadarRaw, radarTab, radarSearch, radarIndustry, radarTier, radarMaxDistPct, radarMinRr, radarPlanStatus, t]);
 
   const sortedSectorFlows: SectorMoneyFlowRow[] = useMemo(() => {
     const rows = [...(sectorFlow?.rows ?? [])];
@@ -466,14 +477,29 @@ const HomeDashboard: React.FC = () => {
             sx={{ width: 155 }}
           />
           {radarTab === "VALUE" && (
-            <TextField
-              size="small"
-              type="number"
-              label={t("dashboard.radar.filterMinRr")}
-              value={radarMinRr}
-              onChange={(e) => setRadarMinRr(e.target.value)}
-              sx={{ width: 140 }}
-            />
+            <>
+              <TextField
+                size="small"
+                type="number"
+                label={t("dashboard.radar.filterMinRr")}
+                value={radarMinRr}
+                onChange={(e) => setRadarMinRr(e.target.value)}
+                sx={{ width: 140 }}
+              />
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel id="radar-plan-status-label">{t("dashboard.radar.filterPlanStatus")}</InputLabel>
+                <Select
+                  labelId="radar-plan-status-label"
+                  label={t("dashboard.radar.filterPlanStatus")}
+                  value={radarPlanStatus}
+                  onChange={(e) => setRadarPlanStatus(e.target.value)}
+                >
+                  <MenuItem value="ALL">{t("dashboard.radar.filterPlanStatusAll")}</MenuItem>
+                  <MenuItem value="ACTIVE">{t("analysisReport.states.ACTIVE")}</MenuItem>
+                  <MenuItem value="WAITING_TRIGGER">{t("analysisReport.states.WAITING_TRIGGER")}</MenuItem>
+                </Select>
+              </FormControl>
+            </>
           )}
         </Stack>
 
@@ -625,6 +651,15 @@ const HomeDashboard: React.FC = () => {
                           label={t(`analysisReport.executiveSummary.stances.${row.stance}`, { defaultValue: row.stance })}
                           sx={{ maxWidth: 220 }}
                         />
+                        {row.planStatus && (
+                          <Chip
+                            size="small"
+                            variant={row.planStatus === "ACTIVE" ? "filled" : "outlined"}
+                            color={planStatusChipColor(row.planStatus)}
+                            label={t(`analysisReport.states.${row.planStatus}`, { defaultValue: row.planStatus })}
+                            data-testid={`radar-plan-status-${row.figi}`}
+                          />
+                        )}
                         {row.headwindWatchOnly && (
                           <Chip size="small" color="error" variant="outlined" label={t("dashboard.radar.headwindWatchTag")} />
                         )}

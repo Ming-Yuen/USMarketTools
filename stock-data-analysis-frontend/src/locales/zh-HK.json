@@ -1025,6 +1025,8 @@
       "filterTierAll": "全部量級",
       "filterMaxDist": "距支撐上限（%）",
       "filterMinRr": "最低淨賺賠比",
+      "filterPlanStatus": "計劃狀態",
+      "filterPlanStatusAll": "全部狀態",
       "headwindWatchTag": "逆風僅觀察",
       "cols": {
         "symbol": "標的",
@@ -1036,7 +1038,7 @@
         "stop": "保護止損",
         "targetRr": "目標與淨 R/R",
         "earningsDays": "距下次財報",
-        "stance": "觀察傾向"
+        "stance": "觀察傾向與計劃狀態"
       },
       "daysUnit": "{{days}} 天",
       "noEarningsDate": "無已知排程",

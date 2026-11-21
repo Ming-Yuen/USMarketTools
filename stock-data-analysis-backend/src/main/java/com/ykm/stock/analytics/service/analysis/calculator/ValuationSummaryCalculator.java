@@ -82,6 +82,7 @@ public class ValuationSummaryCalculator {
     private static final BigDecimal WEAK_FIN_ROE = new BigDecimal("0.04");
     private static final BigDecimal STRONG_PEG_MAX = new BigDecimal("1.20");
     private static final BigDecimal ANCHOR_DIVERGENCE_THRESHOLD = new BigDecimal("0.35");
+    private static final BigDecimal SEVERE_ANCHOR_DIVERGENCE_THRESHOLD = BigDecimal.ONE;
     private static final BigDecimal SHARE_DILUTION_WARN = new BigDecimal("0.03");
     private static final BigDecimal REV_CONTRACTION_WARN = new BigDecimal("-0.05");
     private static final BigDecimal FORWARD_EPS_TRAP_CONTRACTION = new BigDecimal("-0.20");
@@ -108,7 +109,7 @@ public class ValuationSummaryCalculator {
 
     private record SupportSelection(LevelZoneDto zone, boolean excludedByBreachOrInvalidation) {}
 
-    private record BandSynthesis(String anchorSource, FairValueBandDto band, List<AnalysisReasonDto> anchorReasons) {}
+    private record BandSynthesis(String anchorSource, String verdict, FairValueBandDto band, List<AnalysisReasonDto> anchorReasons) {}
 
     private record ForwardTrapSignals(boolean earningsContraction, boolean swungToLoss, BigDecimal impliedGrowth,
                                       String targetFiscalPeriod, boolean downgrade90d, BigDecimal revision90d,
@@ -188,10 +189,20 @@ public class ValuationSummaryCalculator {
         BigDecimal mid = null;
         BigDecimal high = null;
         String anchorSource = "NONE";
+        boolean divergentAnchors = false;
         if (histValid && peerValid) {
-            low = hist.priceLow().add(peer.priceLow(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
-            mid = hist.priceMedian().add(peer.priceMedian(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
-            high = hist.priceHigh().add(peer.priceHigh(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+            BigDecimal diffRatio = computeAnchorDivergenceRatio(hist.priceMedian(), peer.priceMedian());
+            divergentAnchors = diffRatio != null && diffRatio.compareTo(ANCHOR_DIVERGENCE_THRESHOLD) >= 0;
+            if (divergentAnchors) {
+                // 歷史與同業中位價分歧達 35% 以上時改採幾何平均合成 [L, M, H]，避免單邊極端倍數主導算術均值
+                low = geometricMean(hist.priceLow(), peer.priceLow());
+                mid = geometricMean(hist.priceMedian(), peer.priceMedian());
+                high = geometricMean(hist.priceHigh(), peer.priceHigh());
+            } else {
+                low = hist.priceLow().add(peer.priceLow(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+                mid = hist.priceMedian().add(peer.priceMedian(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+                high = hist.priceHigh().add(peer.priceHigh(), MC).divide(TWO, 4, RoundingMode.HALF_UP);
+            }
             anchorSource = "HISTORICAL_AND_PEER";
         } else if (histValid) {
             low = hist.priceLow();
@@ -205,6 +216,15 @@ public class ValuationSummaryCalculator {
             anchorSource = "PEER_ONLY";
         }
         String verdict = classifyPriceAgainstBand(price, low, mid, high);
+        if (divergentAnchors && price != null && price.signum() > 0) {
+            if ("DEEP_UNDERVALUED".equals(verdict)
+                    && (price.compareTo(hist.priceMedian()) > 0 || price.compareTo(peer.priceMedian()) > 0)) {
+                verdict = "MODERATELY_UNDERVALUED";
+            } else if ("OVERVALUED_RISK".equals(verdict)
+                    && (price.compareTo(hist.priceMedian()) < 0 || price.compareTo(peer.priceMedian()) < 0)) {
+                verdict = "MODERATELY_OVERVALUED";
+            }
+        }
         return new ObjectiveBandVerdict(verdict, anchorSource, low, mid, high);
     }
 
@@ -449,7 +469,7 @@ public class ValuationSummaryCalculator {
         } else {
             discountToMid = band.mid().subtract(price, MC).divide(band.mid(), 6, RoundingMode.HALF_UP);
             upsideToMid = band.mid().subtract(price, MC).divide(price, 6, RoundingMode.HALF_UP);
-            verdict = classifyPriceAgainstBand(price, band.low(), band.mid(), band.high());
+            verdict = synthesis.verdict();
         }
 
         boolean isAdr = valuation.fxConversion() != null && Boolean.TRUE.equals(valuation.fxConversion().adr());
@@ -720,28 +740,8 @@ public class ValuationSummaryCalculator {
             }
         }
 
-        BigDecimal low = null;
-        BigDecimal mid = null;
-        BigDecimal high = null;
-        String anchorSource = "NONE";
-
-        if (histValid && peerValid) {
-            low = average(hist.priceLow(), peer.priceLow());
-            mid = average(hist.priceMedian(), peer.priceMedian());
-            high = average(hist.priceHigh(), peer.priceHigh());
-            anchorSource = "HISTORICAL_AND_PEER";
-            reasons.clear();
-        } else if (histValid) {
-            low = hist.priceLow();
-            mid = hist.priceMedian();
-            high = hist.priceHigh();
-            anchorSource = "HISTORICAL_ONLY";
-            reasons.clear();
-        } else if (peerValid) {
-            low = peer.priceLow();
-            mid = peer.priceMedian();
-            high = peer.priceHigh();
-            anchorSource = "PEER_ONLY";
+        ObjectiveBandVerdict objective = computeObjectiveBandAndVerdict(valuation.price(), hist, peer);
+        if (!"NONE".equals(objective.anchorSource())) {
             reasons.clear();
         }
 
@@ -750,9 +750,9 @@ public class ValuationSummaryCalculator {
                 && assumption.priceLow().signum() > 0 && assumption.priceHigh().compareTo(assumption.priceLow()) >= 0;
 
         FairValueBandDto band = new FairValueBandDto(
-                low,
-                mid,
-                high,
+                objective.low(),
+                objective.mid(),
+                objective.high(),
                 valuation.currency(),
                 histValid ? hist.priceLow() : null,
                 histValid ? hist.priceMedian() : null,
@@ -764,7 +764,7 @@ public class ValuationSummaryCalculator {
                 assumptionAvailable ? assumption.priceMedian() : null,
                 assumptionAvailable ? assumption.priceHigh() : null
         );
-        return new BandSynthesis(anchorSource, band, reasons);
+        return new BandSynthesis(objective.anchorSource(), objective.verdict(), band, reasons);
     }
 
     private boolean isObjectiveAnchorValid(ValuationReferenceDto ref) {
@@ -1719,16 +1719,13 @@ public class ValuationSummaryCalculator {
         if ("DOWNTREND".equals(weeklyTrend) && Boolean.FALSE.equals(aboveSma200)) {
             candidates.add(new SummaryFlagDto("BELOW_SMA200_DOWNTREND", "MEDIUM", Map.of()));
         }
-        if (band.historicalMid() != null && band.peerMid() != null
-                && band.historicalMid().signum() > 0 && band.peerMid().signum() > 0) {
-            BigDecimal minMid = band.historicalMid().min(band.peerMid());
-            BigDecimal diffRatio = band.historicalMid().subtract(band.peerMid(), MC).abs().divide(minMid, 4, RoundingMode.HALF_UP);
-            if (diffRatio.compareTo(ANCHOR_DIVERGENCE_THRESHOLD) >= 0) {
-                candidates.add(new SummaryFlagDto("ANCHOR_DIVERGENCE", "LOW", Map.of(
-                        "historicalMid", band.historicalMid(),
-                        "peerMid", band.peerMid()
-                )));
-            }
+        BigDecimal diffRatio = computeAnchorDivergenceRatio(band.historicalMid(), band.peerMid());
+        if (diffRatio != null && diffRatio.compareTo(ANCHOR_DIVERGENCE_THRESHOLD) >= 0) {
+            String sev = diffRatio.compareTo(SEVERE_ANCHOR_DIVERGENCE_THRESHOLD) >= 0 ? "MEDIUM" : "LOW";
+            candidates.add(new SummaryFlagDto("ANCHOR_DIVERGENCE", sev, Map.of(
+                    "historicalMid", band.historicalMid(),
+                    "peerMid", band.peerMid()
+            )));
         }
 
         candidates.sort(Comparator.comparingInt(flag -> severityRank(flag.severity())));
@@ -1955,8 +1952,16 @@ public class ValuationSummaryCalculator {
         return earliest;
     }
 
-    private BigDecimal average(BigDecimal first, BigDecimal second) {
-        return first.add(second, MC).divide(TWO, 4, RoundingMode.HALF_UP);
+    private static BigDecimal computeAnchorDivergenceRatio(BigDecimal histMid, BigDecimal peerMid) {
+        if (histMid == null || peerMid == null || histMid.signum() <= 0 || peerMid.signum() <= 0) {
+            return null;
+        }
+        BigDecimal minMid = histMid.min(peerMid);
+        return histMid.subtract(peerMid, MC).abs().divide(minMid, 4, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal geometricMean(BigDecimal first, BigDecimal second) {
+        return first.multiply(second, MC).sqrt(MC).setScale(4, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal val(MetricResult<BigDecimal> metric) {

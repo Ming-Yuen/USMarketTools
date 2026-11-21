@@ -913,6 +913,93 @@ class ValuationSummaryCalculatorTests {
         assertThat(dailyDowntrend.stance()).isEqualTo("ETF_TECHNICAL_NEUTRAL");
     }
 
+    /** Scenario：雙錨點顯著分歧防護——重現 PDFS / RDDT 歷史倍數遠高於同業時改採幾何平均合成並封頂極端單邊結論，同時保護雙錨點一致低估（INTU）與收斂情境。 */
+    @Test
+    void divergentAnchorsUseGeometricBlendAndCapContradictoryExtremeVerdicts() {
+        // 1) 重現 DEV PDFS（2026-11-20 收盤 30.44）：歷史錨點 [67.9651, 120.6500, 288.8633] vs 同業錨點 [4.7306, 7.5864, 14.9774]
+        ValuationReferenceDto pdfsHist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("178.86"), new BigDecimal("317.50"), new BigDecimal("760.17"),
+                new BigDecimal("67.9651"), new BigDecimal("288.8633"), 60, 60, 0, DAY.minusYears(5), DAY,
+                new BigDecimal("80.11"), new BigDecimal("1.32"), new BigDecimal("120.6500"));
+        ValuationReferenceDto pdfsPeer = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_PEER_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("12.45"), new BigDecimal("19.96"), new BigDecimal("39.41"),
+                new BigDecimal("4.7306"), new BigDecimal("14.9774"), 10, null, null, DAY, DAY,
+                new BigDecimal("80.11"), new BigDecimal("95"), new BigDecimal("7.5864"));
+        ValuationSummaryCalculator.ObjectiveBandVerdict pdfsBand = ValuationSummaryCalculator.computeObjectiveBandAndVerdict(
+                new BigDecimal("30.44"), pdfsHist, pdfsPeer);
+        assertThat(pdfsBand.anchorSource()).isEqualTo("HISTORICAL_AND_PEER");
+        assertThat(pdfsBand.low()).isEqualByComparingTo("17.9309");
+        assertThat(pdfsBand.mid()).isEqualByComparingTo("30.2539");
+        assertThat(pdfsBand.high()).isEqualByComparingTo("65.7755");
+        assertThat(pdfsBand.verdict()).isEqualTo("FAIR_UPPER");
+
+        ValuationResultDto pdfsVal = new ValuationResultDto(
+                "BBG000CYCKR4", DAY, CLOSE, "FUTU_AND_SEC_FINANCIAL_FACTS", "I41", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("30.44"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                pdfsHist, pdfsPeer, null);
+        InvestmentSummaryDto pdfsSummary = calculator.calculate(pdfsVal, null, null, null, null, null, null).value();
+        assertThat(pdfsSummary.verdict()).isEqualTo(pdfsBand.verdict());
+        assertThat(pdfsSummary.fairValue().low()).isEqualByComparingTo(pdfsBand.low());
+        assertThat(pdfsSummary.fairValue().mid()).isEqualByComparingTo(pdfsBand.mid());
+        assertThat(pdfsSummary.fairValue().high()).isEqualByComparingTo(pdfsBand.high());
+        assertThat(pdfsSummary.risks()).anySatisfy(flag -> {
+            assertThat(flag.code()).isEqualTo("ANCHOR_DIVERGENCE");
+            assertThat(flag.severity()).isEqualTo("MEDIUM");
+        });
+
+        // 2) 重現 DEV RDDT（收盤 85.33）：幾何下緣 100.7990 雖使現價低於 L*0.90，但現價已高於同業中位價 67.6808 -> 封頂為 MODERATELY_UNDERVALUED，不得誤標 DEEP_UNDERVALUED
+        ValuationReferenceDto rddtHist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("31.8"), new BigDecimal("79.8"), new BigDecimal("131.0"),
+                new BigDecimal("155.7955"), new BigDecimal("642.1421"), 24, 24, 0, DAY.minusYears(2), DAY,
+                new BigDecimal("17.41"), new BigDecimal("2.17"), new BigDecimal("390.7843"));
+        ValuationReferenceDto rddtPeer = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_PEER_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("13.3"), new BigDecimal("13.8"), new BigDecimal("19.1"),
+                new BigDecimal("65.2166"), new BigDecimal("93.6963"), 8, null, null, DAY, DAY,
+                new BigDecimal("17.41"), new BigDecimal("70"), new BigDecimal("67.6808"));
+        ValuationSummaryCalculator.ObjectiveBandVerdict rddtBand = ValuationSummaryCalculator.computeObjectiveBandAndVerdict(
+                new BigDecimal("85.33"), rddtHist, rddtPeer);
+        assertThat(rddtBand.low()).isEqualByComparingTo("100.7991");
+        assertThat(rddtBand.verdict()).isEqualTo("MODERATELY_UNDERVALUED");
+        ValuationResultDto rddtVal = new ValuationResultDto(
+                "FIGI_RDDT", DAY, CLOSE, "FUTU_AND_SEC_FINANCIAL_FACTS", "I10", "NON_FINANCIAL_OPERATING", "PE",
+                "AVAILABLE", null, null, new BigDecimal("85.33"), "USD", CLOSE, CLOSE, CLOSE, "OBSERVED_SHARES", null,
+                rddtHist, rddtPeer, null);
+        assertThat(calculator.calculate(rddtVal, null, null, null, null, null, null).value().verdict())
+                .isEqualTo("MODERATELY_UNDERVALUED");
+
+        // 3) 對稱高估防護：現價 100 高於幾何高估門檻（77.4597 * 1.15 = 89.08），但仍低於同業中位價 200 -> 封頂為 MODERATELY_OVERVALUED
+        ValuationReferenceDto lowHist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("5"), new BigDecimal("7.5"), new BigDecimal("10"),
+                new BigDecimal("10"), new BigDecimal("20"), 48, 48, 0, DAY.minusYears(4), DAY,
+                new BigDecimal("50"), new BigDecimal("99"), new BigDecimal("15"));
+        ValuationReferenceDto highPeer = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_PEER_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("75"), new BigDecimal("100"), new BigDecimal("150"),
+                new BigDecimal("150"), new BigDecimal("300"), 10, null, null, DAY, DAY,
+                new BigDecimal("50"), new BigDecimal("5"), new BigDecimal("200"));
+        assertThat(ValuationSummaryCalculator.computeObjectiveVerdict(new BigDecimal("100"), lowHist, highPeer))
+                .isEqualTo("MODERATELY_OVERVALUED");
+
+        // 4) 雙錨點分歧達 58% 但雙方中位價皆明確高於現價（INTU 情境）：不誤傷真正的雙重低估 DEEP_UNDERVALUED
+        ValuationReferenceDto intuHist = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_HISTORICAL_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("40"), new BigDecimal("52"), new BigDecimal("57"),
+                new BigDecimal("750.7990"), new BigDecimal("1070.1635"), 60, 60, 0, DAY.minusYears(5), DAY,
+                new BigDecimal("14.4"), new BigDecimal("1"), new BigDecimal("980.9503"));
+        ValuationReferenceDto intuPeer = new ValuationReferenceDto(
+                ValuationReferenceDto.KIND_PEER_MARKET, "PE", "AVAILABLE", null,
+                new BigDecimal("20"), new BigDecimal("33"), new BigDecimal("58"),
+                new BigDecimal("372.8813"), new BigDecimal("1103.0040"), 12, null, null, DAY, DAY,
+                new BigDecimal("14.4"), new BigDecimal("5"), new BigDecimal("619.4930"));
+        assertThat(ValuationSummaryCalculator.computeObjectiveVerdict(new BigDecimal("270.44"), intuHist, intuPeer))
+                .isEqualTo("DEEP_UNDERVALUED");
+    }
+
     private MetricResult<PriceStructureDto> structureWithDailyMinor(
             TrendState weeklyMajorState, TrendState dailyMinorState, String dailyClose) {
         NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal(dailyClose), new BigDecimal(dailyClose),

@@ -574,6 +574,8 @@
       "filterTierAll": "All tiers",
       "filterMaxDist": "Max Support Dist (%)",
       "filterMinRr": "Min Net R/R",
+      "filterPlanStatus": "Plan Status",
+      "filterPlanStatusAll": "All statuses",
       "headwindWatchTag": "Headwind Watch Only",
       "cols": {
         "symbol": "Ticker",
@@ -585,7 +587,7 @@
         "stop": "Protective Stop",
         "targetRr": "Target & Net R/R",
         "earningsDays": "Next Earnings",
-        "stance": "Stance"
+        "stance": "Stance & Plan Status"
       },
       "daysUnit": "{{days}}d",
       "noEarningsDate": "None scheduled",

@@ -391,6 +391,54 @@ describe("Batch 03 trilingual locales & HomeDashboard / PeerRelativeStrength ren
   });
 
   test.each(["zh-HK", "zh-CN", "en"] as const)(
+    "renders localized radar planStatus badges (ACTIVE vs WAITING_TRIGGER) and filters VALUE rows without affecting STARTER tab in %s",
+    (lng) => {
+      const base = sampleDashboard(false);
+      base.opportunityRadar!.valueCount = 2;
+      base.opportunityRadar!.valueOpportunities.push({
+        ...base.opportunityRadar!.valueOpportunities[0],
+        figi: "FIGI_DECK",
+        symbol: "DECK",
+        stockName: "Deckers Outdoor",
+        planStatus: "WAITING_TRIGGER",
+        stance: "WATCH_PULLBACK_TO_BAND",
+      });
+      mockDashboardData = base;
+      const i18nInstance = createRealI18n(lng);
+      render(
+        <I18nextProvider i18n={i18nInstance}>
+          <HomeDashboard />
+        </I18nextProvider>
+      );
+
+      const radarSection = screen.getByRole("region", { name: String(i18nInstance.t("dashboard.radar.title")) });
+      expect(within(radarSection).getByTestId("radar-plan-status-FIGI_MSFT")).toHaveTextContent(
+        String(i18nInstance.t("analysisReport.states.ACTIVE"))
+      );
+      expect(within(radarSection).getByTestId("radar-plan-status-FIGI_DECK")).toHaveTextContent(
+        String(i18nInstance.t("analysisReport.states.WAITING_TRIGGER"))
+      );
+      expect(within(radarSection).queryByText("ACTIVE")).not.toBeInTheDocument();
+      expect(within(radarSection).queryByText("WAITING_TRIGGER")).not.toBeInTheDocument();
+
+      // Filter VALUE tab to ACTIVE only -> DECK disappears, MSFT remains
+      const planSelect = within(radarSection).getByLabelText(String(i18nInstance.t("dashboard.radar.filterPlanStatus")));
+      fireEvent.mouseDown(planSelect);
+      const listbox = screen.getByRole("listbox");
+      fireEvent.click(within(listbox).getByText(String(i18nInstance.t("analysisReport.states.ACTIVE"))));
+      expect(within(radarSection).getByText("MSFT")).toBeInTheDocument();
+      expect(within(radarSection).queryByText("DECK")).not.toBeInTheDocument();
+
+      // Switching to STARTER tab must NOT be filtered out by VALUE planStatus filter
+      fireEvent.click(within(radarSection).getByRole("tab", {
+        name: String(i18nInstance.t("dashboard.radar.tabStarter", { count: 1 })),
+      }));
+      expect(within(radarSection).getByText("NVDA")).toBeInTheDocument();
+      expect(within(radarSection).queryByTestId("radar-plan-status-FIGI_NVDA")).not.toBeInTheDocument();
+    }
+  );
+
+  test.each(["zh-HK", "zh-CN", "en"] as const)(
     "renders peer relative strength 20D/60D panel and localized strength chip in %s",
     (lng) => {
       const i18nInstance = createRealI18n(lng);

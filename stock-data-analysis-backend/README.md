@@ -149,7 +149,7 @@
 | `MARKET_SENTIMENT_DAILY` | 每日 08:30 | 市場情緒與 VIX 同步 |
 | `MARKET_EVENT_DAILY_SYNC` | 每日 08:40 | 市場與財報事件日曆同步 |
 | `EARNINGS_FORECAST_DAILY_SYNC` | 每日 08:50 | 富途盈餘與營收預測同步 |
-| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日行情／估值／拆股覆蓋 `>= 95%` 及大盤基準（`SPY`/`QQQ`）拆股就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含板塊廣度崩壞警示與財報跳空止損風險）及站內收盤簡報／提醒寫入，並於雷達正式發布後非同步觸發 `CHIP_EVENT_DAILY_SYNC`；上游未齊延後時寫入冪等 `EOD_PIPELINE_DEFERRED` 警告並於恢復後自動標為已讀 |
+| `STOCK_VALUATION_DAILY` | 每日 10:00 | 富途最新股數／估值快照採集、補建缺失財季分母、刷新全市場 `stock_valuation_latest`；日常全市場執行且當日營運股行情／估值覆蓋 `>= 95%`、有行情且無拆股對帳差異標記之估值股拆股覆蓋 `>= 95%` 及大盤基準（`SPY`/`QQQ`）拆股就緒後，依序刷新 `sector_money_flow_daily`、執行兩階段雷達掃描並同交易原子發布 `daily_opportunity_radar`/`daily_opportunity_radar_run` 與當日新訊號（已發布日凍結不覆寫）、獨立結算歷史到期訊號（550 天追溯視窗、`REPEATABLE READ` 跨拆股讀取），最後以獨立 `REQUIRES_NEW` 交易與例外隔離執行持倉自動體檢（含板塊廣度崩壞警示與財報跳空止損風險）及站內收盤簡報／提醒寫入，並於雷達正式發布後非同步觸發 `CHIP_EVENT_DAILY_SYNC`；上游未齊延後時寫入冪等 `EOD_PIPELINE_DEFERRED` 警告並於收盤簡報亦恢復發布後自動標為已讀 |
 | `CHIP_EVENT_DAILY_SYNC` | 週二至六 11:00（兜底；主路徑由雷達發布後異步觸發） | 精準範圍籌碼與事件同步（僅針對持倉股、重點自選股、當日雷達入選股及單日漲跌 `±5%` 異動股同步期權、Form 4 與新聞／8-K，嚴禁掃描全市場 5,000 檔，預設 0 AI 消耗；完成含正式雷達之無錯誤同步後寫入 `sys_config` 水位避免兜底重抓，可傳 `force=true` 強制重跑） |
 | `INSTITUTIONAL_13F_SYNC` | 每週日 09:00 | 旗艦機構（約 15 家）SEC 13F-HR 季度持倉同步與 OpenFIGI／Massive CUSIP→FIGI 解析 |
 

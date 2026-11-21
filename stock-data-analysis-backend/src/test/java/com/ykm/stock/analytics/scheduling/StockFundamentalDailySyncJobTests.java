@@ -408,6 +408,36 @@ class StockFundamentalDailySyncJobTests {
         // 既有拆股對帳差異股完全不受影響
         assertThat(discStatus.getSplitDate()).isEqualTo(LocalDate.of(2025, 5, 31));
         assertThat(discStatus.getSplitMessage()).contains("SPLIT_STORED_EVENT_NOT_RETURNED");
+
+        // 單股 Massive 異常拆股（splitTo=0）於 WARNING: 股不可中斷全批，應落入逐股隔離記錯而他股照常推進
+        Stock badSplitStock = stock("F_BADS", "BADS", "Common Stock", "0005555555");
+        Stock okPeerStock = stock("F_OK2", "OK2", "Common Stock", "0006666666");
+        StockStatus badStatus = status("F_BADS", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        badStatus.setSplitMessage("WARNING:HISTORICAL_PROVIDER_NOTE");
+        StockStatus okPeerStatus = status("F_OK2", LocalDate.of(2026, 11, 19), LocalDate.of(2026, 9, 30), LocalDate.of(2026, 9, 30), SATURDAY_HK);
+        MassiveSplit invalidSplit = new MassiveSplit();
+        invalidSplit.setId("MS-BAD");
+        invalidSplit.setTicker("BADS");
+        invalidSplit.setExecutionDate(fridayClosed);
+        invalidSplit.setSplitFrom(BigDecimal.ONE);
+        invalidSplit.setSplitTo(BigDecimal.ZERO);
+
+        when(stocks.findSplitSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(badSplitStock, okPeerStock));
+        when(stocks.findFinancialReportSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
+                new ActiveStockWithStatus(badSplitStock, badStatus),
+                new ActiveStockWithStatus(okPeerStock, okPeerStatus)));
+        when(stocks.findSecFinancialFactsSyncStocks(ActiveStatus.ACTIVE)).thenReturn(List.of(
+                new ActiveStockWithStatus(badSplitStock, badStatus),
+                new ActiveStockWithStatus(okPeerStock, okPeerStatus)));
+        when(statuses.findAllById(anyCollection())).thenReturn(List.of(badStatus, okPeerStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_OK2"))).thenReturn(List.of(okPeerStatus));
+        when(statuses.findAllByIdForUpdate(List.of("F_BADS"))).thenReturn(List.of(badStatus));
+        when(massiveService.getSplitsFrom(LocalDate.of(2026, 11, 12))).thenReturn(List.of(invalidSplit));
+
+        job.execute(null);
+        assertThat(okPeerStatus.getSplitDate()).isEqualTo(fridayClosed);
+        assertThat(badStatus.getSplitDate()).isEqualTo(LocalDate.of(2026, 11, 19));
+        assertThat(badStatus.getSplitMessage()).contains("SPLIT_SOURCE_VALUE_INVALID");
     }
 
     private Stock stock(String figi, String symbol, String type, String cik) {

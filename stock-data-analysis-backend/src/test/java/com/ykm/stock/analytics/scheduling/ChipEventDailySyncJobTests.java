@@ -258,8 +258,11 @@ class ChipEventDailySyncJobTests {
         verify(optionsService, times(1)).refreshStock(nvda);
         verify(optionsService, times(1)).refreshStock(amd);
 
-        // 3) force=true 不受已結算期權跳過限制，F_NVDA 亦強制重刷
+        // 3) force=true 不受已結算期權跳過限制，F_NVDA 亦強制重刷；若遇暫時性 SPOT_PRICE_UNAVAILABLE 仍阻斷水位，結構性 OPTIONS_METRICS_INCOMPLETE 則可推進水位
         org.mockito.Mockito.doReturn(null).when(insider13fService).syncForm4ForStock(nvda);
+        org.mockito.Mockito.doReturn(EnhancementDtos.OptionsSummaryDto.unavailable(
+                "F_NVDA", "NVDA", com.ykm.stock.analytics.model.entity.StockOptionsSummary.STATUS_INSUFFICIENT_DATA,
+                "SPOT_PRICE_UNAVAILABLE")).when(optionsService).refreshStock(nvda);
         JobExecutionContext forcedCtx = mock(JobExecutionContext.class);
         JobDataMap map = new JobDataMap();
         map.put("force", Boolean.TRUE);
@@ -268,6 +271,12 @@ class ChipEventDailySyncJobTests {
         job.execute(forcedCtx);
         verify(optionsService, times(2)).refreshStock(nvda);
         verify(optionsService, times(2)).refreshStock(amd);
+        assertThat(storedWatermark).isNull();
+
+        org.mockito.Mockito.doReturn(EnhancementDtos.OptionsSummaryDto.unavailable(
+                "F_NVDA", "NVDA", com.ykm.stock.analytics.model.entity.StockOptionsSummary.STATUS_INSUFFICIENT_DATA,
+                "OPTIONS_METRICS_INCOMPLETE")).when(optionsService).refreshStock(nvda);
+        job.execute(forcedCtx);
         assertThat(storedWatermark).isNotNull();
     }
 

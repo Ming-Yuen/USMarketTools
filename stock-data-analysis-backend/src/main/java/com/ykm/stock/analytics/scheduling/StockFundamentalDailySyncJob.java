@@ -515,7 +515,12 @@ public class StockFundamentalDailySyncJob implements Job {
             return true;
         }
         LocalDate from = incrementalSplitFrom(status.getSplitDate());
-        return convertMassiveSplits(stock, events, from, through, dateTimeService.now()).isEmpty();
+        try {
+            return convertMassiveSplits(stock, events, from, through, dateTimeService.now()).isEmpty();
+        } catch (RuntimeException ex) {
+            // 單股異常拆股資料改交由 fullProcessingGroups 的逐股隔離路徑記錯，絕不中止全市場批次
+            return false;
+        }
     }
 
     private int advanceFastQuietSplits(List<Stock> fastQuietStocks, LocalDate through, LocalDate todayHk) {

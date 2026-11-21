@@ -323,17 +323,13 @@ public class SectorMoneyFlowService {
                     tradeDateCutoff = cutoff;
                 }
                 StockIndustry todayInd = resolveIndustryAt(stockIndHistory, tradeDateCutoff);
-                boolean hasValidTradeDateBar = false;
+                boolean hasPositiveVolumeTradeDateBar = false;
                 BigDecimal latestClose = null;
 
                 for (QuoteBarRow bar : stockBars) {
                     LocalDate qDate = bar.quoteDate();
                     if (!QuoteNormalizer.validOhlcv(bar.openPrice(), bar.highPrice(), bar.lowPrice(), bar.closePrice(), bar.volume())) {
                         continue;
-                    }
-                    if (tradeDate.equals(qDate)) {
-                        hasValidTradeDateBar = true;
-                        latestClose = bar.closePrice();
                     }
                     if (qDate.isBefore(date20Start) || bar.volume() == null || bar.volume().signum() <= 0) {
                         continue;
@@ -346,7 +342,11 @@ public class SectorMoneyFlowService {
                     boolean in5d = !qDate.isBefore(date5Start);
                     boolean is1d = tradeDate.equals(qDate);
                     if (in5d) marketDollarVol5d = marketDollarVol5d.add(dollarVol, MC);
-                    if (is1d) marketDollarVol1d = marketDollarVol1d.add(dollarVol, MC);
+                    if (is1d) {
+                        hasPositiveVolumeTradeDateBar = true;
+                        latestClose = bar.closePrice();
+                        marketDollarVol1d = marketDollarVol1d.add(dollarVol, MC);
+                    }
 
                     Instant barCutoff = sessionCloseCache.getOrDefault(qDate, cutoff);
                     if (barCutoff.isAfter(cutoff)) {
@@ -370,7 +370,8 @@ public class SectorMoneyFlowService {
                     }
                 }
 
-                if (!hasValidTradeDateBar || latestClose == null) {
+                // 與 stockCount 嚴格採同一組當日具正成交量之有效成分股，確保 70% 覆蓋率分子與分母口徑一致
+                if (!hasPositiveVolumeTradeDateBar || latestClose == null) {
                     continue;
                 }
                 marketTotalStockCount++;

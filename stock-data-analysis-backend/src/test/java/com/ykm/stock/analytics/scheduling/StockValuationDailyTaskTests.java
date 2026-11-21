@@ -762,7 +762,11 @@ class StockValuationDailyTaskTests {
         org.mockito.Mockito.verify(scheduler, org.mockito.Mockito.times(3)).triggerJob(eq(chipKey), triggerDataCaptor.capture());
         assertThat(triggerDataCaptor.getValue().getString("tradeDate")).isEqualTo(DAY_NOV_12.toString());
 
-        // 5) 籌碼排程停用（無 active trigger）或 app.schedules.enabled=false 時，重跑安全略過觸發且不拋例外
+        // 5) 籌碼排程停用（無 active trigger）、尚未到達 startTime 或 app.schedules.enabled=false 時，重跑安全略過觸發且不拋例外
+        org.quartz.Trigger futureTrigger = mock(org.quartz.Trigger.class);
+        when(futureTrigger.getStartTime()).thenReturn(java.util.Date.from(NOW.plusSeconds(3600)));
+        org.mockito.Mockito.doReturn(List.of(futureTrigger)).when(scheduler).getTriggersOfJob(chipKey);
+        task.execute(null);
         org.mockito.Mockito.doReturn(List.of()).when(scheduler).getTriggersOfJob(chipKey);
         task.execute(null);
         when(scheduler.isStarted()).thenReturn(false);

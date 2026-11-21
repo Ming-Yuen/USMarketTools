@@ -45,6 +45,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -482,8 +483,13 @@ public class StockValuationDailyTask implements Job {
                 return;
             }
             List<? extends Trigger> triggers = scheduler.getTriggersOfJob(jobKey);
-            if (triggers == null || triggers.isEmpty()) {
-                log.info("Skip post-radar chip event trigger: schedule disabled or expired | tradeDate={}", tradeDate);
+            Date nowDate = Date.from(dateTimeService.now());
+            boolean hasEffectiveTrigger = triggers != null && triggers.stream().anyMatch(tr ->
+                    tr != null
+                            && (tr.getStartTime() == null || !tr.getStartTime().after(nowDate))
+                            && (tr.getEndTime() == null || tr.getEndTime().after(nowDate)));
+            if (!hasEffectiveTrigger) {
+                log.info("Skip post-radar chip event trigger: schedule disabled, not yet started, or expired | tradeDate={}", tradeDate);
                 return;
             }
             JobDataMap triggerData = new JobDataMap();

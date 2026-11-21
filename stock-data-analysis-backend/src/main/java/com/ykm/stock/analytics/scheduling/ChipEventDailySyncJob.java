@@ -3,11 +3,13 @@ package com.ykm.stock.analytics.scheduling;
 import com.ykm.common.common_lib.service.DateTimeService;
 import com.ykm.stock.analytics.client.SecEdgarClient;
 import com.ykm.stock.analytics.constant.TaskCode;
+import com.ykm.stock.analytics.model.dto.stockInsight.enhancement.EnhancementDtos.OptionsSummaryDto;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadar;
 import com.ykm.stock.analytics.model.entity.DailyOpportunityRadarRun;
 import com.ykm.stock.analytics.model.entity.PortfolioItem;
 import com.ykm.stock.analytics.model.entity.Stock;
 import com.ykm.stock.analytics.model.entity.StockEventAiSummary;
+import com.ykm.stock.analytics.model.entity.StockOptionsSummary;
 import com.ykm.stock.analytics.model.entity.StockQuote;
 import com.ykm.orm.entity.SysConfig;
 import com.ykm.stock.analytics.model.entity.StockSplit;
@@ -135,8 +137,12 @@ public class ChipEventDailySyncJob implements Job {
         int form4Failed = 0;
         int newsTriggered = 0;
         int newsFailed = 0;
+        LocalDate aiBudgetDate = calendar.getLastClosedTradingDay(now);
+        if (aiBudgetDate == null) {
+            aiBudgetDate = tradeDate;
+        }
         int aiSummarized = (int) summaryRepository.countByTriggerDateAndAiProviderNot(
-                tradeDate, StockEventAiSummary.PROVIDER_MANUAL_IMPORT);
+                aiBudgetDate, StockEventAiSummary.PROVIDER_MANUAL_IMPORT);
         int aiFailed = 0;
         boolean optionsUnconfigured = false;
         boolean secUnconfigured = false;
@@ -146,13 +152,19 @@ public class ChipEventDailySyncJob implements Job {
             Stock stock = stockMap.get(figi);
             if (stock == null) continue;
 
-            // 2. 期權摘要（支援正股、ADR 與 ETF；非 force 重跑且當日收市後已有有效結算快照則跳過；未配置 Alpaca 不計為失敗）
+            // 2. 期權摘要（支援正股、ADR 與 ETF；非 force 重跑且當日收市後已有有效結算快照則跳過；未配置 Alpaca 不計為失敗；缺現價導致暫時性 INSUFFICIENT_DATA 保留重試）
             if (settledOptionsFigis.contains(figi)) {
                 optionsSkipped++;
             } else if (!optionsUnconfigured) {
                 try {
-                    optionsService.refreshStock(stock);
-                    optionsOk++;
+                    OptionsSummaryDto optResult = optionsService.refreshStock(stock);
+                    if (isRetryableOptionsInsufficientData(optResult)) {
+                        optionsFailed++;
+                        log.debug("Options sync deferred (transient missing spot) | symbol={} reason={}",
+                                stock.getSymbol(), optResult.reasonCode());
+                    } else {
+                        optionsOk++;
+                    }
                 } catch (RuntimeException ex) {
                     if (isAlpacaUnconfigured(ex)) {
                         optionsUnconfigured = true;
@@ -218,6 +230,14 @@ public class ChipEventDailySyncJob implements Job {
         log.info("Chip & event daily sync completed | tradeDate={} radarPublished={} watermarkAdvanced={} targets={} optionsOk={} optionsSkipped={} optionsFailed={} form4Ciks={} form4Failed={} newsTriggered={} newsFailed={} aiSummarized={} aiFailed={}",
                 tradeDate, radarPublished, watermarkAdvanced, targetFigis.size(),
                 optionsOk, optionsSkipped, optionsFailed, form4Ok, form4Failed, newsTriggered, newsFailed, aiSummarized, aiFailed);
+    }
+
+    private boolean isRetryableOptionsInsufficientData(OptionsSummaryDto result) {
+        if (result == null || !StockOptionsSummary.STATUS_INSUFFICIENT_DATA.equals(result.status())) {
+            return false;
+        }
+        String reason = result.reasonCode();
+        return "SPOT_PRICE_UNAVAILABLE".equals(reason) || "INTRADAY_SPOT_PRICE_UNAVAILABLE".equals(reason);
     }
 
     private boolean isAlpacaUnconfigured(Throwable ex) {

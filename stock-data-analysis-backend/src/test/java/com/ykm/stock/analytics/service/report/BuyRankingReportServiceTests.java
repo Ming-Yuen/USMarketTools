@@ -318,6 +318,113 @@ class BuyRankingReportServiceTests {
     }
 
     @Test
+    void etfInMarketCorrectionAllowsConfirmedRightSideOnlyWhenDailyMinorIsNotDowntrend() {
+        Stock etf = stock("FIGI_ETF_CORR", "QQQ", "Invesco QQQ Trust", "ETF", "USD", true);
+        when(stockRepository.findByActiveStatusAndSymbolIn(eq(ActiveStatus.ACTIVE), eq(List.of("QQQ"))))
+                .thenReturn(List.of(etf));
+        when(latestValuations.findByFigiIn(anyCollection())).thenReturn(List.of());
+        when(industryHistoryRepository.findByFigisAt(anyCollection(), eq(SESSION_CLOSE))).thenReturn(List.of());
+        when(quoteRepository.findQuoteBarsOrdered(anyCollection(), any(), eq(AS_OF)))
+                .thenReturn(List.of(quoteRow("FIGI_ETF_CORR", new BigDecimal("240.00"))));
+        when(marketContextService.preloadMarketData(eq(AS_OF), eq(NOW)))
+                .thenReturn(buildPreloadedMarket(MarketRegime.CORRECTION, new BigDecimal("21.0")));
+
+        stubTechnicalStack("FIGI_ETF_CORR", new BigDecimal("240.00"), new BigDecimal("235.00"), new BigDecimal("242.00"),
+                new BigDecimal("228.00"), new BigDecimal("275.00"), TradePlanStatus.ACTIVE,
+                BreakoutDiagnosis.SPRING_RECLAIMED, MarketRegime.CORRECTION, EntryPermission.REQUIRE_CLOSE_CONFIRMATION);
+
+        BuyRankingRequest req = new BuyRankingRequest(
+                BuyRankingDtos.SCOPE_CUSTOM, null, null, null, List.of("QQQ"),
+                List.of(BuyRankingDtos.ASSET_ETF), false,
+                null, BuyRankingDtos.GRADE_ALL, null, 14, null, "POSITION", "en", 1, 300);
+
+        // 1) CORRECTION + Weekly UPTREND + DailyMinor UPTREND + 同區 SPRING_RECLAIMED -> stance 封頂為 ETF_TECHNICAL_NEUTRAL，右側確認升 TIER_1
+        BuyRankingResponse confirmedResp = service.generateReport(req, "en");
+        BuyRankingItemDto confirmedItem = confirmedResp.items().getFirst();
+        assertThat(confirmedItem.stance()).isEqualTo("ETF_TECHNICAL_NEUTRAL");
+        assertThat(confirmedItem.tier()).isEqualTo(BuyRankingDtos.TIER_1);
+        assertThat(confirmedItem.reasonCode()).isEqualTo("CORRECTION_RIGHT_SIDE_CONFIRMED");
+
+        // 2) 若日線結構 DailyMinor == DOWNTREND（即使週線 POSITION 計畫仍為 ACTIVE 且有 SPRING_RECLAIMED）-> 嚴格攔截於 TIER_3
+        StructureTrendDto up = new StructureTrendDto(TrendState.UPTREND, SESSION_CLOSE, PriceRelation.HH, PriceRelation.HL, List.of(), SESSION_CLOSE);
+        StructureTrendDto down = new StructureTrendDto(TrendState.DOWNTREND, SESSION_CLOSE, PriceRelation.LH, PriceRelation.LL, List.of(), SESSION_CLOSE);
+        NormalizedBarDto bar = new NormalizedBarDto(AS_OF, new BigDecimal("240.00"), new BigDecimal("242.00"),
+                new BigDecimal("238.00"), new BigDecimal("240.00"), MetricResult.available(new BigDecimal("1000000")),
+                SESSION_CLOSE.minusSeconds(23400), SESSION_CLOSE, SESSION_CLOSE, SESSION_CLOSE, "v1", "b1");
+        TimeframeStructureDto dailyDown = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar),
+                MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()), List.of(), List.of(),
+                MetricResult.available(PriceRelation.LH), MetricResult.available(PriceRelation.LL),
+                MetricResult.available(down), MetricResult.available(up), List.of(), List.of());
+        TimeframeStructureDto weeklyUp = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(bar),
+                MetricResult.unavailable(MetricStatus.INSUFFICIENT_DATA, List.of(), List.of()), List.of(), List.of(),
+                MetricResult.available(PriceRelation.HH), MetricResult.available(PriceRelation.HL),
+                MetricResult.available(up), MetricResult.available(up), List.of(), List.of());
+        PriceStructureDto downDailyDto = new PriceStructureDto("FIGI_ETF_CORR", null, AS_OF, List.of(dailyDown, weeklyUp), List.of(), List.of());
+        when(priceStructureService.analyze(org.mockito.ArgumentMatchers.argThat(c -> c != null && "FIGI_ETF_CORR".equals(c.figi())), any()))
+                .thenReturn(MetricResult.available(downDailyDto));
+        when(marketContextService.evaluateWithPreloaded(
+                org.mockito.ArgumentMatchers.argThat(c -> c != null && "FIGI_ETF_CORR".equals(c.figi())),
+                any(), eq(downDailyDto), any(), any(), any()))
+                .thenAnswer(inv -> {
+                    MomentumAnalysisDto momentum = new MomentumAnalysisDto(
+                            Map.of("SMA200", MetricResult.available(new BigDecimal("204.00"))),
+                            MetricResult.available(new BigDecimal("0.5")), List.of());
+                    MarketSnapshotDto snap = new MarketSnapshotDto(MarketRegime.CORRECTION, MetricResult.available(new BigDecimal("55")),
+                            MetricResult.available(new BigDecimal("55")), MetricResult.available(new BigDecimal("55")),
+                            AS_OF, SESSION_CLOSE, List.of(), List.of());
+                    return MetricResult.available(new MarketContextDto(
+                            null, null, MetricResult.available(snap), List.of(),
+                            new PlanConstraintDto(EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), List.of()),
+                            List.of(), List.of(), momentum, null, null, null, Map.of(),
+                            MetricResult.available(new BigDecimal("21.0")), null));
+                });
+        when(supportResistanceService.analyze(
+                org.mockito.ArgumentMatchers.argThat(c -> c != null && "FIGI_ETF_CORR".equals(c.figi())),
+                any(), eq(downDailyDto), any()))
+                .thenAnswer(inv -> {
+                    LevelZoneDto zone = new LevelZoneDto(
+                            "Z_FIGI_ETF_CORR", AnalysisTimeframe.WEEKLY, new BigDecimal("235.00"), new BigDecimal("242.00"),
+                            ZoneRole.SUPPORT, new BigDecimal("78"), SESSION_CLOSE.minusSeconds(864000),
+                            3, SESSION_CLOSE, ZoneState.ACTIVE, new BigDecimal("235.00"), new BigDecimal("3.0"), 1,
+                            ZoneStrengthLabel.HIGH, new BigDecimal("78"), 1, null, null,
+                            List.of(), List.of(), 3, 0, 2, BigDecimal.ZERO, BigDecimal.ZERO,
+                            RetestState.NONE, true, List.of(), null, List.of());
+                    BreakoutDiagnosisDto springDiag = new BreakoutDiagnosisDto(
+                            BreakoutDiagnosis.SPRING_RECLAIMED, "Z_FIGI_ETF_CORR", 1, 1, AnalysisTimeframe.WEEKLY,
+                            new BigDecimal("235.00"), new BigDecimal("242.00"),
+                            AS_OF.minusDays(1), AS_OF, AS_OF.plusDays(4), AS_OF, 1,
+                            new BigDecimal("0.8"), new BigDecimal("1.4"), null, null, null, null, null, null, List.of(), List.of());
+                    return MetricResult.available(new SupportResistanceDto(
+                            List.of(zone), List.of(), List.of(), List.of(), List.of(), List.of(), springDiag, List.of(springDiag)));
+                });
+        when(tradePlanService.build(
+                org.mockito.ArgumentMatchers.argThat(c -> c != null && "FIGI_ETF_CORR".equals(c.figi())),
+                any(), eq(downDailyDto), any(), any()))
+                .thenAnswer(inv -> {
+                    StopRuleDto stop = new StopRuleDto(new BigDecimal("228.00"), new BigDecimal("229.00"), 2, AnalysisTimeframe.DAILY,
+                            new BigDecimal("0.50"), new BigDecimal("3.0"), AnalysisTimeframe.WEEKLY, SESSION_CLOSE.minusSeconds(864000), List.of());
+                    TargetDto target = new TargetDto(new BigDecimal("275.00"), BigDecimal.ONE, TargetAction.TAKE_PROFIT, "R1", "res", List.of());
+                    RiskRewardDto rr = new RiskRewardDto(new BigDecimal("240.00"), new BigDecimal("228.00"),
+                            new BigDecimal("12"), new BigDecimal("35"), new BigDecimal("2.9"),
+                            new BigDecimal("12"), new BigDecimal("35"), new BigDecimal("2.9"),
+                            new BigDecimal("35"), new BigDecimal("12"));
+                    TradePlanDto plan = new TradePlanDto("P_FIGI_ETF_CORR", AnalysisHorizon.POSITION, SetupType.PULLBACK,
+                            new PriceRangeDto(new BigDecimal("235.00"), new BigDecimal("242.00"), "b1"),
+                            EntryMethod.ZONE_LIMIT, "pullback", stop, List.of(target), MetricResult.available(rr),
+                            TradePlanStatus.ACTIVE, List.of(), "Z_FIGI_ETF_CORR", 1, AnalysisTimeframe.WEEKLY,
+                            SESSION_CLOSE.minusSeconds(864000), AS_OF.plusDays(5), List.of());
+                    return MetricResult.available(new TradePlanResultDto(List.of(plan), new BigDecimal("240.00"), AS_OF,
+                            MetricResult.available(rr), List.of(), List.of(), true));
+                });
+
+        BuyRankingResponse downResp = service.generateReport(req, "en");
+        BuyRankingItemDto downItem = downResp.items().getFirst();
+        assertThat(downItem.stance()).isEqualTo("ETF_TECHNICAL_NEUTRAL");
+        assertThat(downItem.tier()).isEqualTo(BuyRankingDtos.TIER_3);
+        assertThat(downItem.reasonCode()).isEqualTo("MARKET_CORRECTION_WAIT_CONFIRMATION");
+    }
+
+    @Test
     void earningsDay0RoutesToTier3WhenNotExcludedAndRemovedWhenExcluded() {
         Stock s = stock("FIGI_E", "EARN", "Earnings Corp", "Common Stock", "USD", true);
         StockValuationLatest v = valuation("FIGI_E", "SEMI", new BigDecimal("88.00"),
@@ -1468,9 +1575,10 @@ class BuyRankingReportServiceTests {
                 ZoneStrengthLabel.HIGH, new BigDecimal("78"), 1, null, null,
                 List.of(), List.of(), 3, 0, 2, BigDecimal.ZERO, BigDecimal.ZERO,
                 RetestState.NONE, true, List.of(), null, List.of());
+        LocalDate reclaimDate = diagnosis == BreakoutDiagnosis.SPRING_RECLAIMED ? AS_OF : null;
         BreakoutDiagnosisDto diagDto = diagnosis == null ? null : new BreakoutDiagnosisDto(
                 diagnosis, "Z_" + figi, 1, 1, AnalysisTimeframe.WEEKLY, zoneLow, zoneHigh,
-                AS_OF.minusDays(1), null, null, AS_OF, 1,
+                AS_OF.minusDays(1), reclaimDate, null, AS_OF, 1,
                 new BigDecimal("1.8"), new BigDecimal("1.4"), new BigDecimal("0.15"),
                 new BigDecimal("0.70"), new BigDecimal("0.15"), new BigDecimal("-0.04"),
                 BigDecimal.ZERO, new BigDecimal("-0.04"), List.of(), List.of());

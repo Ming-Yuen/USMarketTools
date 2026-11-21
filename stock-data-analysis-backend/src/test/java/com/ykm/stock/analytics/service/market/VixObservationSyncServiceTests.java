@@ -1,14 +1,20 @@
 package com.ykm.stock.analytics.service.market;
 
+import com.ykm.stock.analytics.client.FredVixClient;
+import com.ykm.stock.analytics.client.FredVixClient.VixPoint;
 import com.ykm.stock.analytics.client.YahooVixClient;
 import com.ykm.stock.analytics.model.dto.thirdparty.response.YahooVixChartResponse;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
+import com.ykm.stock.analytics.repository.jpa.MarketSentimentDailyRepository;
 import com.ykm.stock.analytics.service.analysis.VixObservationSyncService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;
@@ -71,6 +77,61 @@ class VixObservationSyncServiceTests {
         assertThatThrownBy(() -> new VixObservationSyncService(client, sentiment, market)
                 .downloadObservations(Instant.parse("2026-10-17T12:30:00Z")))
                 .hasMessage("VIX_BAR_LENGTH_MISMATCH");
+        verifyNoInteractions(sentiment);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void backfillHistoricalIfNeededWritesOnlyMissingFredDatesAndSkipsWhenAlreadyComplete() {
+        YahooVixClient yahoo = mock(YahooVixClient.class);
+        MarketSentimentService sentiment = mock(MarketSentimentService.class);
+        MarketStatusService market = mock(MarketStatusService.class);
+        FredVixClient fred = mock(FredVixClient.class);
+        MarketSentimentDailyRepository repository = mock(MarketSentimentDailyRepository.class);
+
+        LocalDate start = LocalDate.of(2016, 1, 1);
+        LocalDate through = LocalDate.of(2016, 2, 10);
+        LocalDate prev = LocalDate.of(2016, 2, 9);
+        List<LocalDate> sessions = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            sessions.add(LocalDate.of(2016, 1, 4).plusDays(i));
+        }
+
+        when(fred.isConfigured()).thenReturn(true);
+        when(market.getLastClosedTradingDay()).thenReturn(through);
+        when(market.getPreviousTradingDay(through)).thenReturn(prev);
+        when(market.getTradingDays(start, prev)).thenReturn(sessions);
+        when(market.isTradingDay(LocalDate.of(2016, 1, 4))).thenReturn(true);
+        when(market.isTradingDay(LocalDate.of(2016, 1, 18))).thenReturn(false);
+        // Existing Yahoo row on 2016-01-05 must NOT be overwritten; non-NYSE holiday 2016-01-18 must be skipped
+        when(repository.findDatesWithVixBetween(start, through)).thenReturn(List.of(LocalDate.of(2016, 1, 5)));
+        when(fred.fetchVixCloses(start, through)).thenReturn(List.of(
+                new VixPoint(LocalDate.of(2016, 1, 4), new BigDecimal("20.7000"), LocalDate.of(2026, 11, 20)),
+                new VixPoint(LocalDate.of(2016, 1, 5), new BigDecimal("19.3400"), LocalDate.of(2026, 11, 20)),
+                new VixPoint(LocalDate.of(2016, 1, 18), new BigDecimal("24.1000"), LocalDate.of(2026, 11, 20))
+        ));
+
+        VixObservationSyncService service = new VixObservationSyncService(yahoo, sentiment, market, fred, repository, start);
+        Instant observedAt = Instant.parse("2026-11-21T10:00:00Z");
+        int inserted = service.backfillHistoricalIfNeeded(observedAt);
+
+        assertThat(inserted).isEqualTo(1);
+        ArgumentCaptor<List<MarketSentimentDaily>> captor = ArgumentCaptor.forClass(List.class);
+        verify(sentiment).save(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(row -> {
+            assertThat(row.getMarketDate()).isEqualTo(LocalDate.of(2016, 1, 4));
+            assertThat(row.getVixClose()).isEqualByComparingTo("20.7000");
+            assertThat(row.getVixSource()).isEqualTo(FredVixClient.SOURCE_FRED_VIXCLS);
+            assertThat(row.getVixSourceAt()).isNull();
+            assertThat(row.getVixObservedAt()).isEqualTo(observedAt);
+        });
+
+        // Second call when all sessions are already present -> 0 network calls
+        reset(fred, sentiment);
+        when(fred.isConfigured()).thenReturn(true);
+        when(repository.findDatesWithVixBetween(start, through)).thenReturn(sessions);
+        assertThat(service.backfillHistoricalIfNeeded(observedAt)).isZero();
+        verify(fred, never()).fetchVixCloses(any(), any());
         verifyNoInteractions(sentiment);
     }
 

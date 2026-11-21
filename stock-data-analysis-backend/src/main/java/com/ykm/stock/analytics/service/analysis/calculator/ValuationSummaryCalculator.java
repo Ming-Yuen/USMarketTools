@@ -280,6 +280,7 @@ public class ValuationSummaryCalculator {
                     AnalysisReasonDto.of("TECHNICAL_PRICE_MISSING", "SUMMARY", "缺少有效技術結構與支撐阻力資料，暫不產生 ETF 技術摘要。"));
         }
         String weeklyTrend = extractWeeklyMajorTrend(priceStructure);
+        String dailyMinorTrend = extractDailyMinorTrend(priceStructure);
         List<TradePlanDto> planList = tradePlans != null && tradePlans.status() == MetricStatus.AVAILABLE && tradePlans.value() != null
                 ? tradePlans.value().plans() : List.of();
         List<NormalizedBarDto> dailyBars = extractDailyBars(priceStructure);
@@ -307,12 +308,19 @@ public class ValuationSummaryCalculator {
                 || highRiskBreakdown
                 || hasStopBreachedOrReclaim(planList, supportZone, dailyLatestClose, dailyBars);
 
+        boolean supportiveMarketRegime = marketRegime == MarketRegime.RISK_ON
+                || marketRegime == MarketRegime.NEUTRAL
+                || marketRegime == MarketRegime.RECOVERY;
         String stance;
         if (marketRegime == MarketRegime.BEAR || marketRegime == MarketRegime.PANIC) {
             stance = "WAIT_FOR_MARKET_STABILIZATION";
         } else if (stopBreachedOrReclaim || permission == EntryPermission.BLOCK) {
             stance = "WAIT_FOR_STABILIZATION";
-        } else if ("UPTREND".equals(weeklyTrend) && Boolean.TRUE.equals(aboveSma200) && supportZone != null) {
+        } else if ("UPTREND".equals(weeklyTrend)
+                && Boolean.TRUE.equals(aboveSma200)
+                && supportZone != null
+                && supportiveMarketRegime
+                && !"DOWNTREND".equals(dailyMinorTrend)) {
             stance = "ETF_TECHNICAL_BULLISH_SUPPORT";
         } else if ("DOWNTREND".equals(weeklyTrend) && Boolean.FALSE.equals(aboveSma200)) {
             stance = "WAIT_FOR_STABILIZATION";
@@ -1801,6 +1809,20 @@ public class ValuationSummaryCalculator {
                     && tf.majorTrend() != null && tf.majorTrend().status() == MetricStatus.AVAILABLE
                     && tf.majorTrend().value() != null && tf.majorTrend().value().state() != null) {
                 return tf.majorTrend().value().state().name();
+            }
+        }
+        return null;
+    }
+
+    public static String extractDailyMinorTrend(MetricResult<PriceStructureDto> priceStructure) {
+        if (priceStructure == null || priceStructure.status() != MetricStatus.AVAILABLE || priceStructure.value() == null) {
+            return null;
+        }
+        for (TimeframeStructureDto tf : priceStructure.value().timeframes()) {
+            if (tf != null && tf.timeframe() == AnalysisTimeframe.DAILY
+                    && tf.minorTrend() != null && tf.minorTrend().status() == MetricStatus.AVAILABLE
+                    && tf.minorTrend().value() != null && tf.minorTrend().value().state() != null) {
+                return tf.minorTrend().value().state().name();
             }
         }
         return null;

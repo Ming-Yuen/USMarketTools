@@ -1,5 +1,6 @@
 package com.ykm.stock.analytics.config;
 
+import com.ykm.stock.analytics.constant.TaskCode;
 import com.ykm.stock.analytics.init.DataInitializer;
 import com.ykm.stock.analytics.listener.ScheduleJobListener;
 import com.ykm.stock.analytics.model.entity.JobConfig;
@@ -30,8 +31,9 @@ class QuartzConfigTests {
 
         config.run();
 
-        verify(jobs).retireSchedule("SEC_FINANCIAL_FACT_DAILY");
-        verify(jobs).retireSchedule("FUTU_VALUATION_DAILY_SYNC");
+        for (String retiredCode : TaskCode.RETIRED_SCHEDULE_CODES) {
+            verify(jobs).retireSchedule(retiredCode);
+        }
         verifyNoMoreInteractions(jobs);
         verifyNoInteractions(scheduler, listener, reconciler);
     }

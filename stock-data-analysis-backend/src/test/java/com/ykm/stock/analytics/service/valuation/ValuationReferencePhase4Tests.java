@@ -1400,6 +1400,17 @@ class ValuationReferencePhase4Tests {
                 new BigDecimal("5.00"), new BigDecimal("5000000000"), new BigDecimal("10000000000"), new BigDecimal("2000000000"), new BigDecimal("1000000000"));
         pM.setFigi("M_FIGI");
         when(financialPeriods.findByFigiInOrderByFigiAscPeriodEndAsc(anyCollection())).thenReturn(List.of(pZ, pM));
+        when(financialPeriods.findPeriodSignaturesByFigiIn(anyCollection())).thenAnswer(inv -> {
+            java.util.Collection<String> ids = inv.getArgument(0);
+            List<com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository.FigiPeriodSignature> sigs = new ArrayList<>();
+            if (ids.contains("Z_FIGI")) {
+                sigs.add(new com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository.FigiPeriodSignature("Z_FIGI", 1L, pZ.getUpdatedAt()));
+            }
+            if (ids.contains("M_FIGI")) {
+                sigs.add(new com.ykm.stock.analytics.repository.jpa.StockFinancialPeriodRepository.FigiPeriodSignature("M_FIGI", 1L, pM.getUpdatedAt()));
+            }
+            return sigs;
+        });
 
         StockQuote qZ = new StockQuote();
         qZ.setFigi("Z_FIGI");

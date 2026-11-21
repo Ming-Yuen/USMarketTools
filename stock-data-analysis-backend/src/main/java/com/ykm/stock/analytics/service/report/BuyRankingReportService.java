@@ -1156,7 +1156,13 @@ public class BuyRankingReportService {
             tc = new TierClassification(BuyRankingDtos.TIER_3, etfScore, "ETF_WAIT_TECHNICAL_CONFIRMATION", Map.of());
         } else if (globalRegime == MarketRegime.CORRECTION) {
             String etfRightSideBasis = resolveEtfRightSideBasis(supportZone, diag, zoneEx.matchedPlan(), asOfDate);
-            if ("ETF_TECHNICAL_BULLISH_SUPPORT".equals(etfStance) && planActive && etfRightSideBasis != null) {
+            String dailyMinorTrend = ValuationSummaryCalculator.extractDailyMinorTrend(structure);
+            boolean etfBullishStructure = "ETF_TECHNICAL_NEUTRAL".equals(etfStance)
+                    && "UPTREND".equals(etfSummary.weeklyTrend())
+                    && Boolean.TRUE.equals(etfSummary.aboveSma200())
+                    && supportZone != null
+                    && !"DOWNTREND".equals(dailyMinorTrend);
+            if (etfBullishStructure && planActive && etfRightSideBasis != null) {
                 tc = new TierClassification(BuyRankingDtos.TIER_1, etfScore, "CORRECTION_RIGHT_SIDE_CONFIRMED",
                         Map.of("confirmationBasis", etfRightSideBasis));
             } else {

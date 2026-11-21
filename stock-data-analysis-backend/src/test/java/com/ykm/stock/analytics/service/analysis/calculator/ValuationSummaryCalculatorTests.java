@@ -874,6 +874,61 @@ class ValuationSummaryCalculatorTests {
                 .contains("SECTOR_BREADTH_BREAKDOWN");
     }
 
+    /** Scenario：ETF 跨層語意防衝突——當 MarketRegime == CORRECTION 或日線結構 DailyMinor == DOWNTREND 時，禁止輸出 ETF_TECHNICAL_BULLISH_SUPPORT（最高僅為 ETF_TECHNICAL_NEUTRAL）。 */
+    @Test
+    void etfSummaryForbidsBullishSupportDuringMarketCorrectionOrDailyMinorDowntrend() {
+        LevelZoneDto weeklySupport = new LevelZoneDto(
+                "Z_ETF", AnalysisTimeframe.WEEKLY, new BigDecimal("205"), new BigDecimal("212"),
+                ZoneRole.SUPPORT, new BigDecimal("75"), CLOSE, 3, CLOSE, ZoneState.ACTIVE,
+                new BigDecimal("208.5"), new BigDecimal("5"), 1, ZoneStrengthLabel.HIGH, new BigDecimal("75"),
+                1, CLOSE, null, List.of(), List.of(), 2, 0, 3, null, null, RetestState.NONE, true, List.of());
+        MetricResult<SupportResistanceDto> sr = MetricResult.available(
+                new SupportResistanceDto(List.of(), List.of(), List.of(weeklySupport), List.of(), List.of(), List.of()));
+
+        MetricResult<PriceStructureDto> healthyStructure = structureWithDailyMinor(TrendState.UPTREND, TrendState.UPTREND, "210");
+        MetricResult<PriceStructureDto> dailyDownWeeklyUp = structureWithDailyMinor(TrendState.UPTREND, TrendState.DOWNTREND, "210");
+
+        MetricResult<MarketContextDto> riskOnCtx = richMarketContext(MarketRegime.RISK_ON, "4.10", null,
+                MetricResult.available(new BigDecimal("16")), "185", "208", "207", null, "5", "0.90",
+                EntryPermission.ALLOW, List.of("NO_KNOWN_BLOCKING_EVENT"), false);
+        MetricResult<MarketContextDto> correctionCtx = richMarketContext(MarketRegime.CORRECTION, "4.10", null,
+                MetricResult.available(new BigDecimal("22")), "185", "208", "207", null, "5", "0.90",
+                EntryPermission.REQUIRE_CLOSE_CONFIRMATION, List.of("MARKET_CORRECTION"), false);
+
+        // 1) 對照組：RISK_ON + WeeklyMajor UPTREND + DailyMinor UPTREND + 站上 SMA200 + 有效支撐 -> ETF_TECHNICAL_BULLISH_SUPPORT
+        InvestmentSummaryDto bullish = calculator.calculateForEtf(
+                AnalysisHorizon.POSITION, new BigDecimal("210"), "USD", healthyStructure, sr, null, riskOnCtx, false).value();
+        assertThat(bullish.stance()).isEqualTo("ETF_TECHNICAL_BULLISH_SUPPORT");
+
+        // 2) 大盤 CORRECTION：即使週線 UPTREND 且站上 SMA200，最高封頂為 ETF_TECHNICAL_NEUTRAL
+        InvestmentSummaryDto inCorrection = calculator.calculateForEtf(
+                AnalysisHorizon.POSITION, new BigDecimal("210"), "USD", healthyStructure, sr, null, correctionCtx, false).value();
+        assertThat(inCorrection.stance()).isEqualTo("ETF_TECHNICAL_NEUTRAL");
+        assertThat(inCorrection.risks()).extracting(InvestmentSummaryDto.SummaryFlagDto::code)
+                .contains("MARKET_REGIME_HEADWIND");
+
+        // 3) 日線 DailyMinor == DOWNTREND：即使大盤 RISK_ON 且週線尚未破位，亦封頂為 ETF_TECHNICAL_NEUTRAL，消除跨層語意衝突
+        InvestmentSummaryDto dailyDowntrend = calculator.calculateForEtf(
+                AnalysisHorizon.POSITION, new BigDecimal("210"), "USD", dailyDownWeeklyUp, sr, null, riskOnCtx, false).value();
+        assertThat(dailyDowntrend.stance()).isEqualTo("ETF_TECHNICAL_NEUTRAL");
+    }
+
+    private MetricResult<PriceStructureDto> structureWithDailyMinor(
+            TrendState weeklyMajorState, TrendState dailyMinorState, String dailyClose) {
+        NormalizedBarDto bar = new NormalizedBarDto(DAY, new BigDecimal(dailyClose), new BigDecimal(dailyClose),
+                new BigDecimal(dailyClose), new BigDecimal(dailyClose), MetricResult.available(BigDecimal.ONE),
+                CLOSE, CLOSE, CLOSE, CLOSE, null, "B1");
+        MetricResult<StructureTrendDto> weeklyTrend = MetricResult.available(
+                new StructureTrendDto(weeklyMajorState, CLOSE, PriceRelation.HH, PriceRelation.HL, List.of(), CLOSE));
+        MetricResult<StructureTrendDto> dailyMinor = MetricResult.available(
+                new StructureTrendDto(dailyMinorState, CLOSE, PriceRelation.LH, PriceRelation.LL, List.of(), CLOSE));
+        TimeframeStructureDto daily = new TimeframeStructureDto(AnalysisTimeframe.DAILY, List.of(bar), null, List.of(), List.of(),
+                null, null, dailyMinor, weeklyTrend, List.of(), List.of());
+        TimeframeStructureDto weekly = new TimeframeStructureDto(AnalysisTimeframe.WEEKLY, List.of(bar), null, List.of(), List.of(),
+                null, null, weeklyTrend, weeklyTrend, List.of(), List.of());
+        return MetricResult.available(new PriceStructureDto("FIGI", null, DAY, List.of(daily, weekly), List.of(), List.of()));
+    }
+
     private MetricResult<PriceStructureDto> pullbackDailyStructure(
             TrendState weeklyState, String highRecent, String prevClose, String open, String high, String low, String close) {
         NormalizedBarDto bar1 = new NormalizedBarDto(DAY.minusDays(3), new BigDecimal(highRecent), new BigDecimal(highRecent),

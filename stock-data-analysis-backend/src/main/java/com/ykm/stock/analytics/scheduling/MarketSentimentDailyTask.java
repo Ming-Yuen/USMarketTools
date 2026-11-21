@@ -28,8 +28,15 @@ public class MarketSentimentDailyTask implements Job {
             List<MarketSentimentDaily> rows = sentiment.downloadDailySnapshot();
             sentiment.save(rows);
         } catch (RuntimeException ex) { failure = ex; }
+        Instant observedAt = Instant.now();
         try {
-            List<MarketSentimentDaily> rows = vix.downloadObservations(Instant.now());
+            vix.backfillHistoricalIfNeeded(observedAt);
+        } catch (RuntimeException ex) {
+            if (failure == null) failure = ex;
+            else failure.addSuppressed(ex);
+        }
+        try {
+            List<MarketSentimentDaily> rows = vix.downloadObservations(observedAt);
             vix.saveObservations(rows);
         } catch (RuntimeException ex) {
             if (failure == null) failure = ex;

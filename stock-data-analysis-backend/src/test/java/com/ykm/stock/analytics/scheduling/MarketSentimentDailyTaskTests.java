@@ -29,6 +29,7 @@ class MarketSentimentDailyTaskTests {
         InOrder order = inOrder(sentiment, vix);
         order.verify(sentiment).downloadDailySnapshot();
         order.verify(sentiment).save(cnnRows);
+        order.verify(vix).backfillHistoricalIfNeeded(any());
         order.verify(vix).downloadObservations(any());
         order.verify(vix).saveObservations(vixRows);
     }
@@ -55,5 +56,20 @@ class MarketSentimentDailyTaskTests {
         assertThatThrownBy(() -> job.execute(null)).isSameAs(cnnFailure)
                 .satisfies(failure -> assertThat(failure.getSuppressed()).containsExactly(vixFailure));
         verify(vix, never()).saveObservations(any());
+    }
+
+    @Test
+    void fredBackfillFailureDoesNotPreventYahooDailyUpdateAndIsStillPropagated() {
+        List<MarketSentimentDaily> cnnRows = List.of(new MarketSentimentDaily());
+        List<MarketSentimentDaily> yahooRows = List.of(new MarketSentimentDaily());
+        IllegalStateException fredFailure = new IllegalStateException("FRED_API_UNAUTHORIZED:401");
+        when(sentiment.downloadDailySnapshot()).thenReturn(cnnRows);
+        when(vix.backfillHistoricalIfNeeded(any())).thenThrow(fredFailure);
+        when(vix.downloadObservations(any())).thenReturn(yahooRows);
+
+        assertThatThrownBy(() -> job.execute(null)).isSameAs(fredFailure);
+        verify(sentiment).save(cnnRows);
+        verify(vix).downloadObservations(any());
+        verify(vix).saveObservations(yahooRows);
     }
 }

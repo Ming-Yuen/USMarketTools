@@ -2,6 +2,7 @@ package com.ykm.stock.analytics.service.market;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ykm.stock.analytics.client.CnnFearAndGreedClient;
+import com.ykm.stock.analytics.client.FredVixClient;
 import com.ykm.stock.analytics.converter.jpa.MarketSentimentDailyMapper;
 import com.ykm.stock.analytics.model.dto.thirdparty.response.FearAndGreedResponse;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
@@ -63,12 +64,17 @@ public class MarketSentimentService {
             row.setMarketVolatilityVix(merge(row.getMarketVolatilityVix(), source.getMarketVolatilityVix()));
             row.setJunkBondDemand(merge(row.getJunkBondDemand(), source.getJunkBondDemand()));
             row.setSafeHavenDemand(merge(row.getSafeHavenDemand(), source.getSafeHavenDemand()));
-            if (source.getVixClose() != null && (row.getVixClose() == null || row.getVixClose().compareTo(source.getVixClose()) != 0
-                    || !Objects.equals(row.getVixSourceAt(), source.getVixSourceAt()))) {
-                row.setVixClose(source.getVixClose());
-                row.setVixSource(source.getVixSource());
-                row.setVixSourceAt(source.getVixSourceAt());
-                row.setVixObservedAt(source.getVixObservedAt());
+            if (source.getVixClose() != null) {
+                boolean skipBackfillOverwrite = FredVixClient.SOURCE_FRED_VIXCLS.equals(source.getVixSource())
+                        && row.getVixClose() != null;
+                if (!skipBackfillOverwrite && (row.getVixClose() == null
+                        || row.getVixClose().compareTo(source.getVixClose()) != 0
+                        || !Objects.equals(row.getVixSourceAt(), source.getVixSourceAt()))) {
+                    row.setVixClose(source.getVixClose());
+                    row.setVixSource(source.getVixSource());
+                    row.setVixSourceAt(source.getVixSourceAt());
+                    row.setVixObservedAt(source.getVixObservedAt());
+                }
             }
         }
         repository.saveAllAndFlush(existing.values());

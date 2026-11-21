@@ -12,7 +12,7 @@
   - `companyfacts.zip`：同步核心 `us-gaap` 與 `dei` 標籤，自 2014 年起按披露唯一鍵整份 CIK JSON 比對新增與修訂。
 - **富途 OpenD**：提供產業、概念、三大財務報表（損益表、資產負債表、現金流量表）、單季 EPS／營收預測、最新流通股數與原生估值快照，以及新股回補／週六全市場拆股對帳（`requestRehab`）。
 - **Alpha Vantage**：提供美股 USD 財報營運公司的年度共識預測（`EARNINGS_ESTIMATES`，含 FY1／FY2 EPS、營收與 30／90 日前 EPS 基準）；採查詢時按需同步、7 日 DB 快取與持久化每日配額熔斷保護（每日機會雷達等批次掃描嚴禁觸發外部 API，只能唯讀 PostgreSQL `stock_earnings_forecast` 既有快取；非 USD 財報 ADR 嚴禁寫入以防混幣污染）。
-- **FRED H.10 官方日頻匯率與高收益債信用利差**：提供 16 種主要外幣對美元官方匯率（`fx_rate_daily`），以及美國高收益債信用利差 ICE BofA US High Yield Index OAS（`BAMLH0A0HYM2`，`macro_credit_spread_daily`），用於總經信用風險監控與宏觀防禦連動。
+- **FRED 官方總經與波動率序列（H.10 匯率、`BAMLH0A0HYM2` 高收益債利差、`VIXCLS` 歷史 VIX）**：提供 16 種主要外幣對美元官方匯率（`fx_rate_daily`）、美國高收益債信用利差 ICE BofA US High Yield Index OAS（`BAMLH0A0HYM2`，`macro_credit_spread_daily`）及 Cboe VIX 官方歷史收盤點數缺口回補（`VIXCLS`，`market_sentiment_daily`），用於總經信用風險監控、歷史恐慌體制（`PANIC`）與宏觀防禦連動。
 - **籌碼與事件免費／已訂閱擴充通道（零額外付費訂閱）**：
   - **Alpaca Options Contracts & Snapshots**：按需採集目標股與 ETF 之 ATM Straddle Implied Move、ATM IV／HV20、等距虛值偏度（Skew）、Put/Call Ratio 與主力到期日最大 Call／Put OI 牆（強制標示非方向性提示）。
   - **SEC EDGAR XML／XBRL（Form 4、13F-HR、8-K／6-K 與本地 `companyfacts.zip`）**：遵守官方 `User-Agent` 與每秒請求限流，解析 Form 4 內部人交易（精準區分公開市場買入 `Code P` 與薪酬／`10b5-1` 例行交易）、追蹤旗艦機構 13F-HR 季度持倉，以及按需擷取 8-K／6-K `EX-99.1` 財測摘要與一次性人工確認自訂標籤映射。
@@ -50,7 +50,7 @@
 | `stock_earnings_forecast` | `(figi, fiscal_period, observation_date, period_type, source)` | 多來源分析師 EPS／營收預測（富途單季預測＋Alpha Vantage 按需年度共識與 `eps30d_ago`／`eps90d_ago` 基準） |
 | `external_api_daily_quota` | `(provider, quota_date)` | 低配額外部來源的持久化每日請求配額與熔斷旗標 |
 | `treasury_par_yield_daily` | `observation_date` | 美國財政部國債殖利率資料 |
-| `market_sentiment_daily` | `market_date` | 市場情緒指標、VIX 與觀察時間 |
+| `market_sentiment_daily` | `market_date` | CNN 市場情緒指標、實際 VIX 收盤點數（Yahoo 日常增量＋FRED `VIXCLS` 歷史缺口回補）與觀察時間 |
 | `market_event` | `event_key` | 個股財報日曆與宏觀事件 |
 | `macro_credit_spread_daily` | `observation_date` | FRED 美國高收益債信用利差（`BAMLH0A0HYM2`）日頻原始觀測值 |
 | `stock_options_summary` | `(figi, snapshot_date)` | 目標股／ETF 輕量期權快照（ATM Straddle Implied Move、ATM IV／HV20、偏度 Skew、Put/Call Ratio 與主力到期日最大 Call／Put OI 牆） |

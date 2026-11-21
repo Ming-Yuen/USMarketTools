@@ -2,6 +2,7 @@ package com.ykm.stock.analytics.service.market;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ykm.stock.analytics.client.CnnFearAndGreedClient;
+import com.ykm.stock.analytics.client.FredVixClient;
 import com.ykm.stock.analytics.converter.jpa.MarketSentimentDailyMapper;
 import com.ykm.stock.analytics.model.dto.thirdparty.response.FearAndGreedResponse;
 import com.ykm.stock.analytics.model.entity.MarketSentimentDaily;
@@ -155,6 +156,28 @@ class MarketSentimentServiceTests {
         assertThat(existing.getFearAndGreed().getObservedAt()).isEqualTo(changedAt);
         assertThat(existing.getVixClose()).isEqualByComparingTo("25");
         assertThat(existing.getVixSourceAt()).isNull();
+    }
+
+    @Test
+    void fredBackfillRowNeverOverwritesExistingYahooVixObservation() {
+        MarketSentimentDaily existing = new MarketSentimentDaily();
+        existing.setMarketDate(DATE);
+        existing.setVixClose(new BigDecimal("24.75"));
+        existing.setVixSource("YAHOO_FINANCE_CBOE_VIX");
+        existing.setVixObservedAt(OBSERVED);
+        when(repository.findAllById(List.of(DATE))).thenReturn(List.of(existing));
+
+        MarketSentimentDaily fredIncoming = new MarketSentimentDaily();
+        fredIncoming.setMarketDate(DATE);
+        fredIncoming.setVixClose(new BigDecimal("24.70"));
+        fredIncoming.setVixSource(FredVixClient.SOURCE_FRED_VIXCLS);
+        fredIncoming.setVixObservedAt(OBSERVED.plusSeconds(7200));
+
+        service.save(List.of(fredIncoming));
+
+        assertThat(existing.getVixClose()).isEqualByComparingTo("24.75");
+        assertThat(existing.getVixSource()).isEqualTo("YAHOO_FINANCE_CBOE_VIX");
+        assertThat(existing.getVixObservedAt()).isEqualTo(OBSERVED);
     }
 
     private MarketSentimentDaily cnnRow(String score, Instant observedAt) {
